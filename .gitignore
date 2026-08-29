@@ -33,6 +33,12 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# credenciales de Firebase Admin (ver scripts/set-admin-claim.mjs) —
+# dan acceso TOTAL al proyecto de Firebase, nunca deben commitearse.
+# Red de seguridad además de guardarlas fuera del repo.
+*serviceAccount*.json
+*firebase-adminsdk*.json
+
 # vercel
 .vercel
 

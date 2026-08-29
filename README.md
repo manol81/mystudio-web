@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MY STUDIO — Web Arranger
 
-## Getting Started
+Secuenciador multipista en el navegador para armar canciones con
+samples del Banco de Sonidos, sincronizarlas como archivos `.mystudio`
+y editar proyectos que vienen de la app móvil (MY STUDIO, Flutter +
+motor de audio nativo en C++/Oboe) — o exportarlos de vuelta hacia ella.
 
-First, run the development server:
+Consume el **mismo** proyecto de Firebase que la app Android (Auth,
+Firestore, Storage) — no hay backend propio.
+
+## Funcionalidad principal
+
+- Arrastrar y soltar samples del Banco de Sonidos a una línea de
+  tiempo multipista, con volumen/pan/mute/solo por pista y por clip
+  (fades, recorte no destructivo, pitch-shift).
+- Time-stretching real (tempo) vía [SoundTouchJS](https://github.com/cutterbl/SoundTouchJS)
+  corriendo en un Web Worker, y pitch-shifting real (tono) vía
+  [signalsmith-stretch](https://github.com/Signalsmith-Audio/stretch)
+  (WASM + AudioWorklet) — cada uno en una pasada independiente,
+  cacheados globalmente, sin bloquear jamás el hilo principal.
+- Regla de tiempo intercambiable entre segundos y compases/beats.
+- Exportación a `.mystudio` (ZIP con `manifest.json` + WAVs) 100%
+  compatible con `project_backup_service.dart` del lado Flutter, e
+  importación del mismo formato para edición bidireccional.
+
+## Stack
+
+Next.js 16 (App Router, Turbopack) · React 19 · TypeScript ·
+Tailwind CSS v4 · Firebase JS SDK.
+
+## Desarrollo local
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abrir [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build   # build de producción
+npm run lint    # ESLint
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Variables de entorno
 
-## Learn More
+Ninguna es obligatoria hoy: la configuración de cliente de Firebase
+(`src/lib/firebase.ts`) está embebida directamente en el código —no es
+información secreta, es el mismo criterio que usa cualquier app
+Firebase, incluida la app Android—, así que el proyecto conecta sin
+configurar nada extra en Vercel.
 
-To learn more about Next.js, take a look at the following resources:
+## Administración del Banco de Sonidos
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Subir/dar de alta samples (`/admin/upload-sample`) requiere el custom
+claim `admin: true` en Firebase Auth. Para otorgarlo:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+node scripts/set-admin-claim.mjs <email> <ruta-a-service-account.json>
+```
 
-## Deploy on Vercel
+La clave de la service account se descarga desde Firebase Console →
+Configuración del proyecto → Cuentas de servicio. **Nunca se commitea**
+— guardala fuera de este repo (el `.gitignore` también la excluye como
+red de seguridad extra).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deploy
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Pensado para Vercel: conectar este repositorio, sin configuración
+adicional de Root Directory (es un proyecto Next.js standalone, no una
+subcarpeta de un monorepo).
