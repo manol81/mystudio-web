@@ -22,7 +22,7 @@
 // compuestas de Firestore por cada combinación de filtros.
 
 import { useEffect, useMemo, useState } from "react";
-import { collection, onSnapshot, orderBy, query, type Timestamp } from "firebase/firestore";
+import { collection, getDocs, onSnapshot, orderBy, query, type Timestamp } from "firebase/firestore";
 import { ref, getDownloadURL } from "firebase/storage";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -194,6 +194,9 @@ export default function SamplesPage() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [nowPlayingId, setNowPlayingId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const [projectOptions, setProjectOptions] = useState<{ cloudId: string; title: string }[] | null>(null);
+  const [loadingProjectOptions, setLoadingProjectOptions] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -265,12 +268,14 @@ export default function SamplesPage() {
     });
   }
 
-  /** "Enviar al Arranger" (Paso 2): arma un proyecto NUEVO con los
-      samples elegidos, todos en una pista nueva — se encolan acá (ver
-      pendingArrangerSamples.ts) y el Arranger los consume al montar,
-      apenas el usuario confirma el diálogo de Título/BPM/Compás. */
-  function handleSendToArranger() {
-    const chosen: ArrangerSample[] = samples
+  /**
+   * "Enviar al Arranger": arma la lista de samples elegidos en el
+   * formato que espera el Arranger (ver ArrangerSample) y los deja
+   * encolados (pendingArrangerSamples.ts) — el Arranger los consume al
+   * montar, uno por pista nueva.
+   */
+  function collectChosenSamples(): ArrangerSample[] {
+    return samples
       .filter((s) => selectedIds.has(s.id))
       .map((s) => ({
         id: s.id,
@@ -283,9 +288,41 @@ export default function SamplesPage() {
         audioPath: s.audioPath,
         sizeBytes: s.sizeBytes,
       }));
+  }
+
+  /** target: "new" (proyecto nuevo) o el cloudId de un proyecto ya sincronizado. */
+  function sendSelectionToProject(target: "new" | string) {
+    const chosen = collectChosenSamples();
     if (chosen.length === 0) return;
     queueSamplesForArranger(chosen);
-    router.push("/arranger?new=1");
+    setShowProjectPicker(false);
+    setSelectedIds(new Set());
+    router.push(target === "new" ? "/arranger?new=1" : `/arranger?open=${encodeURIComponent(target)}`);
+  }
+
+  /**
+   * Se dispara al abrir el selector de proyecto destino — trae la
+   * lista de proyectos ya sincronizados del usuario UNA sola vez (no
+   * un listener en vivo: esto es solo para elegir un destino, no hace
+   * falta que se actualice sola mientras el diálogo está abierto) — la
+   * MISMA colección que lee ProjectsDashboard.
+   */
+  async function openProjectPicker() {
+    setShowProjectPicker(true);
+    if (projectOptions !== null) return; // ya se trajo antes en esta visita a la página
+    if (!user) return;
+    setLoadingProjectOptions(true);
+    try {
+      const snap = await getDocs(collection(db, "users", user.uid, "projects"));
+      setProjectOptions(
+        snap.docs.map((d) => ({
+          cloudId: d.id,
+          title: (d.data().title as string) || "Sin título",
+        })),
+      );
+    } finally {
+      setLoadingProjectOptions(false);
+    }
   }
 
   const filteredSamples = useMemo(() => {
@@ -507,10 +544,69 @@ export default function SamplesPage() {
             </button>
             <button
               type="button"
-              onClick={handleSendToArranger}
+              onClick={() => void openProjectPicker()}
               className="rounded-full bg-neon-cyan px-4 py-1.5 font-display text-xs font-semibold text-onyx-black transition-all duration-200 hover:shadow-[0_0_16px_rgba(102,252,241,0.5)]"
             >
               Enviar al Arranger
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Selector de proyecto destino — "proyecto nuevo" siempre
+          primero, seguido de los ya sincronizados (mismos datos que
+          ProjectsDashboard, traídos una sola vez al abrir esto). */}
+      {showProjectPicker && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 backdrop-blur-sm"
+          onClick={() => setShowProjectPicker(false)}
+        >
+          <div
+            className="flex w-full max-w-sm flex-col gap-3 rounded-2xl border border-white/10 bg-graphite p-6 text-left"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display text-sm font-semibold text-white">¿A qué proyecto enviar?</h3>
+            <p className="text-xs text-white/40">
+              {selectedIds.size} {selectedIds.size === 1 ? "sample" : "samples"} — cada uno va a su propia pista nueva.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => sendSelectionToProject("new")}
+              className="flex items-center justify-between rounded-lg border border-neon-cyan/30 bg-neon-cyan/10 px-4 py-2.5 text-left text-sm font-semibold text-neon-cyan transition-colors duration-200 hover:border-neon-cyan"
+            >
+              + Proyecto nuevo
+            </button>
+
+            <div className="max-h-56 overflow-y-auto">
+              {loadingProjectOptions ? (
+                <p className="px-1 py-2 text-xs text-white/40">Cargando tus proyectos...</p>
+              ) : !projectOptions || projectOptions.length === 0 ? (
+                <p className="px-1 py-2 text-xs text-white/30">
+                  Todavía no sincronizaste ningún proyecto desde el Arranger.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {projectOptions.map((p) => (
+                    <button
+                      key={p.cloudId}
+                      type="button"
+                      onClick={() => sendSelectionToProject(p.cloudId)}
+                      className="truncate rounded-lg border border-white/15 px-4 py-2 text-left text-sm text-white/80 transition-colors duration-200 hover:border-white/40 hover:text-white"
+                    >
+                      {p.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowProjectPicker(false)}
+              className="mt-1 self-end text-xs text-white/40 transition-colors duration-200 hover:text-white/70"
+            >
+              Cancelar
             </button>
           </div>
         </div>

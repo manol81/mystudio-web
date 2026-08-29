@@ -390,11 +390,18 @@ export default function ArrangerPage() {
     originalStartSeconds: number;
     displayDuration: number;
     // Paso 3 (arrastrar entre pistas) — sobre qué pista está el mouse
-    // AHORA MISMO, no necesariamente la de origen. Se lee desde un
-    // listener de window (ver handleClipPointerDown), por eso vive en
-    // el ref (necesita el valor más fresco posible, no uno atrapado en
-    // un closure de React desactualizado).
+    // AHORA MISMO, no necesariamente la de origen.
     hoveredTrackId: string;
+    // Posición (ya con imán aplicado) del último pointermove. TIENE
+    // que vivir acá, no solo en el estado `dragPreviewStartSeconds`:
+    // handleClipPointerUp se llama desde un listener de window
+    // agregado UNA sola vez en handleClipPointerDown, así que su
+    // closure quedó fijo con el `dragPreviewStartSeconds` de ESE
+    // instante (null, antes de que arrancara el arrastre) — leerlo del
+    // ref evita ese bug de closure obsoleto (era la causa real de que
+    // "no se agregue en la pista nueva": handleClipPointerUp cortaba
+    // en el primer `if` porque veía newStart == null).
+    previewStartSeconds: number;
   } | null>(null);
   const [dragPreviewStartSeconds, setDragPreviewStartSeconds] = useState<number | null>(null);
   const [snapGuideSeconds, setSnapGuideSeconds] = useState<number | null>(null);
@@ -1104,6 +1111,7 @@ export default function ArrangerPage() {
       originalStartSeconds: clip.startSeconds,
       displayDuration: displayDurationFor(clip, projectTempoBpm),
       hoveredTrackId: trackId,
+      previewStartSeconds: clip.startSeconds,
     };
     setDragPreviewStartSeconds(clip.startSeconds);
     setDragOriginTrackId(trackId);
@@ -1138,6 +1146,7 @@ export default function ArrangerPage() {
     const deltaSeconds = (clientX - moveDrag.startClientX) / effectivePixelsPerSecond;
     const rawStart = Math.max(0, moveDrag.originalStartSeconds + deltaSeconds);
     const snapped = computeSnappedStart(moveDrag.clipId, rawStart, moveDrag.displayDuration);
+    moveDrag.previewStartSeconds = snapped.startSeconds;
     setDragPreviewStartSeconds(snapped.startSeconds);
     setSnapGuideSeconds(snapped.guideSeconds);
 
@@ -1197,13 +1206,13 @@ export default function ArrangerPage() {
 
   function handleClipPointerUp() {
     const drag = dragRef.current;
-    const newStart = dragPreviewStartSeconds;
     dragRef.current = null;
     setDragPreviewStartSeconds(null);
     setSnapGuideSeconds(null);
     setDragOriginTrackId(null);
     setDragHoverTrackId(null);
-    if (!drag || newStart == null) return;
+    if (!drag) return;
+    const newStart = drag.previewStartSeconds; // del ref, no del estado — ver la nota en dragRef
 
     const targetTrackId = drag.hoveredTrackId;
     const movedToOtherTrack = targetTrackId !== drag.trackId;
@@ -1745,77 +1754,71 @@ export default function ArrangerPage() {
     }
   }
 
-  // Paso 1 — llegar desde el Dashboard: ProjectsDashboard linkea acá
-  // con ?open=<cloudId>; se busca el storagePath en el MISMO doc de
-  // Firestore que ya lee ProjectsDashboard/ProjectViewer y se
-  // descarga vía /api/download-proxy (evita CORS en la lectura de
-  // bytes — ver la nota extensa en ProjectViewer.tsx).
+  // Efecto único de montaje: dos orígenes posibles, SIEMPRE en este
+  // orden (uno solo de los dos primeros pasos corre, según cómo se
+  // llegó, pero el Paso 2 corre SIEMPRE después de que el Paso 1
+  // termine, nunca en paralelo) —
+  //   Paso 1: llegar desde el Dashboard con ?open=<cloudId> —
+  //     ProjectsDashboard linkea acá, se busca el storagePath en el
+  //     MISMO doc de Firestore que ya lee ProjectsDashboard/
+  //     ProjectViewer y se descarga vía /api/download-proxy (evita
+  //     CORS en la lectura de bytes — ver la nota extensa en
+  //     ProjectViewer.tsx).
+  //   Paso 2: samples elegidos en /samples con "Enviar al Arranger"
+  //     (ver pendingArrangerSamples.ts) — cada uno a SU PROPIA pista
+  //     nueva. Tenía que ir DESPUÉS del Paso 1 a propósito: si
+  //     corrieran en paralelo (dos useEffect separados), y ?open=
+  //     también estuviera presente, el setTracks([]) que hace
+  //     importProjectFromZipBytes al arrancar se comería estas pistas
+  //     si ya se habían agregado antes.
   useEffect(() => {
     if (!user) return;
-    const openId = new URLSearchParams(window.location.search).get("open");
-    if (!openId) return;
 
     (async () => {
-      setImportError(null);
-      setIsImporting(true);
-      setImportProgress(0);
-      setImportStage("Descargando proyecto...");
-      try {
-        const snap = await getDoc(doc(db, "users", user.uid, "projects", openId));
-        if (!snap.exists()) throw new Error("No se encontró el proyecto.");
-        const storagePath = snap.data().storagePath as string | undefined;
-        if (!storagePath) throw new Error("El proyecto no tiene un archivo asociado.");
-        const downloadUrl = await getDownloadURL(ref(storage, storagePath));
-        const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`);
-        if (!response.ok) throw new Error(`No se pudo descargar el archivo (HTTP ${response.status}).`);
-        const bytes = await readResponseWithProgress(response, (f) => setImportProgress(f * 0.3));
-        await importProjectFromZipBytes(bytes);
-      } catch (err) {
-        setImportError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setIsImporting(false);
-        setImportStage(null);
+      const openId = new URLSearchParams(window.location.search).get("open");
+      if (openId) {
+        setImportError(null);
+        setIsImporting(true);
+        setImportProgress(0);
+        setImportStage("Descargando proyecto...");
+        try {
+          const snap = await getDoc(doc(db, "users", user.uid, "projects", openId));
+          if (!snap.exists()) throw new Error("No se encontró el proyecto.");
+          const storagePath = snap.data().storagePath as string | undefined;
+          if (!storagePath) throw new Error("El proyecto no tiene un archivo asociado.");
+          const downloadUrl = await getDownloadURL(ref(storage, storagePath));
+          const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`);
+          if (!response.ok) throw new Error(`No se pudo descargar el archivo (HTTP ${response.status}).`);
+          const bytes = await readResponseWithProgress(response, (f) => setImportProgress(f * 0.3));
+          await importProjectFromZipBytes(bytes);
+        } catch (err) {
+          setImportError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setIsImporting(false);
+          setImportStage(null);
+        }
       }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
 
-  // Paso 2 (Banco de Sonidos) — samples elegidos en /samples con
-  // "Enviar al Arranger" (ver pendingArrangerSamples.ts): se consumen
-  // UNA vez al montar, en una pista nueva, uno atrás del otro (no se
-  // conoce la duración real hasta decodificar cada uno, así que se
-  // espacian con un margen generoso — el usuario los reacomoda
-  // arrastrando, ahora que también se puede mover un clip entre
-  // pistas). No pisa nada si el usuario llegó por otra vía (?open=,
-  // o directo) — la cola queda vacía en esos casos.
-  useEffect(() => {
-    if (!user) return;
-    const queued = takeQueuedSamplesForArranger();
-    if (!queued || queued.length === 0) return;
-
-    // Envuelto en un IIFE async — mismo criterio que el resto de los
-    // efectos de este archivo (?open=, etc.): llamar a setState
-    // SÍNCRONO directo en el cuerpo del efecto dispara
-    // react-hooks/set-state-in-effect.
-    (async () => {
-      const trackId = newId();
-      setTracks((prev) => [
-        ...prev,
-        {
-          id: trackId,
-          name: "Banco de Sonidos",
-          volume: 0.8,
-          pan: 0,
-          isMuted: false,
-          isSolo: false,
-          clips: [],
-          color: TRACK_COLORS[prev.length % TRACK_COLORS.length],
-        },
-      ]);
-      const SPACING_SECONDS = 8;
-      queued.forEach((sample, index) => {
-        void addSampleToTrack(sample, trackId, index * SPACING_SECONDS);
-      });
+      const queued = takeQueuedSamplesForArranger();
+      if (queued && queued.length > 0) {
+        queued.forEach((sample) => {
+          const trackId = newId();
+          setTracks((prev) => [
+            ...prev,
+            {
+              id: trackId,
+              name: sample.name || "Nueva pista",
+              volume: 0.8,
+              pan: 0,
+              isMuted: false,
+              isSolo: false,
+              clips: [],
+              color: TRACK_COLORS[prev.length % TRACK_COLORS.length],
+            },
+          ]);
+          void addSampleToTrack(sample, trackId, 0);
+        });
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
