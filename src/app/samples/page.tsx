@@ -1,0 +1,433 @@
+"use client";
+
+// Banco de Sonidos — catálogo público (para cuentas logueadas, ver
+// firestore.rules: es una feature de cuenta, igual que la sincronía de
+// proyectos, no algo abierto a invitados) de samples/loops curados por
+// el equipo. Lee /samples en tiempo real, cada admin que sube un sample
+// nuevo desde /admin/upload-sample aparece acá sin refrescar.
+//
+// A propósito NO incluye botón de descarga en esta primera versión:
+// gatear FREE/PRO por sample individual necesita una Cloud Function que
+// devuelva una signed URL corta validando el tier del usuario
+// server-side (dejarlo abierto por Storage rules solamente sería
+// bypasseable) — está documentado como pendiente en storage.rules, no
+// es parte de este catálogo todavía. Por ahora es solo preview.
+//
+// Búsqueda/filtro/orden — TODO client-side (Fase "librería premium"):
+// se trae la colección /samples COMPLETA una sola vez (onSnapshot,
+// sigue en vivo) y el resto vive en useMemo, sin volver a tocar
+// Firestore por cada tecla o cada click de filtro. Con el tamaño de
+// catálogo esperado (cientos, no cientos de miles) esto es
+// instantáneo y muchísimo más simple que reconstruir queries
+// compuestas de Firestore por cada combinación de filtros.
+
+import { useEffect, useMemo, useState } from "react";
+import { collection, onSnapshot, orderBy, query, type Timestamp } from "firebase/firestore";
+import { ref, getDownloadURL } from "firebase/storage";
+import Link from "next/link";
+import { useAuth } from "@/context/AuthContext";
+import { db, storage } from "@/lib/firebase";
+import { LoginModal } from "@/components/LoginModal";
+import { SamplePlayer } from "@/components/SamplePlayer";
+import {
+  SAMPLE_TYPES,
+  SAMPLE_INSTRUMENTS,
+  SAMPLE_GENRES,
+  SAMPLE_KEYS,
+} from "@/lib/sampleTaxonomy";
+
+interface Sample {
+  id: string;
+  name: string;
+  type: string;
+  instrument: string;
+  genre: string;
+  bpm: number;
+  key: string;
+  audioPath: string;
+  sizeBytes: number;
+  createdAtMillis: number;
+}
+
+type SortOption = "recent" | "bpmAsc" | "bpmDesc";
+
+function formatSize(bytes: number): string {
+  if (!bytes) return "0 KB";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ─── Barra de filtros ───────────────────────────────────────────────────
+
+function FilterChipGroup({
+  label,
+  options,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  options: readonly string[];
+  selected: string | null;
+  onSelect: (value: string | null) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-white/40">
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((opt) => {
+          const isActive = selected === opt;
+          return (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => onSelect(isActive ? null : opt)}
+              className={`rounded-full border px-3 py-1 text-xs transition-all duration-200 ${
+                isActive
+                  ? "border-neon-cyan bg-neon-cyan/15 text-neon-cyan shadow-[0_0_10px_rgba(102,252,241,0.3)]"
+                  : "border-white/15 text-white/60 hover:border-white/30 hover:text-white"
+              }`}
+            >
+              {opt}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const selectClasses =
+  "rounded-lg border border-white/15 bg-onyx-black px-3 py-2 text-xs text-white outline-none transition-colors duration-200 focus:border-neon-cyan";
+
+// ─── Tarjeta de sample ──────────────────────────────────────────────────
+
+function SampleCard({
+  sample,
+  isActive,
+  onRequestPlay,
+}: {
+  sample: Sample;
+  isActive: boolean;
+  onRequestPlay: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getDownloadURL(ref(storage, sample.audioPath))
+      .then((resolved) => {
+        if (!cancelled) setUrl(resolved);
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sample.audioPath]);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-graphite p-5 text-left transition-colors duration-200 hover:border-neon-cyan/30">
+      <div className="min-w-0">
+        <p className="truncate font-display text-base font-semibold text-white">
+          {sample.name}
+        </p>
+        <p className="mt-1 truncate text-xs text-white/40">
+          {[sample.instrument, sample.type, sample.genre].filter(Boolean).join(" · ")}
+        </p>
+        <p className="mt-1 truncate text-xs text-white/40">
+          {[
+            `${Math.round(sample.bpm)} BPM`,
+            sample.key && sample.key !== "N/A" ? sample.key : null,
+            formatSize(sample.sizeBytes),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      </div>
+
+      {url ? (
+        <SamplePlayer src={url} isActive={isActive} onRequestPlay={onRequestPlay} />
+      ) : (
+        <div className="h-8 animate-pulse rounded-full bg-white/5" />
+      )}
+    </div>
+  );
+}
+
+// ─── Página ─────────────────────────────────────────────────────────────
+
+export default function SamplesPage() {
+  const { user, loading } = useAuth();
+  const [samples, setSamples] = useState<Sample[]>([]);
+  const [loadingSamples, setLoadingSamples] = useState(true);
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [nowPlayingId, setNowPlayingId] = useState<string | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [selectedInstrument, setSelectedInstrument] = useState<string | null>(null);
+  const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState("");
+  const [bpmMin, setBpmMin] = useState("");
+  const [bpmMax, setBpmMax] = useState("");
+  const [sortBy, setSortBy] = useState<SortOption>("recent");
+
+  useEffect(() => {
+    if (!user) return;
+
+    const q = query(collection(db, "samples"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setSamples(
+          snapshot.docs.map((doc) => {
+            const data = doc.data();
+            const createdAt = data.createdAt as Timestamp | undefined;
+            return {
+              id: doc.id,
+              name: (data.name as string) ?? "",
+              type: (data.type as string) ?? "",
+              instrument: (data.instrument as string) ?? "",
+              genre: (data.genre as string) ?? "",
+              bpm: (data.bpm as number) ?? 0,
+              key: (data.key as string) ?? "",
+              audioPath: (data.audioPath as string) ?? "",
+              sizeBytes: (data.sizeBytes as number) ?? 0,
+              createdAtMillis: createdAt?.toMillis() ?? 0,
+            };
+          }),
+        );
+        setLoadingSamples(false);
+      },
+      () => setLoadingSamples(false),
+    );
+
+    return unsubscribe;
+  }, [user]);
+
+  const hasActiveFilters =
+    searchQuery.trim() !== "" ||
+    selectedType !== null ||
+    selectedInstrument !== null ||
+    selectedGenre !== null ||
+    selectedKey !== "" ||
+    bpmMin !== "" ||
+    bpmMax !== "";
+
+  function clearFilters() {
+    setSearchQuery("");
+    setSelectedType(null);
+    setSelectedInstrument(null);
+    setSelectedGenre(null);
+    setSelectedKey("");
+    setBpmMin("");
+    setBpmMax("");
+  }
+
+  const filteredSamples = useMemo(() => {
+    let result = samples;
+
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      result = result.filter((s) => s.name.toLowerCase().includes(q));
+    }
+    if (selectedType) result = result.filter((s) => s.type === selectedType);
+    if (selectedInstrument) {
+      result = result.filter((s) => s.instrument === selectedInstrument);
+    }
+    if (selectedGenre) result = result.filter((s) => s.genre === selectedGenre);
+    if (selectedKey) result = result.filter((s) => s.key === selectedKey);
+
+    const min = bpmMin.trim() ? Number(bpmMin) : null;
+    if (min !== null && !Number.isNaN(min)) {
+      result = result.filter((s) => s.bpm >= min);
+    }
+    const max = bpmMax.trim() ? Number(bpmMax) : null;
+    if (max !== null && !Number.isNaN(max)) {
+      result = result.filter((s) => s.bpm <= max);
+    }
+
+    const sorted = [...result];
+    if (sortBy === "bpmAsc") {
+      sorted.sort((a, b) => a.bpm - b.bpm);
+    } else if (sortBy === "bpmDesc") {
+      sorted.sort((a, b) => b.bpm - a.bpm);
+    } else {
+      sorted.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+    }
+    return sorted;
+  }, [
+    samples,
+    searchQuery,
+    selectedType,
+    selectedInstrument,
+    selectedGenre,
+    selectedKey,
+    bpmMin,
+    bpmMax,
+    sortBy,
+  ]);
+
+  return (
+    <main className="flex min-h-screen flex-col items-center gap-8 px-6 py-16 text-center">
+      <div>
+        <Link
+          href="/"
+          className="text-xs text-white/40 transition-colors duration-200 hover:text-white/70"
+        >
+          ← Volver
+        </Link>
+        <h1 className="mt-3 font-display text-4xl font-bold tracking-tight text-white sm:text-5xl">
+          Banco de <span className="text-neon-cyan">Sonidos</span>
+        </h1>
+        <p className="mt-2 max-w-md text-sm text-white/50">
+          Loops y samples listos para importar a tu proyecto.
+        </p>
+      </div>
+
+      {loading ? null : !user ? (
+        <div className="flex flex-col items-center gap-4 rounded-2xl border border-white/10 bg-graphite p-8">
+          <p className="text-sm text-white/60">
+            Iniciá sesión para acceder al catálogo.
+          </p>
+          <button
+            type="button"
+            onClick={() => setIsLoginOpen(true)}
+            className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)]"
+          >
+            Iniciar Sesión
+          </button>
+        </div>
+      ) : loadingSamples ? (
+        <p className="text-xs text-white/40">Cargando catálogo...</p>
+      ) : samples.length === 0 ? (
+        <p className="text-xs text-white/30">
+          Todavía no hay sonidos publicados.
+        </p>
+      ) : (
+        <>
+          {/* ─── Barra de filtros ─── */}
+          <div className="flex w-full max-w-4xl flex-col gap-4 rounded-2xl border border-white/10 bg-graphite p-5 text-left">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar por nombre..."
+                className="flex-1 rounded-lg border border-white/15 bg-onyx-black px-4 py-2.5 text-sm text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan"
+              />
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortOption)}
+                className={selectClasses}
+              >
+                <option value="recent">Más recientes</option>
+                <option value="bpmAsc">BPM ascendente</option>
+                <option value="bpmDesc">BPM descendente</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <FilterChipGroup
+                label="Tipo"
+                options={SAMPLE_TYPES}
+                selected={selectedType}
+                onSelect={setSelectedType}
+              />
+              <FilterChipGroup
+                label="Instrumento"
+                options={SAMPLE_INSTRUMENTS}
+                selected={selectedInstrument}
+                onSelect={setSelectedInstrument}
+              />
+              <FilterChipGroup
+                label="Género"
+                options={SAMPLE_GENRES}
+                selected={selectedGenre}
+                onSelect={setSelectedGenre}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
+                  Tonalidad
+                </label>
+                <select
+                  value={selectedKey}
+                  onChange={(e) => setSelectedKey(e.target.value)}
+                  className={selectClasses}
+                >
+                  <option value="">Todas</option>
+                  {SAMPLE_KEYS.map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
+                  BPM
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    value={bpmMin}
+                    onChange={(e) => setBpmMin(e.target.value)}
+                    placeholder="Min"
+                    className="w-20 rounded-lg border border-white/15 bg-onyx-black px-3 py-2 text-xs text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan"
+                  />
+                  <span className="text-white/30">–</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={bpmMax}
+                    onChange={(e) => setBpmMax(e.target.value)}
+                    placeholder="Max"
+                    className="w-20 rounded-lg border border-white/15 bg-onyx-black px-3 py-2 text-xs text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan"
+                  />
+                </div>
+              </div>
+
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="self-end rounded-full border border-white/15 px-4 py-2 text-xs text-white/60 transition-colors duration-200 hover:border-red-400/50 hover:text-red-300"
+                >
+                  Limpiar filtros
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* ─── Resultados ─── */}
+          {filteredSamples.length === 0 ? (
+            <p className="text-xs text-white/30">
+              Ningún sample coincide con estos filtros.
+            </p>
+          ) : (
+            <div className="grid w-full max-w-4xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredSamples.map((sample) => (
+                <SampleCard
+                  key={sample.id}
+                  sample={sample}
+                  isActive={nowPlayingId === sample.id}
+                  onRequestPlay={() => setNowPlayingId(sample.id)}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
+    </main>
+  );
+}

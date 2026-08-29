@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+/* Carga tailwind.config.ts (paleta "Midnight Studio" + font families) —
+   ver el comentario en ese archivo sobre por qué sigue haciendo falta
+   en Tailwind v4. */
+@config "../../tailwind.config.ts";
+
+body {
+  font-family: var(--font-body), sans-serif;
+}
+
+/* Brillo que recorre la barra de progreso de importación del Arranger
+   (animate-[shimmer_...] en arranger/page.tsx) — Tailwind v4 no genera
+   el @keyframes solo, hace falta declararlo acá para que la clase
+   arbitraria tenga qué referenciar. */
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
