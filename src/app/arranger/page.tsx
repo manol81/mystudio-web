@@ -48,6 +48,7 @@ import { scheduleGainEnvelope } from "@/lib/clipEnvelope";
 import { getOrStretchBuffer } from "@/lib/timeStretch";
 import { getOrPitchShiftBuffer } from "@/lib/pitchShift";
 import { getCachedBuffer, loadAndCacheBuffer, setCachedBuffer } from "@/lib/sampleBufferCache";
+import { takeQueuedSamplesForArranger } from "@/lib/pendingArrangerSamples";
 import { LoginModal } from "@/components/LoginModal";
 import {
   SampleBrowserPanel,
@@ -388,9 +389,19 @@ export default function ArrangerPage() {
     startClientX: number;
     originalStartSeconds: number;
     displayDuration: number;
+    // Paso 3 (arrastrar entre pistas) — sobre qué pista está el mouse
+    // AHORA MISMO, no necesariamente la de origen. Se lee desde un
+    // listener de window (ver handleClipPointerDown), por eso vive en
+    // el ref (necesita el valor más fresco posible, no uno atrapado en
+    // un closure de React desactualizado).
+    hoveredTrackId: string;
   } | null>(null);
   const [dragPreviewStartSeconds, setDragPreviewStartSeconds] = useState<number | null>(null);
   const [snapGuideSeconds, setSnapGuideSeconds] = useState<number | null>(null);
+  // Puramente visuales (resaltar el carril destino) — la fuente de
+  // verdad para la lógica sigue siendo dragRef.current.hoveredTrackId.
+  const [dragOriginTrackId, setDragOriginTrackId] = useState<string | null>(null);
+  const [dragHoverTrackId, setDragHoverTrackId] = useState<string | null>(null);
 
   // Problema 3 — arrastre de los tiradores de recorte (bordes del clip
   // seleccionado).
@@ -1092,9 +1103,49 @@ export default function ArrangerPage() {
       startClientX: e.clientX,
       originalStartSeconds: clip.startSeconds,
       displayDuration: displayDurationFor(clip, projectTempoBpm),
+      hoveredTrackId: trackId,
     };
     setDragPreviewStartSeconds(clip.startSeconds);
+    setDragOriginTrackId(trackId);
+    setDragHoverTrackId(trackId);
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+    // Paso 3 (arrastrar entre pistas): el pointer capture ata los
+    // eventos siguientes al DIV DEL CLIP — sus ancestros solo bubblean
+    // dentro del carril de ORIGEN, así que nunca nos enteraríamos de
+    // que el mouse pasó a otra fila usando el onPointerMove del
+    // carril (ver handleLanePointerMove, que ya no maneja este caso).
+    // Escuchar en window funciona sin importar dónde esté el mouse en
+    // pantalla; document.elementFromPoint + data-track-id (puesto en
+    // cada carril) dicen sobre qué pista está ahora.
+    const handleWindowMove = (ev: PointerEvent) => {
+      updateClipDragPreview(ev.clientX, ev.clientY);
+    };
+    const handleWindowUp = () => {
+      window.removeEventListener("pointermove", handleWindowMove);
+      window.removeEventListener("pointerup", handleWindowUp);
+      handleClipPointerUp();
+    };
+    window.addEventListener("pointermove", handleWindowMove);
+    window.addEventListener("pointerup", handleWindowUp);
+  }
+
+  /** Actualiza la posición/imán/pista-destino del clip en arrastre — llamado desde el listener de window, ver handleClipPointerDown. */
+  function updateClipDragPreview(clientX: number, clientY: number) {
+    const moveDrag = dragRef.current;
+    if (!moveDrag) return;
+
+    const deltaSeconds = (clientX - moveDrag.startClientX) / effectivePixelsPerSecond;
+    const rawStart = Math.max(0, moveDrag.originalStartSeconds + deltaSeconds);
+    const snapped = computeSnappedStart(moveDrag.clipId, rawStart, moveDrag.displayDuration);
+    setDragPreviewStartSeconds(snapped.startSeconds);
+    setSnapGuideSeconds(snapped.guideSeconds);
+
+    const hoveredEl = document.elementFromPoint(clientX, clientY);
+    const laneEl = hoveredEl instanceof Element ? hoveredEl.closest("[data-track-id]") : null;
+    const hoveredTrackId = laneEl?.getAttribute("data-track-id") ?? moveDrag.trackId;
+    moveDrag.hoveredTrackId = hoveredTrackId;
+    setDragHoverTrackId(hoveredTrackId);
   }
 
   // "Imán" al arrastrar un clip: si el punto crudo (sin ajustar) del
@@ -1150,20 +1201,36 @@ export default function ArrangerPage() {
     dragRef.current = null;
     setDragPreviewStartSeconds(null);
     setSnapGuideSeconds(null);
-    if (!drag || newStart == null || newStart === drag.originalStartSeconds) return;
+    setDragOriginTrackId(null);
+    setDragHoverTrackId(null);
+    if (!drag || newStart == null) return;
 
-    setTracks((prev) =>
-      prev.map((t) =>
-        t.id === drag.trackId
-          ? {
-              ...t,
-              clips: t.clips.map((c) =>
-                c.id === drag.clipId ? { ...c, startSeconds: newStart } : c,
-              ),
-            }
-          : t,
-      ),
-    );
+    const targetTrackId = drag.hoveredTrackId;
+    const movedToOtherTrack = targetTrackId !== drag.trackId;
+    if (!movedToOtherTrack && newStart === drag.originalStartSeconds) return; // sin cambios reales
+
+    setTracks((prev) => {
+      if (!movedToOtherTrack) {
+        return prev.map((t) =>
+          t.id === drag.trackId
+            ? { ...t, clips: t.clips.map((c) => (c.id === drag.clipId ? { ...c, startSeconds: newStart } : c)) }
+            : t,
+        );
+      }
+
+      // Paso 3 — arrastrar entre pistas: sacar el clip de la pista de
+      // origen y agregarlo a la de destino, con la posición (ya con
+      // imán aplicado) que tenía al soltar.
+      let movedClip: ArrangerClip | null = null;
+      const withoutClip = prev.map((t) => {
+        if (t.id !== drag.trackId) return t;
+        const found = t.clips.find((c) => c.id === drag.clipId);
+        if (found) movedClip = { ...found, startSeconds: newStart };
+        return { ...t, clips: t.clips.filter((c) => c.id !== drag.clipId) };
+      });
+      if (!movedClip) return prev; // no debería pasar — el clip desapareció bajo el mouse
+      return withoutClip.map((t) => (t.id === targetTrackId ? { ...t, clips: [...t.clips, movedClip!] } : t));
+    });
   }
 
   // ─── Problema 3: tiradores de recorte (bordes del clip seleccionado) ─
@@ -1227,19 +1294,12 @@ export default function ArrangerPage() {
     updateClip(drag.clipId, preview);
   }
 
-  // Un solo manejador de pointermove por carril: a lo sumo UNO de los
-  // tres drags (mover clip / recortar borde / fade) está activo a la vez.
+  // Un solo manejador de pointermove por carril para recortar/fade — el
+  // arrastre de "mover clip" (dragRef) se maneja aparte, con listeners
+  // de window (ver handleClipPointerDown), porque ese sí necesita
+  // detectar cruces entre pistas; trim/fade nunca cruzan de pista, les
+  // alcanza con el bubbling normal dentro de su propio carril.
   function handleLanePointerMove(e: React.PointerEvent<HTMLDivElement>) {
-    const moveDrag = dragRef.current;
-    if (moveDrag) {
-      const deltaSeconds = (e.clientX - moveDrag.startClientX) / effectivePixelsPerSecond;
-      const rawStart = Math.max(0, moveDrag.originalStartSeconds + deltaSeconds);
-      const snapped = computeSnappedStart(moveDrag.clipId, rawStart, moveDrag.displayDuration);
-      setDragPreviewStartSeconds(snapped.startSeconds);
-      setSnapGuideSeconds(snapped.guideSeconds);
-      return;
-    }
-
     const fadeDrag = fadeDragRef.current;
     if (fadeDrag) {
       const deltaSeconds = (e.clientX - fadeDrag.startClientX) / effectivePixelsPerSecond;
@@ -1289,7 +1349,9 @@ export default function ArrangerPage() {
   }
 
   function handleLanePointerUp() {
-    if (dragRef.current) handleClipPointerUp();
+    // "mover clip" (dragRef) NO se resuelve acá — lo cierra el
+    // listener de window agregado en handleClipPointerDown, para no
+    // finalizarlo dos veces (el pointerup también bubblea hasta acá).
     if (trimDragRef.current) handleTrimPointerUp();
     if (fadeDragRef.current) handleFadePointerUp();
   }
@@ -1714,6 +1776,46 @@ export default function ArrangerPage() {
         setIsImporting(false);
         setImportStage(null);
       }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // Paso 2 (Banco de Sonidos) — samples elegidos en /samples con
+  // "Enviar al Arranger" (ver pendingArrangerSamples.ts): se consumen
+  // UNA vez al montar, en una pista nueva, uno atrás del otro (no se
+  // conoce la duración real hasta decodificar cada uno, así que se
+  // espacian con un margen generoso — el usuario los reacomoda
+  // arrastrando, ahora que también se puede mover un clip entre
+  // pistas). No pisa nada si el usuario llegó por otra vía (?open=,
+  // o directo) — la cola queda vacía en esos casos.
+  useEffect(() => {
+    if (!user) return;
+    const queued = takeQueuedSamplesForArranger();
+    if (!queued || queued.length === 0) return;
+
+    // Envuelto en un IIFE async — mismo criterio que el resto de los
+    // efectos de este archivo (?open=, etc.): llamar a setState
+    // SÍNCRONO directo en el cuerpo del efecto dispara
+    // react-hooks/set-state-in-effect.
+    (async () => {
+      const trackId = newId();
+      setTracks((prev) => [
+        ...prev,
+        {
+          id: trackId,
+          name: "Banco de Sonidos",
+          volume: 0.8,
+          pan: 0,
+          isMuted: false,
+          isSolo: false,
+          clips: [],
+          color: TRACK_COLORS[prev.length % TRACK_COLORS.length],
+        },
+      ]);
+      const SPACING_SECONDS = 8;
+      queued.forEach((sample, index) => {
+        void addSampleToTrack(sample, trackId, index * SPACING_SECONDS);
+      });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -2267,7 +2369,12 @@ export default function ArrangerPage() {
                     </div>
 
                     <div
-                      className="relative flex-1 border-b border-white/10 bg-black/20"
+                      data-track-id={track.id}
+                      className={`relative flex-1 border-b bg-black/20 transition-colors duration-100 ${
+                        dragHoverTrackId === track.id && dragOriginTrackId !== null && dragOriginTrackId !== track.id
+                          ? "border-white/10 bg-neon-cyan/10 ring-1 ring-inset ring-neon-cyan/40"
+                          : "border-white/10"
+                      }`}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => handleTrackDrop(e, track.id)}
                       onPointerMove={handleLanePointerMove}

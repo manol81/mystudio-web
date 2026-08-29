@@ -20,7 +20,7 @@ import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 import { ref, getDownloadURL } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
 import { SamplePlayer } from "@/components/SamplePlayer";
-import { SAMPLE_INSTRUMENTS, SAMPLE_GENRES } from "@/lib/sampleTaxonomy";
+import { SAMPLE_INSTRUMENTS, SAMPLE_GENRES, SAMPLE_KEYS } from "@/lib/sampleTaxonomy";
 import { warmBufferCache } from "@/lib/sampleBufferCache";
 
 export interface ArrangerSample {
@@ -51,6 +51,9 @@ export function SampleBrowserPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedInstrument, setSelectedInstrument] = useState<string | null>(null);
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState("");
+  const [bpmMin, setBpmMin] = useState("");
+  const [bpmMax, setBpmMax] = useState("");
   const [playingId, setPlayingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -89,8 +92,13 @@ export function SampleBrowserPanel({
       result = result.filter((s) => s.instrument === selectedInstrument);
     }
     if (selectedGenre) result = result.filter((s) => s.genre === selectedGenre);
+    if (selectedKey) result = result.filter((s) => s.key === selectedKey);
+    const min = bpmMin.trim() ? Number(bpmMin) : null;
+    if (min !== null && !Number.isNaN(min)) result = result.filter((s) => s.bpm >= min);
+    const max = bpmMax.trim() ? Number(bpmMax) : null;
+    if (max !== null && !Number.isNaN(max)) result = result.filter((s) => s.bpm <= max);
     return result;
-  }, [samples, searchQuery, selectedInstrument, selectedGenre]);
+  }, [samples, searchQuery, selectedInstrument, selectedGenre, selectedKey, bpmMin, bpmMax]);
 
   return (
     <div className="flex h-full w-full flex-col gap-3 overflow-hidden">
@@ -144,6 +152,42 @@ export function SampleBrowserPanel({
             {opt}
           </button>
         ))}
+      </div>
+
+      {/* Tonalidad + BPM — el panel del Arranger antes solo filtraba por instrumento/género (mucho más pobre que /samples, que ya tenía esto). */}
+      <div className="flex items-center gap-1.5">
+        <select
+          value={selectedKey}
+          onChange={(e) => setSelectedKey(e.target.value)}
+          className="min-w-0 flex-1 rounded-lg border border-white/15 bg-onyx-black px-2 py-1.5 text-[10px] text-white outline-none focus:border-neon-cyan"
+        >
+          <option value="">Tonalidad: todas</option>
+          {SAMPLE_KEYS.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-[10px] text-white/40">BPM</span>
+        <input
+          type="number"
+          min={1}
+          value={bpmMin}
+          onChange={(e) => setBpmMin(e.target.value)}
+          placeholder="Min"
+          className="w-0 min-w-0 flex-1 rounded-lg border border-white/15 bg-onyx-black px-2 py-1.5 text-[10px] text-white placeholder:text-white/30 outline-none focus:border-neon-cyan"
+        />
+        <span className="shrink-0 text-white/30">–</span>
+        <input
+          type="number"
+          min={1}
+          value={bpmMax}
+          onChange={(e) => setBpmMax(e.target.value)}
+          placeholder="Max"
+          className="w-0 min-w-0 flex-1 rounded-lg border border-white/15 bg-onyx-black px-2 py-1.5 text-[10px] text-white placeholder:text-white/30 outline-none focus:border-neon-cyan"
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto">

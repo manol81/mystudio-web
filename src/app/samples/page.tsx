@@ -25,6 +25,7 @@ import { useEffect, useMemo, useState } from "react";
 import { collection, onSnapshot, orderBy, query, type Timestamp } from "firebase/firestore";
 import { ref, getDownloadURL } from "firebase/storage";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { LoginModal } from "@/components/LoginModal";
@@ -35,6 +36,8 @@ import {
   SAMPLE_GENRES,
   SAMPLE_KEYS,
 } from "@/lib/sampleTaxonomy";
+import { queueSamplesForArranger } from "@/lib/pendingArrangerSamples";
+import type { ArrangerSample } from "@/components/SampleBrowserPanel";
 
 interface Sample {
   id: string;
@@ -107,10 +110,14 @@ function SampleCard({
   sample,
   isActive,
   onRequestPlay,
+  isSelected,
+  onToggleSelect,
 }: {
   sample: Sample;
   isActive: boolean;
   onRequestPlay: () => void;
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
 
@@ -129,8 +136,28 @@ function SampleCard({
   }, [sample.audioPath]);
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-graphite p-5 text-left transition-colors duration-200 hover:border-neon-cyan/30">
-      <div className="min-w-0">
+    <div
+      className={`relative flex flex-col gap-3 rounded-2xl border p-5 text-left transition-colors duration-200 ${
+        isSelected ? "border-neon-cyan bg-neon-cyan/5" : "border-white/10 bg-graphite hover:border-neon-cyan/30"
+      }`}
+    >
+      {/* Selección para "Enviar al Arranger" — deliberadamente un
+          checkbox aparte, no toda la tarjeta clickeable: el resto de
+          la tarjeta ya tiene su propio click (el reproductor). */}
+      <button
+        type="button"
+        onClick={onToggleSelect}
+        aria-label={isSelected ? "Quitar de la selección" : "Agregar a la selección"}
+        aria-pressed={isSelected}
+        className={`absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-md border text-[11px] transition-colors duration-200 ${
+          isSelected
+            ? "border-neon-cyan bg-neon-cyan text-onyx-black"
+            : "border-white/25 text-transparent hover:border-white/50"
+        }`}
+      >
+        ✓
+      </button>
+      <div className="min-w-0 pr-6">
         <p className="truncate font-display text-base font-semibold text-white">
           {sample.name}
         </p>
@@ -161,10 +188,12 @@ function SampleCard({
 
 export default function SamplesPage() {
   const { user, loading } = useAuth();
+  const router = useRouter();
   const [samples, setSamples] = useState<Sample[]>([]);
   const [loadingSamples, setLoadingSamples] = useState(true);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [nowPlayingId, setNowPlayingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -225,6 +254,38 @@ export default function SamplesPage() {
     setSelectedKey("");
     setBpmMin("");
     setBpmMax("");
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** "Enviar al Arranger" (Paso 2): arma un proyecto NUEVO con los
+      samples elegidos, todos en una pista nueva — se encolan acá (ver
+      pendingArrangerSamples.ts) y el Arranger los consume al montar,
+      apenas el usuario confirma el diálogo de Título/BPM/Compás. */
+  function handleSendToArranger() {
+    const chosen: ArrangerSample[] = samples
+      .filter((s) => selectedIds.has(s.id))
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        type: s.type,
+        instrument: s.instrument,
+        genre: s.genre,
+        bpm: s.bpm,
+        key: s.key,
+        audioPath: s.audioPath,
+        sizeBytes: s.sizeBytes,
+      }));
+    if (chosen.length === 0) return;
+    queueSamplesForArranger(chosen);
+    router.push("/arranger?new=1");
   }
 
   const filteredSamples = useMemo(() => {
@@ -420,11 +481,39 @@ export default function SamplesPage() {
                   sample={sample}
                   isActive={nowPlayingId === sample.id}
                   onRequestPlay={() => setNowPlayingId(sample.id)}
+                  isSelected={selectedIds.has(sample.id)}
+                  onToggleSelect={() => toggleSelected(sample.id)}
                 />
               ))}
             </div>
           )}
         </>
+      )}
+
+      {/* Paso 2 — barra flotante: aparece con la selección activa, sin
+          desplazar el resto del layout (fixed, no reserva espacio). */}
+      {selectedIds.size > 0 && (
+        <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
+          <div className="flex items-center gap-3 rounded-full border border-neon-cyan/30 bg-graphite px-5 py-3 shadow-[0_8px_30px_rgba(0,0,0,0.4)]">
+            <span className="text-xs text-white/70">
+              {selectedIds.size} {selectedIds.size === 1 ? "sample seleccionado" : "samples seleccionados"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="rounded-full border border-white/20 px-3 py-1.5 text-xs text-white/60 transition-colors duration-200 hover:border-white/40 hover:text-white"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleSendToArranger}
+              className="rounded-full bg-neon-cyan px-4 py-1.5 font-display text-xs font-semibold text-onyx-black transition-all duration-200 hover:shadow-[0_0_16px_rgba(102,252,241,0.5)]"
+            >
+              Enviar al Arranger
+            </button>
+          </div>
+        </div>
       )}
 
       {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
