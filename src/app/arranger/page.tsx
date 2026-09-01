@@ -45,8 +45,7 @@ import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { renderClipToWav } from "@/lib/wavExport";
 import { scheduleGainEnvelope } from "@/lib/clipEnvelope";
-import { getOrStretchBuffer } from "@/lib/timeStretch";
-import { getOrPitchShiftBuffer } from "@/lib/pitchShift";
+import { getOrProcessBuffer } from "@/lib/audioDsp";
 import { getCachedBuffer, loadAndCacheBuffer, setCachedBuffer } from "@/lib/sampleBufferCache";
 import { takeQueuedSamplesForArranger } from "@/lib/pendingArrangerSamples";
 import { LoginModal } from "@/components/LoginModal";
@@ -105,11 +104,11 @@ interface ArrangerClip {
   fadeOutSeconds: number;
   /**
    * Pitch-shift en semitonos enteros, -12 a +12 (0 = tono original).
-   * Independiente del tempo: se aplica en una pasada SEPARADA del
-   * time-stretch (ver getProcessedBuffer/pitchShift.ts), así que
-   * cambiar uno nunca recalcula el otro. Motor: signalsmith-stretch
-   * (WASM + AudioWorklet, MIT — ver la nota larga en pitchShift.ts
-   * sobre por qué no se usó un port de Rubber Band).
+   * Independiente del tempo aunque se resuelvan en la MISMA pasada de
+   * DSP (ver getProcessedBuffer/audioDsp.ts) — son parámetros
+   * separados de la misma llamada, cambiar uno no altera el otro.
+   * Motor: signalsmith-stretch (WASM + AudioWorklet, MIT — ver la nota
+   * larga en audioDsp.ts sobre por qué no se usó un port de Rubber Band).
    */
   pitchShift: number;
   buffer: AudioBuffer;
@@ -233,9 +232,9 @@ function slicePeaksForWindow(
 function playbackRateFor(clip: ArrangerClip, projectTempoBpm: number): number {
   // Los One-Shot (percusión suelta, FX puntuales, etc.) suenan SIEMPRE
   // a su velocidad y tono original, en su posición de inicio tal cual
-  // — el time-stretch (ver timeStretch.ts) es exclusivo de los Loop,
-  // que sí están pensados para adaptarse al tempo del proyecto. Como
-  // TODO el audio routing (qué buffer usa getStretchedBuffer, qué
+  // — el time-stretch (ver audioDsp.ts) es exclusivo de los Loop, que
+  // sí están pensados para adaptarse al tempo del proyecto. Como TODO
+  // el audio routing (qué buffer usa getProcessedBuffer, qué
   // offset/duración se programan en playFrom, qué se renderiza en
   // handleExport) deriva de este rate, alcanza con condicionar acá.
   if (clip.sampleType !== "Loop") return 1.0;
@@ -616,43 +615,30 @@ export default function ArrangerPage() {
     }
   }, [tracks]);
 
-  // ─── Time-stretching real (Paso 3) ───────────────────────────────────
+  // ─── Time-stretching + pitch-shift real (Paso 3) ─────────────────────
 
   /**
    * Devuelve el AudioBuffer que hay que reproducir para este clip a
-   * este `rate`, con su pitch-shift ya aplicado — DOS pasadas
-   * independientes, cada una cacheada por su cuenta:
-   *   1. Tempo: si rate≈1 (el sample ya está al tempo del proyecto),
-   *      el buffer ORIGINAL tal cual — sin gastar el Worker en un
-   *      stretch que no cambiaría nada. Si no, el buffer ya "estirado"
-   *      (mismo tono, duración ajustada) — el cálculo corre en un Web
-   *      Worker (nunca bloquea este hilo), cacheado GLOBALMENTE por
-   *      (sampleId, rate) en src/lib/timeStretch.ts.
-   *   2. Pitch: si clip.pitchShift es 0, el buffer de arriba tal cual.
-   *      Si no, ese MISMO buffer pasa por signalsmith-stretch
-   *      (WASM + AudioWorklet — corre en el hilo de audio en tiempo
-   *      real, nunca en este) con rate=1 (solo tono, cero cambio de
-   *      duración), cacheado por (sampleId, rate, semitones) en
-   *      src/lib/pitchShift.ts. Cambiar SOLO el pitch de un clip nunca
-   *      recalcula el tempo, y viceversa — cada paso tiene su propia clave.
+   * este `rate`, con su pitch-shift ya aplicado — UNA sola pasada de
+   * DSP (signalsmith-stretch, WASM + AudioWorklet), cacheada por
+   * (sampleId, rate, semitones) en src/lib/audioDsp.ts. Antes eran DOS
+   * motores encadenados (SoundTouch/WSOLA para el tempo + esto mismo
+   * para el pitch) — se unificó porque WSOLA sonaba con artefactos
+   * notorios ("espacios"/alteraciones) incluso en cambios de tempo
+   * chicos sobre material rítmico, una debilidad conocida de ese
+   * algoritmo con loops percusivos — ver la nota larga en audioDsp.ts.
    */
   async function getProcessedBuffer(clip: ArrangerClip, rate: number): Promise<AudioBuffer> {
-    const ctx = audioContextRef.current;
-    // Fallback defensivo (no debería pasar — el AudioContext se crea
-    // al montar el componente): sonar sin procesar es mejor que no sonar nada.
-    if (!ctx) return clip.buffer;
-    const tempoBuffer =
-      Math.abs(rate - 1) < 0.0005 ? clip.buffer : await getOrStretchBuffer(clip.sampleId, clip.buffer, rate, ctx);
-    if (clip.pitchShift === 0) return tempoBuffer;
+    if (Math.abs(rate - 1) < 0.0005 && clip.pitchShift === 0) return clip.buffer;
     try {
-      return await getOrPitchShiftBuffer(clip.sampleId, tempoBuffer, rate, clip.pitchShift);
+      return await getOrProcessBuffer(clip.sampleId, clip.buffer, rate, clip.pitchShift);
     } catch (err) {
-      // Si el motor de pitch-shift falla, mejor sonar SIN el pitch
-      // aplicado que dejar muda TODA la reproducción (antes, un error
-      // acá tumbaba el Promise.all de playFrom y no sonaba NADA, ni
-      // siquiera los clips sin pitch).
-      console.error("No se pudo aplicar pitch-shift, usando el clip sin transponer:", err);
-      return tempoBuffer;
+      // Si el motor de DSP falla, mejor sonar SIN procesar que dejar
+      // muda TODA la reproducción (antes, un error acá tumbaba el
+      // Promise.all de playFrom y no sonaba NADA, ni siquiera los
+      // clips que no necesitaban tempo/pitch).
+      console.error("No se pudo procesar tempo/pitch, usando el clip sin transponer:", err);
+      return clip.buffer;
     }
   }
 
