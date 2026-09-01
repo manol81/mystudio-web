@@ -1854,7 +1854,7 @@ export default function ArrangerPage() {
 
   if (!user) {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-6 px-6 text-center">
+      <div className="flex min-h-full flex-col items-center justify-center gap-6 px-6 text-center">
         <h1 className="font-display text-3xl font-bold text-white">
           Web Sample <span className="text-neon-cyan">Arranger</span>
         </h1>
@@ -1869,7 +1869,7 @@ export default function ArrangerPage() {
           Iniciar Sesión
         </button>
         {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
-      </main>
+      </div>
     );
   }
 
@@ -1880,7 +1880,7 @@ export default function ArrangerPage() {
   // simplemente cierra el gate, los valores ya quedaron aplicados.
   if (showNewProjectSetup) {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-onyx-black px-6 text-center">
+      <div className="flex min-h-full flex-col items-center justify-center gap-6 bg-onyx-black px-6 text-center">
         <h1 className="font-display text-3xl font-bold text-white">
           Nuevo <span className="text-neon-cyan">Arreglo</span>
         </h1>
@@ -1936,18 +1936,18 @@ export default function ArrangerPage() {
             Crear Proyecto
           </button>
         </div>
-      </main>
+      </div>
     );
   }
 
   const totalWidth = totalDurationSeconds * effectivePixelsPerSecond;
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-onyx-black text-white">
+    <div className="flex h-full flex-col overflow-hidden bg-onyx-black text-white">
       {/* ─── Barra superior ─── */}
       <div className="flex flex-wrap items-center gap-3 border-b border-white/10 bg-graphite px-4 py-3">
-        <Link href="/" className="text-xs text-white/40 hover:text-white/70">
-          ← Volver
+        <Link href="/projects" className="text-xs text-white/40 hover:text-white/70">
+          ← Mis Proyectos
         </Link>
 
         {/* Paso 1 — edición bidireccional: abrir un .mystudio existente desde el disco. La otra vía (Firebase Storage) llega vía ?open=<cloudId> desde ProjectsDashboard. */}
@@ -2613,6 +2613,6 @@ export default function ArrangerPage() {
           </div>
         </div>
       </div>
-    </main>
+    </div>
   );
 }

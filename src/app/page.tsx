@@ -1,79 +1,87 @@
 "use client";
 
+// Comunidad (Feed) — nueva raíz de MY STUDIO Web, primer paso de la
+// transformación hacia una plataforma social (ver AppSidebar.tsx para
+// el resto de la navegación). El dashboard de proyectos que antes
+// vivía acá se mudó a /projects (ver ese archivo).
+//
+// Paso 2 (temporal): el feed de posts es 100% simulado — PostCard
+// recibe data fija, no hay backend de posts/likes/audio subido
+// todavía. Es para visualizar cómo va a lucir antes de construir esa
+// parte real.
+
 import { useState } from "react";
-import { signOut } from "firebase/auth";
-import Link from "next/link";
-import { auth } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
-import { ProjectsDashboard } from "@/components/ProjectsDashboard";
+import { PostCard, type PostCardData } from "@/components/PostCard";
 
-export default function Home() {
+const FAKE_POSTS: PostCardData[] = [
+  {
+    username: "alex_beats",
+    songTitle: "Midnight Drive",
+    genre: "Lo-Fi · Hip-Hop",
+    timeAgo: "hace 2 horas",
+    likeCount: 128,
+    commentCount: 14,
+    seed: 0,
+  },
+  {
+    username: "luna.wave",
+    songTitle: "Neon Dreams",
+    genre: "Synthwave · EDM",
+    timeAgo: "hace 5 horas",
+    likeCount: 342,
+    commentCount: 27,
+    seed: 1,
+  },
+  {
+    username: "sergio_prod",
+    songTitle: "Sunset Loop",
+    genre: "Cinematic",
+    timeAgo: "hace 1 día",
+    likeCount: 76,
+    commentCount: 6,
+    seed: 2,
+  },
+];
+
+export default function CommunityFeedPage() {
   const { user, loading } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-8 px-6 text-center">
-      <h1 className="font-display text-5xl font-bold tracking-tight text-white sm:text-6xl">
-        My Studio <span className="text-neon-cyan">Cloud</span>
-      </h1>
+    <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-8 px-6 py-12">
+      <div>
+        <h1 className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl">
+          Explora la <span className="text-neon-cyan">Comunidad</span>
+        </h1>
+        <p className="mt-2 text-sm text-white/50">
+          Lo que está sonando ahora en MY STUDIO — pronto vas a poder publicar tus propios arreglos acá.
+        </p>
+      </div>
 
-      {/* loading: todavía no llegó la primera respuesta de Firebase Auth
-          — no mostramos ni el botón de invitado ni el dashboard para
-          evitar un parpadeo entre los dos estados. */}
       {loading ? null : user ? (
-        <div className="flex w-full max-w-2xl flex-col items-center gap-6">
-          <p className="text-base text-white/80">
-            Bienvenido, <span className="text-neon-cyan">{user.email}</span>
-          </p>
-
-          <div className="flex flex-wrap items-center justify-center gap-3">
-            {/* Paso 1 — botón universal de "Nuevo Proyecto": lleva al
-                Arranger con ?new=1, que dispara el diálogo de
-                configuración inicial (Título/BPM/Compás) ANTES de
-                mostrar la grilla — ver el gate en arranger/page.tsx. */}
-            <Link
-              href="/arranger?new=1"
-              className="rounded-full bg-neon-cyan px-6 py-2.5 font-display text-sm font-semibold text-onyx-black transition-all duration-200 hover:shadow-[0_0_20px_rgba(102,252,241,0.5)] active:scale-95"
-            >
-              + Crear Nuevo Proyecto
-            </Link>
-            <Link
-              href="/samples"
-              className="rounded-full border border-white/15 px-6 py-2 text-sm text-white/70 transition-colors duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan"
-            >
-              🎧 Banco de Sonidos
-            </Link>
-          </div>
-
-          <ProjectsDashboard />
-
-          <button
-            type="button"
-            onClick={() => signOut(auth)}
-            className="rounded-full border border-white/15 px-6 py-2 text-sm text-white/60 transition-colors duration-200 hover:border-red-400/50 hover:text-red-300"
-          >
-            Cerrar Sesión
-          </button>
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {FAKE_POSTS.map((post) => (
+            <PostCard key={post.username} post={post} />
+          ))}
         </div>
       ) : (
-        <>
-          <p className="max-w-md text-base text-white/60">
-            Sincronizá tus proyectos, accedé al banco de sonidos y llevá tu
-            estudio a cualquier lado.
+        <div className="flex flex-col items-center gap-4 self-center rounded-2xl border border-white/10 bg-graphite p-8 text-center">
+          <p className="max-w-sm text-sm text-white/60">
+            Iniciá sesión para ver la comunidad, sincronizar tus proyectos y acceder al banco de sonidos.
           </p>
-
           <button
             type="button"
             onClick={() => setIsModalOpen(true)}
-            className="group relative rounded-full border border-neon-cyan/40 bg-graphite px-8 py-3 font-display text-sm font-semibold uppercase tracking-widest text-neon-cyan transition-all duration-300 ease-out hover:border-neon-cyan hover:shadow-[0_0_24px_rgba(102,252,241,0.45)] active:scale-95"
+            className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)]"
           >
             Iniciar Sesión
           </button>
-        </>
+        </div>
       )}
 
       {isModalOpen && <LoginModal onClose={() => setIsModalOpen(false)} />}
-    </main>
+    </div>
   );
 }

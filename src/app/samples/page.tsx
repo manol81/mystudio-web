@@ -370,13 +370,13 @@ export default function SamplesPage() {
   ]);
 
   return (
-    <main className="flex min-h-screen flex-col items-center gap-8 px-6 py-16 text-center">
+    <div className="flex min-h-full flex-col items-center gap-8 px-6 py-16 text-center">
       <div>
         <Link
-          href="/"
+          href="/projects"
           className="text-xs text-white/40 transition-colors duration-200 hover:text-white/70"
         >
-          ← Volver
+          ← Mis Proyectos
         </Link>
         <h1 className="mt-3 font-display text-4xl font-bold tracking-tight text-white sm:text-5xl">
           Banco de <span className="text-neon-cyan">Sonidos</span>
@@ -613,6 +613,6 @@ export default function SamplesPage() {
       )}
 
       {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
-    </main>
+    </div>
   );
 }

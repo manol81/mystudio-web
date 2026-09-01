@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Space_Grotesk, Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
+import { AppSidebar } from "@/components/AppSidebar";
 
 // Identidad "Midnight Studio": Space Grotesk para títulos/UI destacada
 // (var --font-display), Inter para texto de lectura (var --font-body).
@@ -29,8 +30,20 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="es"
       className={`${spaceGrotesk.variable} ${inter.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-onyx-black text-white font-body">
-        <AuthProvider>{children}</AuthProvider>
+      <body className="h-full bg-onyx-black text-white font-body">
+        <AuthProvider>
+          {/* Layout de dos columnas — Sidebar fijo + área principal con
+              su PROPIO scroll (overflow-y-auto), independiente del
+              sidebar. h-screen en el contenedor (no min-h-screen):
+              necesitamos que ambas columnas midan EXACTAMENTE el alto
+              del viewport, no "al menos" — si no, una página con poco
+              contenido dejaría un sidebar más alto que el área
+              principal, o viceversa. */}
+          <div className="flex h-screen overflow-hidden">
+            <AppSidebar />
+            <main className="h-full flex-1 overflow-y-auto">{children}</main>
+          </div>
+        </AuthProvider>
       </body>
     </html>
   );

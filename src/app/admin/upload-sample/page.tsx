@@ -222,7 +222,7 @@ export default function UploadSamplePage() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center gap-8 px-6 py-16 text-center">
+    <div className="flex min-h-full flex-col items-center gap-8 px-6 py-16 text-center">
       <div>
         <Link
           href="/samples"
@@ -435,6 +435,6 @@ export default function UploadSamplePage() {
         </div>
         </>
       )}
-    </main>
+    </div>
   );
 }

@@ -1,0 +1,131 @@
+"use client";
+
+// Sidebar global — navegación principal de MY STUDIO Web, ahora que
+// deja de ser "una pantalla con un dashboard adentro" para pasar a ser
+// una plataforma con varias secciones (Comunidad, Proyectos, Banco de
+// Sonidos, Bandeja de Entrada). Vive en el layout raíz (ver
+// layout.tsx), así que aparece en TODAS las rutas.
+//
+// Responsive: en desktop (lg+) es una columna fija de w-64, siempre
+// visible. En mobile es un botón de hamburguesa (fixed, esquina
+// superior izquierda) que abre un drawer superpuesto — nunca reserva
+// ancho de la pantalla chica, que es toda para el contenido.
+
+import { useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { signOut } from "firebase/auth";
+import { Globe, FolderOpen, Piano, MessageSquare, Menu, X, LogOut } from "lucide-react";
+import { auth } from "@/lib/firebase";
+import { useAuth } from "@/context/AuthContext";
+
+const NAV_ITEMS = [
+  { href: "/", label: "Comunidad", icon: Globe },
+  { href: "/projects", label: "Mis Proyectos", icon: FolderOpen },
+  { href: "/samples", label: "Banco de Sonidos", icon: Piano },
+  { href: "/inbox", label: "Bandeja de Entrada", icon: MessageSquare },
+] as const;
+
+function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+  const { user } = useAuth();
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="px-6 py-6">
+        <Link href="/" onClick={onNavigate} className="font-display text-lg font-bold tracking-tight text-white">
+          MY <span className="text-neon-cyan">STUDIO</span>
+        </Link>
+      </div>
+
+      <nav className="flex flex-1 flex-col gap-1 px-3">
+        {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+          // "/" necesita coincidencia EXACTA (si no, siempre estaría
+          // "activo" para cualquier ruta, ya que todas empiezan con
+          // "/") — el resto sí puede matchear sub-rutas futuras
+          // (ej. /projects/123) con startsWith.
+          const isActive = href === "/" ? pathname === "/" : pathname.startsWith(href);
+          return (
+            <Link
+              key={href}
+              href={href}
+              onClick={onNavigate}
+              className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200 ${
+                isActive
+                  ? "bg-neon-cyan/10 text-neon-cyan"
+                  : "text-white/60 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              <Icon size={18} strokeWidth={isActive ? 2.25 : 1.75} className="shrink-0" />
+              {label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* Cuenta — al pie, siempre en el mismo lugar sin importar la
+          página (antes "Cerrar Sesión" vivía suelto en el dashboard). */}
+      {user && (
+        <div className="border-t border-white/10 px-3 py-4">
+          <div className="flex items-center gap-2 rounded-xl px-3 py-2">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 font-display text-xs font-semibold text-neon-cyan">
+              {(user.email ?? "?").charAt(0).toUpperCase()}
+            </div>
+            <p className="min-w-0 truncate text-xs text-white/50">{user.email}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onNavigate?.();
+              void signOut(auth);
+            }}
+            className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm text-white/50 transition-colors duration-200 hover:bg-red-400/10 hover:text-red-300"
+          >
+            <LogOut size={18} strokeWidth={1.75} className="shrink-0" />
+            Cerrar Sesión
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function AppSidebar() {
+  const pathname = usePathname();
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
+
+  return (
+    <>
+      {/* Desktop — columna fija, siempre visible. */}
+      <aside className="hidden w-64 shrink-0 border-r border-white/10 bg-graphite lg:block">
+        <SidebarContent pathname={pathname} />
+      </aside>
+
+      {/* Mobile — botón de hamburguesa flotante + drawer superpuesto. */}
+      <button
+        type="button"
+        onClick={() => setIsMobileOpen(true)}
+        aria-label="Abrir menú"
+        className="fixed left-4 top-4 z-40 flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-graphite/90 text-white/70 backdrop-blur-sm lg:hidden"
+      >
+        <Menu size={20} />
+      </button>
+
+      {isMobileOpen && (
+        <div className="fixed inset-0 z-50 flex lg:hidden">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setIsMobileOpen(false)} />
+          <aside className="relative flex h-full w-64 flex-col border-r border-white/10 bg-graphite shadow-2xl">
+            <button
+              type="button"
+              onClick={() => setIsMobileOpen(false)}
+              aria-label="Cerrar menú"
+              className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-white/50 hover:text-white"
+            >
+              <X size={18} />
+            </button>
+            <SidebarContent pathname={pathname} onNavigate={() => setIsMobileOpen(false)} />
+          </aside>
+        </div>
+      )}
+    </>
+  );
+}
