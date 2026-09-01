@@ -19,6 +19,7 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { ProjectViewer } from "@/components/ProjectViewer";
+import { PublishModal } from "@/components/PublishModal";
 
 interface CloudProject {
   cloudId: string;
@@ -44,6 +45,7 @@ export function ProjectsDashboard() {
   const [loading, setLoading] = useState(true);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [viewingProject, setViewingProject] = useState<CloudProject | null>(null);
+  const [publishingProject, setPublishingProject] = useState<CloudProject | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -151,6 +153,13 @@ export function ProjectsDashboard() {
             >
               {downloadingId === project.cloudId ? "..." : "↓ Descargar"}
             </button>
+            <button
+              type="button"
+              onClick={() => setPublishingProject(project)}
+              className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/70 transition-all duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan"
+            >
+              🌐 Publicar en Comunidad
+            </button>
           </div>
         </div>
       ))}
@@ -161,6 +170,17 @@ export function ProjectsDashboard() {
           storagePath={viewingProject.storagePath}
           title={viewingProject.title}
           onClose={() => setViewingProject(null)}
+        />
+      )}
+
+      {publishingProject && (
+        <PublishModal
+          project={{
+            cloudId: publishingProject.cloudId,
+            title: publishingProject.title,
+            storagePath: publishingProject.storagePath,
+          }}
+          onClose={() => setPublishingProject(null)}
         />
       )}
     </div>
