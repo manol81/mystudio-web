@@ -76,6 +76,11 @@ const MAX_PITCH_SEMITONES = 12;
 // allá de este radio el candidato deja de atraer y el clip sigue al
 // mouse libre, sin importar qué tan cerca esté de otro clip.
 const SNAP_THRESHOLD_PX = 10;
+// Distancia máxima (en píxeles, cualquier dirección) para que soltar
+// el clip cuente como un CLICK (mover el cursor de reproducción ahí)
+// en vez de un arrastre real — un tap de mouse/dedo casi nunca es
+// perfectamente estático, así que se tolera este margen chico.
+const CLICK_MOVE_THRESHOLD_PX = 4;
 // Paso 4 (rendimiento) — ancho del bloque "esqueleto" que se muestra
 // mientras se resuelve el audio real de un clip recién soltado (ver
 // PendingDrop). Un valor fijo en segundos de duración ESTIMADA (no en
@@ -386,6 +391,12 @@ export default function ArrangerPage() {
     trackId: string;
     clipId: string;
     startClientX: number;
+    startClientY: number;
+    // Última posición conocida del puntero — junto con startClientX/Y,
+    // sirve para distinguir un CLICK (mover el cursor de reproducción,
+    // ver handleClipPointerUp) de un arrastre real.
+    lastClientX: number;
+    lastClientY: number;
     originalStartSeconds: number;
     displayDuration: number;
     // Paso 3 (arrastrar entre pistas) — sobre qué pista está el mouse
@@ -401,6 +412,11 @@ export default function ArrangerPage() {
     // "no se agregue en la pista nueva": handleClipPointerUp cortaba
     // en el primer `if` porque veía newStart == null).
     previewStartSeconds: number;
+    // Posición (segundos) a la que hay que llevar el cursor de
+    // reproducción SI esto termina siendo un click y no un arrastre —
+    // calculada una sola vez, al presionar, contra el punto exacto
+    // donde se tocó dentro del clip.
+    clickSeekSeconds: number;
   } | null>(null);
   const [dragPreviewStartSeconds, setDragPreviewStartSeconds] = useState<number | null>(null);
   const [snapGuideSeconds, setSnapGuideSeconds] = useState<number | null>(null);
@@ -1090,14 +1106,23 @@ export default function ArrangerPage() {
   ) {
     e.stopPropagation();
     setSelectedClipId(clip.id);
+    // Posición exacta (en segundos) del punto donde se tocó DENTRO del
+    // clip — currentTarget (no target) para que dé lo mismo clickear
+    // el fondo del clip o el <canvas> de la forma de onda de adentro.
+    const clipRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const clickSeekSeconds = clip.startSeconds + (e.clientX - clipRect.left) / effectivePixelsPerSecond;
     dragRef.current = {
       trackId,
       clipId: clip.id,
       startClientX: e.clientX,
+      startClientY: e.clientY,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
       originalStartSeconds: clip.startSeconds,
       displayDuration: displayDurationFor(clip, projectTempoBpm),
       hoveredTrackId: trackId,
       previewStartSeconds: clip.startSeconds,
+      clickSeekSeconds,
     };
     setDragPreviewStartSeconds(clip.startSeconds);
     setDragOriginTrackId(trackId);
@@ -1128,6 +1153,8 @@ export default function ArrangerPage() {
   function updateClipDragPreview(clientX: number, clientY: number) {
     const moveDrag = dragRef.current;
     if (!moveDrag) return;
+    moveDrag.lastClientX = clientX;
+    moveDrag.lastClientY = clientY;
 
     const deltaSeconds = (clientX - moveDrag.startClientX) / effectivePixelsPerSecond;
     const rawStart = Math.max(0, moveDrag.originalStartSeconds + deltaSeconds);
@@ -1198,6 +1225,18 @@ export default function ArrangerPage() {
     setDragOriginTrackId(null);
     setDragHoverTrackId(null);
     if (!drag) return;
+
+    // El clip YA se seleccionó en el pointerDown — acá solo falta
+    // decidir si además hay que mover el cursor de reproducción: si el
+    // puntero prácticamente no se movió, esto fue un CLICK (tocar el
+    // clip), no un arrastre, así que el clip se queda donde estaba y
+    // el cursor salta al punto exacto donde se tocó.
+    const movedPx = Math.hypot(drag.lastClientX - drag.startClientX, drag.lastClientY - drag.startClientY);
+    if (movedPx < CLICK_MOVE_THRESHOLD_PX) {
+      seekTo(drag.clickSeekSeconds);
+      return;
+    }
+
     const newStart = drag.previewStartSeconds; // del ref, no del estado — ver la nota en dragRef
 
     const targetTrackId = drag.hoveredTrackId;
