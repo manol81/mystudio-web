@@ -18,10 +18,13 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
+  increment,
   limit,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   startAfter,
@@ -167,6 +170,44 @@ export async function blockUser(uid: string, blockedUid: string): Promise<void> 
 export async function fetchBlockedAuthorIds(uid: string): Promise<Set<string>> {
   const snapshot = await getDocs(collection(db, "users", uid, "blockedUsers"));
   return new Set(snapshot.docs.map((d) => d.id));
+}
+
+// ─── Me gusta ─────────────────────────────────────────────────────────
+//
+// Un doc por usuario en community_posts/{postId}/likes/{uid} — su
+// existencia ES el like. La transacción crea/borra ese doc y ajusta
+// likesCount en el mismo paso atómico (ver firestore.rules: la regla
+// de `update` exige que ambos writes queden en sincronía exacta, así
+// que si esta transacción no incluyera el doc de like, el ajuste de
+// likesCount sería directamente rechazado por el servidor).
+export async function toggleLike(postId: string, uid: string): Promise<boolean> {
+  const postRef = doc(db, COLLECTION_NAME, postId);
+  const likeRef = doc(db, COLLECTION_NAME, postId, "likes", uid);
+  return runTransaction(db, async (tx) => {
+    const likeSnap = await tx.get(likeRef);
+    if (likeSnap.exists()) {
+      tx.delete(likeRef);
+      tx.update(postRef, { likesCount: increment(-1) });
+      return false;
+    }
+    tx.set(likeRef, { likedAt: serverTimestamp() });
+    tx.update(postRef, { likesCount: increment(1) });
+    return true;
+  });
+}
+
+/// Para un lote de posts (típicamente una página del feed), qué
+/// subconjunto ya tiene like del usuario actual — un read por post,
+/// en paralelo. Se pide una sola vez por lote cargado, no en tiempo
+/// real (ver page.tsx).
+export async function fetchLikedPostIds(uid: string, postIds: string[]): Promise<Set<string>> {
+  const results = await Promise.all(
+    postIds.map(async (postId) => {
+      const snap = await getDoc(doc(db, COLLECTION_NAME, postId, "likes", uid));
+      return snap.exists() ? postId : null;
+    }),
+  );
+  return new Set(results.filter((id): id is string => id !== null));
 }
 
 export function formatRelativeTime(timestamp: Timestamp | null): string {

@@ -18,6 +18,7 @@ import { PostCard } from "@/components/PostCard";
 import {
   fetchBlockedAuthorIds,
   fetchCommunityPostsPage,
+  fetchLikedPostIds,
   type CommunityPost,
 } from "@/lib/CommunityService";
 import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
@@ -33,6 +34,7 @@ export default function CommunityFeedPage() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [blockedAuthorIds, setBlockedAuthorIds] = useState<Set<string>>(new Set());
+  const [likedPostIds, setLikedPostIds] = useState<Set<string>>(new Set());
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   // Evita pedir el mismo lote dos veces si dos disparos del observer
@@ -41,6 +43,7 @@ export default function CommunityFeedPage() {
   const isFetchingRef = useRef(false);
 
   const loadInitialPage = useCallback(async () => {
+    if (!user) return;
     isFetchingRef.current = true;
     setIsLoadingInitial(true);
     setFeedError(null);
@@ -49,16 +52,18 @@ export default function CommunityFeedPage() {
       setPosts(page.posts);
       setCursor(page.cursor);
       setHasMore(page.hasMore);
+      const liked = await fetchLikedPostIds(user.uid, page.posts.map((p) => p.id));
+      setLikedPostIds(liked);
     } catch (err) {
       setFeedError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsLoadingInitial(false);
       isFetchingRef.current = false;
     }
-  }, []);
+  }, [user]);
 
   const loadMore = useCallback(async () => {
-    if (isFetchingRef.current || !hasMore) return;
+    if (isFetchingRef.current || !hasMore || !user) return;
     isFetchingRef.current = true;
     setIsLoadingMore(true);
     try {
@@ -66,13 +71,15 @@ export default function CommunityFeedPage() {
       setPosts((prev) => [...prev, ...page.posts]);
       setCursor(page.cursor);
       setHasMore(page.hasMore);
+      const liked = await fetchLikedPostIds(user.uid, page.posts.map((p) => p.id));
+      setLikedPostIds((prev) => new Set([...prev, ...liked]));
     } catch (err) {
       setFeedError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsLoadingMore(false);
       isFetchingRef.current = false;
     }
-  }, [cursor, hasMore]);
+  }, [cursor, hasMore, user]);
 
   useEffect(() => {
     if (!user) return;
@@ -92,6 +99,16 @@ export default function CommunityFeedPage() {
 
   function handlePostBlocked(authorId: string) {
     setBlockedAuthorIds((prev) => new Set(prev).add(authorId));
+  }
+
+  function handleLikeToggled(postId: string, liked: boolean, newLikesCount: number) {
+    setLikedPostIds((prev) => {
+      const next = new Set(prev);
+      if (liked) next.add(postId);
+      else next.delete(postId);
+      return next;
+    });
+    setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, likesCount: newLikesCount } : p)));
   }
 
   const visiblePosts = posts.filter((post) => !blockedAuthorIds.has(post.authorId));
@@ -149,7 +166,13 @@ export default function CommunityFeedPage() {
               ) : (
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                   {visiblePosts.map((post) => (
-                    <PostCard key={post.id} post={post} onBlocked={handlePostBlocked} />
+                    <PostCard
+                      key={post.id}
+                      post={post}
+                      isLiked={likedPostIds.has(post.id)}
+                      onLikeToggled={handleLikeToggled}
+                      onBlocked={handlePostBlocked}
+                    />
                   ))}
                 </div>
               )}

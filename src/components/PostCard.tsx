@@ -21,7 +21,12 @@ import { Heart, MoreVertical, ShieldOff, Flag } from "lucide-react";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
 import { useAuth } from "@/context/AuthContext";
-import { blockUser, formatRelativeTime, type CommunityPost } from "@/lib/CommunityService";
+import {
+  blockUser,
+  formatRelativeTime,
+  toggleLike,
+  type CommunityPost,
+} from "@/lib/CommunityService";
 
 const AVATAR_COLORS = ["#66FCF1", "#C792EA", "#FFB86C", "#82E0AA"];
 const WAVEFORM_BARS = 40;
@@ -45,9 +50,13 @@ function fakeWaveformHeights(seed: number): number[] {
 
 export function PostCard({
   post,
+  isLiked,
+  onLikeToggled,
   onBlocked,
 }: {
   post: CommunityPost;
+  isLiked: boolean;
+  onLikeToggled: (postId: string, liked: boolean, newLikesCount: number) => void;
   onBlocked: (authorId: string) => void;
 }) {
   const { user } = useAuth();
@@ -55,6 +64,7 @@ export function PostCard({
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isBlocking, setIsBlocking] = useState(false);
+  const [isLiking, setIsLiking] = useState(false);
   const hash = hashString(post.id || post.authorId);
   const avatarColor = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   const heights = fakeWaveformHeights(hash);
@@ -69,6 +79,20 @@ export function PostCard({
     } finally {
       setIsBlocking(false);
       setIsMenuOpen(false);
+    }
+  }
+
+  async function handleToggleLike() {
+    if (!user || isLiking) return;
+    setIsLiking(true);
+    try {
+      const nowLiked = await toggleLike(post.id, user.uid);
+      onLikeToggled(post.id, nowLiked, post.likesCount + (nowLiked ? 1 : -1));
+    } catch {
+      // silencioso — si algo falló, el corazón queda como estaba y el
+      // conteo real vuelve a quedar correcto en la próxima carga.
+    } finally {
+      setIsLiking(false);
     }
   }
 
@@ -166,10 +190,18 @@ export function PostCard({
       </button>
 
       {/* Interacción */}
-      <div className="flex items-center gap-4 text-xs text-white/40">
-        <span className="flex items-center gap-1.5">
-          <Heart size={14} /> {post.likesCount}
-        </span>
+      <div className="flex items-center gap-4 text-xs">
+        <button
+          type="button"
+          onClick={handleToggleLike}
+          disabled={!user || isLiking}
+          aria-label={isLiked ? "Quitar me gusta" : "Me gusta"}
+          className={`-ml-1.5 flex items-center gap-1.5 rounded-full px-1.5 py-1 transition-colors duration-200 disabled:cursor-not-allowed ${
+            isLiked ? "text-neon-cyan" : "text-white/40 hover:text-white/70"
+          }`}
+        >
+          <Heart size={14} fill={isLiked ? "currentColor" : "none"} /> {post.likesCount}
+        </button>
       </div>
 
       {isViewerOpen && (
