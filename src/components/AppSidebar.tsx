@@ -20,12 +20,33 @@ import { auth } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 import { ProfileModal } from "@/components/ProfileModal";
+import { Tooltip } from "@/components/Tooltip";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Comunidad", icon: Globe },
-  { href: "/projects", label: "Mis Proyectos", icon: FolderOpen },
-  { href: "/samples", label: "Banco de Sonidos", icon: Piano },
-  { href: "/inbox", label: "Bandeja de Entrada", icon: MessageSquare },
+  {
+    href: "/",
+    label: "Comunidad",
+    icon: Globe,
+    hint: "Explorá lo que publican otros usuarios y escuchá sus arreglos",
+  },
+  {
+    href: "/projects",
+    label: "Mis Proyectos",
+    icon: FolderOpen,
+    hint: "Tus canciones sincronizadas desde la app y desde el Arranger web",
+  },
+  {
+    href: "/samples",
+    label: "Banco de Sonidos",
+    icon: Piano,
+    hint: "Sonidos y loops listos para armar tu canción",
+  },
+  {
+    href: "/inbox",
+    label: "Bandeja de Entrada",
+    icon: MessageSquare,
+    hint: "Tus mensajes directos (próximamente)",
+  },
 ] as const;
 
 function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
@@ -46,26 +67,27 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 px-3">
-        {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+        {NAV_ITEMS.map(({ href, label, icon: Icon, hint }) => {
           // "/" necesita coincidencia EXACTA (si no, siempre estaría
           // "activo" para cualquier ruta, ya que todas empiezan con
           // "/") — el resto sí puede matchear sub-rutas futuras
           // (ej. /projects/123) con startsWith.
           const isActive = href === "/" ? pathname === "/" : pathname.startsWith(href);
           return (
-            <Link
-              key={href}
-              href={href}
-              onClick={onNavigate}
-              className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200 ${
-                isActive
-                  ? "bg-neon-cyan/10 text-neon-cyan"
-                  : "text-white/60 hover:bg-white/5 hover:text-white"
-              }`}
-            >
-              <Icon size={18} strokeWidth={isActive ? 2.25 : 1.75} className="shrink-0" />
-              {label}
-            </Link>
+            <Tooltip key={href} text={hint} side="right" wrapperClassName="relative flex w-full">
+              <Link
+                href={href}
+                onClick={onNavigate}
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200 ${
+                  isActive
+                    ? "bg-neon-cyan/10 text-neon-cyan"
+                    : "text-white/60 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                <Icon size={18} strokeWidth={isActive ? 2.25 : 1.75} className="shrink-0" />
+                {label}
+              </Link>
+            </Tooltip>
           );
         })}
 
@@ -74,18 +96,24 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
             sigue protegida por firestore.rules de todas formas, esto
             es puramente para no mostrar un link que va a fallar). */}
         {adminCheck === "authorized" && (
-          <Link
-            href="/admin"
-            onClick={onNavigate}
-            className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200 ${
-              pathname.startsWith("/admin")
-                ? "bg-neon-cyan/10 text-neon-cyan"
-                : "text-white/60 hover:bg-white/5 hover:text-white"
-            }`}
+          <Tooltip
+            text="Panel de administración — samples, reportes y estadísticas"
+            side="right"
+            wrapperClassName="relative flex w-full"
           >
-            <Shield size={18} strokeWidth={pathname.startsWith("/admin") ? 2.25 : 1.75} className="shrink-0" />
-            Admin
-          </Link>
+            <Link
+              href="/admin"
+              onClick={onNavigate}
+              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200 ${
+                pathname.startsWith("/admin")
+                  ? "bg-neon-cyan/10 text-neon-cyan"
+                  : "text-white/60 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              <Shield size={18} strokeWidth={pathname.startsWith("/admin") ? 2.25 : 1.75} className="shrink-0" />
+              Admin
+            </Link>
+          </Tooltip>
         )}
       </nav>
 
@@ -93,21 +121,27 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
           página (antes "Cerrar Sesión" vivía suelto en el dashboard). */}
       {user && (
         <div className="border-t border-white/10 px-3 py-4">
-          <button
-            type="button"
-            onClick={() => setIsProfileOpen(true)}
-            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors duration-200 hover:bg-white/5"
+          <Tooltip
+            text="Tocá para editar tu nickname público — nunca mostramos tu email en la Comunidad"
+            side="right"
+            wrapperClassName="relative flex w-full"
           >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 font-display text-xs font-semibold text-neon-cyan">
-              {(profile?.username ?? user.email ?? "?").charAt(0).toUpperCase()}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-white/80">
-                {profile?.username ?? "Elegir nickname"}
-              </p>
-              <p className="truncate text-[10px] text-white/30">{user.email}</p>
-            </div>
-          </button>
+            <button
+              type="button"
+              onClick={() => setIsProfileOpen(true)}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors duration-200 hover:bg-white/5"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 font-display text-xs font-semibold text-neon-cyan">
+                {(profile?.username ?? user.email ?? "?").charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-white/80">
+                  {profile?.username ?? "Elegir nickname"}
+                </p>
+                <p className="truncate text-[10px] text-white/30">{user.email}</p>
+              </div>
+            </button>
+          </Tooltip>
           <button
             type="button"
             onClick={() => {

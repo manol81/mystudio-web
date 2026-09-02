@@ -27,7 +27,7 @@ export default function ProjectsPage() {
       </div>
 
       {loading ? null : user ? (
-        <div className="flex w-full max-w-2xl flex-col items-center gap-6">
+        <div className="flex w-full max-w-4xl flex-col items-center gap-6">
           <div className="flex flex-wrap items-center justify-center gap-3">
             {/* Botón universal de "Nuevo Proyecto": lleva al Arranger
                 con ?new=1, que dispara el diálogo de configuración

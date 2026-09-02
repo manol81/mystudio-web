@@ -20,6 +20,7 @@ import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { PublishModal } from "@/components/PublishModal";
+import { Tooltip } from "@/components/Tooltip";
 
 interface CloudProject {
   cloudId: string;
@@ -93,7 +94,7 @@ export function ProjectsDashboard() {
 
   if (loading) {
     return (
-      <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-graphite p-8 text-center">
+      <div className="w-full max-w-4xl rounded-2xl border border-white/10 bg-graphite p-8 text-center">
         <p className="text-xs text-white/40">Cargando proyectos...</p>
       </div>
     );
@@ -101,7 +102,7 @@ export function ProjectsDashboard() {
 
   if (projects.length === 0) {
     return (
-      <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-graphite p-8 text-center">
+      <div className="w-full max-w-4xl rounded-2xl border border-white/10 bg-graphite p-8 text-center">
         <p className="font-display text-sm font-semibold uppercase tracking-widest text-white/40">
           Tus Proyectos
         </p>
@@ -113,7 +114,7 @@ export function ProjectsDashboard() {
   }
 
   return (
-    <div className="flex w-full max-w-2xl flex-col gap-2.5">
+    <div className="flex w-full max-w-4xl flex-col gap-2.5">
       {projects.map((project) => (
         <div
           key={project.cloudId}
@@ -132,34 +133,42 @@ export function ProjectsDashboard() {
               botón: en pantallas angostas los botones bajan de línea
               como bloque entero, nunca se cortan a mitad de texto. */}
           <div className="flex flex-wrap gap-2 sm:shrink-0 sm:flex-nowrap">
-            <button
-              type="button"
-              onClick={() => setViewingProject(project)}
-              className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-neon-cyan/30 bg-neon-cyan/10 px-4 py-1.5 text-xs font-semibold text-neon-cyan transition-all duration-200 hover:border-neon-cyan hover:shadow-[0_0_14px_rgba(102,252,241,0.35)]"
-            >
-              ▶ Escuchar
-            </button>
-            <Link
-              href={`/arranger?open=${encodeURIComponent(project.cloudId)}`}
-              className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/70 transition-all duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan"
-            >
-              ✎ Editar en Arranger
-            </Link>
-            <button
-              type="button"
-              onClick={() => handleDownload(project)}
-              disabled={downloadingId === project.cloudId}
-              className="flex items-center justify-center gap-2 whitespace-nowrap rounded-full border border-neon-cyan/30 px-4 py-1.5 text-xs font-semibold text-neon-cyan transition-all duration-200 hover:border-neon-cyan hover:shadow-[0_0_14px_rgba(102,252,241,0.35)] disabled:opacity-50"
-            >
-              {downloadingId === project.cloudId ? "..." : "↓ Descargar"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPublishingProject(project)}
-              className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/70 transition-all duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan"
-            >
-              🌐 Publicar en Comunidad
-            </button>
+            <Tooltip text="Reproducir sin abrir el editor completo">
+              <button
+                type="button"
+                onClick={() => setViewingProject(project)}
+                className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-neon-cyan/30 bg-neon-cyan/10 px-4 py-1.5 text-xs font-semibold text-neon-cyan transition-all duration-200 hover:border-neon-cyan hover:shadow-[0_0_14px_rgba(102,252,241,0.35)]"
+              >
+                ▶ Escuchar
+              </button>
+            </Tooltip>
+            <Tooltip text="Abrir este proyecto en el editor multipista para seguir editándolo">
+              <Link
+                href={`/arranger?open=${encodeURIComponent(project.cloudId)}`}
+                className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/70 transition-all duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan"
+              >
+                ✎ Editar en Arranger
+              </Link>
+            </Tooltip>
+            <Tooltip text="Bajar el respaldo completo (.mystudio) a tu computadora">
+              <button
+                type="button"
+                onClick={() => handleDownload(project)}
+                disabled={downloadingId === project.cloudId}
+                className="flex items-center justify-center gap-2 whitespace-nowrap rounded-full border border-neon-cyan/30 px-4 py-1.5 text-xs font-semibold text-neon-cyan transition-all duration-200 hover:border-neon-cyan hover:shadow-[0_0_14px_rgba(102,252,241,0.35)] disabled:opacity-50"
+              >
+                {downloadingId === project.cloudId ? "..." : "↓ Descargar"}
+              </button>
+            </Tooltip>
+            <Tooltip text="Compartir este proyecto en el feed público de la Comunidad">
+              <button
+                type="button"
+                onClick={() => setPublishingProject(project)}
+                className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/70 transition-all duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan"
+              >
+                🌐 Publicar en Comunidad
+              </button>
+            </Tooltip>
           </div>
         </div>
       ))}

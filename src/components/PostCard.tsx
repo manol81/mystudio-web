@@ -23,6 +23,7 @@ import { CommentsModal } from "@/components/CommentsModal";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
 import { SamplePlayer } from "@/components/SamplePlayer";
+import { Tooltip } from "@/components/Tooltip";
 import { useAuth } from "@/context/AuthContext";
 import {
   blockUser,
@@ -134,14 +135,16 @@ export function PostCard({
             reportarse/bloquearse a uno mismo no tiene sentido. */}
         {!isOwnPost && user && (
           <div className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setIsMenuOpen((prev) => !prev)}
-              aria-label="Más opciones"
-              className="flex h-7 w-7 items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-white"
-            >
-              <MoreVertical size={16} />
-            </button>
+            <Tooltip text="Reportar o bloquear al autor" side="left">
+              <button
+                type="button"
+                onClick={() => setIsMenuOpen((prev) => !prev)}
+                aria-label="Más opciones"
+                className="flex h-7 w-7 items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-white"
+              >
+                <MoreVertical size={16} />
+              </button>
+            </Tooltip>
 
             {isMenuOpen && (
               <>
@@ -197,51 +200,57 @@ export function PostCard({
           />
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={() => setIsViewerOpen(true)}
-          className="flex items-center gap-3 rounded-xl bg-onyx-black px-3 py-3 text-left transition-colors duration-200 hover:bg-white/5"
-        >
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 text-neon-cyan">
-            <span className="ml-0.5 block h-0 w-0 border-y-[7px] border-l-[11px] border-y-transparent border-l-current" />
-          </span>
-          <svg viewBox={`0 0 ${WAVEFORM_BARS * 3} 32`} className="h-8 w-full" preserveAspectRatio="none">
-            {heights.map((h, i) => (
-              <rect
-                key={i}
-                x={i * 3}
-                y={16 - (h * 28) / 2}
-                width={1.6}
-                height={h * 28}
-                rx={0.8}
-                fill="rgba(102,252,241,0.6)"
-              />
-            ))}
-          </svg>
-        </button>
+        <Tooltip text="Abre el proyecto completo con sus pistas — todavía no hay un preview liviano" wrapperClassName="relative flex w-full">
+          <button
+            type="button"
+            onClick={() => setIsViewerOpen(true)}
+            className="flex w-full items-center gap-3 rounded-xl bg-onyx-black px-3 py-3 text-left transition-colors duration-200 hover:bg-white/5"
+          >
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 text-neon-cyan">
+              <span className="ml-0.5 block h-0 w-0 border-y-[7px] border-l-[11px] border-y-transparent border-l-current" />
+            </span>
+            <svg viewBox={`0 0 ${WAVEFORM_BARS * 3} 32`} className="h-8 w-full" preserveAspectRatio="none">
+              {heights.map((h, i) => (
+                <rect
+                  key={i}
+                  x={i * 3}
+                  y={16 - (h * 28) / 2}
+                  width={1.6}
+                  height={h * 28}
+                  rx={0.8}
+                  fill="rgba(102,252,241,0.6)"
+                />
+              ))}
+            </svg>
+          </button>
+        </Tooltip>
       )}
 
       {/* Interacción */}
       <div className="flex items-center gap-4 text-xs">
-        <button
-          type="button"
-          onClick={handleToggleLike}
-          disabled={!user || isLiking}
-          aria-label={isLiked ? "Quitar me gusta" : "Me gusta"}
-          className={`-ml-1.5 flex items-center gap-1.5 rounded-full px-1.5 py-1 transition-colors duration-200 disabled:cursor-not-allowed ${
-            isLiked ? "text-neon-cyan" : "text-white/40 hover:text-white/70"
-          }`}
-        >
-          <Heart size={14} fill={isLiked ? "currentColor" : "none"} /> {post.likesCount}
-        </button>
+        <Tooltip text={isLiked ? "Quitar tu Me Gusta" : "Dale Me Gusta a esta publicación"}>
+          <button
+            type="button"
+            onClick={handleToggleLike}
+            disabled={!user || isLiking}
+            aria-label={isLiked ? "Quitar me gusta" : "Me gusta"}
+            className={`-ml-1.5 flex items-center gap-1.5 rounded-full px-1.5 py-1 transition-colors duration-200 disabled:cursor-not-allowed ${
+              isLiked ? "text-neon-cyan" : "text-white/40 hover:text-white/70"
+            }`}
+          >
+            <Heart size={14} fill={isLiked ? "currentColor" : "none"} /> {post.likesCount}
+          </button>
+        </Tooltip>
 
-        <button
-          type="button"
-          onClick={() => setIsCommentsOpen(true)}
-          className="flex items-center gap-1.5 rounded-full px-1.5 py-1 text-white/40 transition-colors duration-200 hover:text-white/70"
-        >
-          <MessageCircle size={14} /> {commentsCount}
-        </button>
+        <Tooltip text="Ver y escribir comentarios — se pueden anclar a un momento del audio">
+          <button
+            type="button"
+            onClick={() => setIsCommentsOpen(true)}
+            className="flex items-center gap-1.5 rounded-full px-1.5 py-1 text-white/40 transition-colors duration-200 hover:text-white/70"
+          >
+            <MessageCircle size={14} /> {commentsCount}
+          </button>
+        </Tooltip>
       </div>
 
       {isViewerOpen && (

@@ -28,6 +28,11 @@ export const SAMPLE_GENRES = [
   "Rock",
   "Cinematic",
   "Utility",
+  "Latino",
+  "Electrónica",
+  "Blues",
+  "Folk",
+  "Ambient",
 ] as const;
 export type SampleGenre = (typeof SAMPLE_GENRES)[number];
 
