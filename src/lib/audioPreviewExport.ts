@@ -150,35 +150,65 @@ function floatTo16BitPCM(input: Float32Array): Int16Array {
   return output;
 }
 
-function encodeMp3(buffer: AudioBuffer): Blob {
+// Cuántos bloques de MP3_BLOCK_SIZE samples se codifican por "tanda"
+// antes de ceder el hilo principal (setTimeout 0 → siguiente macrotask
+// del event loop). Sin esto, un proyecto de varios minutos dispara
+// miles de llamadas sincrónicas a encodeBuffer seguidas — suficiente
+// para que el navegador marque la pestaña como "no responde" (bug
+// real, reportado después de publicar un proyecto largo). 50 bloques ≈
+// 1.3s de audio por tanda: un compromiso entre no trabar el hilo y no
+// generar overhead innecesario por ceder demasiado seguido.
+const BLOCKS_PER_CHUNK = 50;
+
+function encodeMp3(buffer: AudioBuffer, onProgress?: (ratio: number) => void): Promise<Blob> {
   const left = floatTo16BitPCM(buffer.getChannelData(0));
   const right = buffer.numberOfChannels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : left;
-
   const encoder = new Mp3Encoder(2, buffer.sampleRate, MP3_BITRATE_KBPS);
   const chunks: Uint8Array[] = [];
-  for (let i = 0; i < left.length; i += MP3_BLOCK_SIZE) {
-    const mp3buf = encoder.encodeBuffer(
-      left.subarray(i, i + MP3_BLOCK_SIZE),
-      right.subarray(i, i + MP3_BLOCK_SIZE),
-    );
-    if (mp3buf.length > 0) chunks.push(mp3buf);
-  }
-  const finalBuf = encoder.flush();
-  if (finalBuf.length > 0) chunks.push(finalBuf);
 
-  return new Blob(chunks.map((c) => new Uint8Array(c)), { type: "audio/mpeg" });
+  return new Promise((resolve) => {
+    let i = 0;
+    function processChunk() {
+      let blocksProcessed = 0;
+      while (i < left.length && blocksProcessed < BLOCKS_PER_CHUNK) {
+        const mp3buf = encoder.encodeBuffer(
+          left.subarray(i, i + MP3_BLOCK_SIZE),
+          right.subarray(i, i + MP3_BLOCK_SIZE),
+        );
+        if (mp3buf.length > 0) chunks.push(mp3buf);
+        i += MP3_BLOCK_SIZE;
+        blocksProcessed++;
+      }
+      onProgress?.(Math.min(1, i / left.length));
+
+      if (i < left.length) {
+        setTimeout(processChunk, 0);
+        return;
+      }
+      const finalBuf = encoder.flush();
+      if (finalBuf.length > 0) chunks.push(finalBuf);
+      resolve(new Blob(chunks.map((c) => new Uint8Array(c)), { type: "audio/mpeg" }));
+    }
+    processChunk();
+  });
 }
 
 /// Descarga el `.mystudio` completo desde `downloadUrl`, lo mezcla
 /// entero (respetando volumen/pan/mute/solo actuales, igual que
 /// ProjectViewer) y devuelve un MP3 liviano listo para subir a
-/// Storage como preview del feed.
-export async function buildCommunityPreview(downloadUrl: string): Promise<MixdownResult> {
+/// Storage como preview del feed. `onProgress` (0-1) cubre SOLO la
+/// etapa de codificación (la más larga con diferencia) — pensado para
+/// que PublishModal pueda mostrar un porcentaje en vez de un texto
+/// fijo durante una espera que puede tardar varios segundos.
+export async function buildCommunityPreview(
+  downloadUrl: string,
+  onProgress?: (ratio: number) => void,
+): Promise<MixdownResult> {
   const ctx = new AudioContext();
   try {
     const tracks = await loadDecodedTracks(downloadUrl, ctx);
     const { buffer, durationSeconds } = await renderMixdown(tracks);
-    const blob = encodeMp3(buffer);
+    const blob = await encodeMp3(buffer, onProgress);
     return { blob, durationSeconds };
   } finally {
     await ctx.close();

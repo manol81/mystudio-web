@@ -41,6 +41,8 @@ export function PublishModal({
     "idle" | "publishing" | "generating-preview" | "success" | "error"
   >("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [previewProgress, setPreviewProgress] = useState(0);
+  const [previewFailed, setPreviewFailed] = useState(false);
 
   const isBusy = status === "publishing" || status === "generating-preview" || status === "success";
 
@@ -72,20 +74,31 @@ export function PublishModal({
     // adelante no debe bloquear el "éxito": la publicación es real,
     // solo falta (o no) el preview liviano.
     setStatus("generating-preview");
+    setPreviewProgress(0);
+    // Variable LOCAL además del setState: setPreviewFailed(true) no se
+    // refleja en `previewFailed` dentro de esta misma ejecución (los
+    // setState son asíncronos) — para decidir el delay del cierre
+    // automático más abajo hace falta el valor real, no el de render.
+    let didPreviewFail = false;
     try {
-      const { blob, durationSeconds } = await buildCommunityPreview(audioUrl);
-      const previewRef = ref(storage, `community_previews/${postId}`);
+      const { blob, durationSeconds } = await buildCommunityPreview(audioUrl, setPreviewProgress);
+      const previewRef = ref(storage, `community_previews/${user.uid}/${postId}`);
       await uploadBytes(previewRef, blob, { contentType: "audio/mpeg" });
       const previewUrl = await getDownloadURL(previewRef);
       await attachCommunityPreview(postId, previewUrl, durationSeconds);
     } catch (err) {
-      // Silencioso a propósito — ver el comentario del encabezado. El
-      // post publicado sigue siendo válido sin preview.
-      console.warn("No se pudo generar el preview liviano de la publicación:", err);
+      // NO bloquea el "éxito" — ver el comentario del encabezado, el
+      // post publicado sigue siendo válido sin preview. Pero sí se
+      // avisa en la UI (a diferencia de antes, que quedaba en
+      // silencio total y hacía muy difícil notar/diagnosticar que
+      // había fallado).
+      console.error("No se pudo generar el preview liviano de la publicación:", err);
+      didPreviewFail = true;
+      setPreviewFailed(true);
     }
 
     setStatus("success");
-    setTimeout(onClose, 1100);
+    setTimeout(onClose, didPreviewFail ? 2600 : 1100);
   }
 
   return (
@@ -110,6 +123,12 @@ export function PublishModal({
               ✓
             </div>
             <p className="text-sm text-white/70">¡Publicado en la comunidad!</p>
+            {previewFailed && (
+              <p className="max-w-xs text-xs text-white/40">
+                El preview liviano no se pudo generar — tu publicación de todas formas se ve en el
+                feed, abriendo el proyecto completo al escucharla.
+              </p>
+            )}
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
@@ -184,7 +203,7 @@ export function PublishModal({
                 {status === "publishing"
                   ? "Publicando..."
                   : status === "generating-preview"
-                    ? "Generando preview..."
+                    ? `Generando preview... ${Math.round(previewProgress * 100)}%`
                     : "Publicar"}
               </button>
             </div>
