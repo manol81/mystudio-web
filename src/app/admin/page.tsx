@@ -6,7 +6,7 @@
 // del panel — ver AdminService.ts / firestore.rules.
 
 import Link from "next/link";
-import { Flag, Piano } from "lucide-react";
+import { BarChart3, Flag, Piano } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 
@@ -22,6 +22,12 @@ const SECTIONS = [
     icon: Flag,
     title: "Reportes",
     description: "Revisar publicaciones reportadas por la comunidad.",
+  },
+  {
+    href: "/admin/stats",
+    icon: BarChart3,
+    title: "Estadísticas",
+    description: "Usuarios, publicaciones, samples y reportes.",
   },
 ] as const;
 
@@ -52,7 +58,7 @@ export default function AdminHomePage() {
       )}
 
       {adminCheck === "authorized" && (
-        <div className="grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid w-full max-w-3xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {SECTIONS.map(({ href, icon: Icon, title, description }) => (
             <Link
               key={href}

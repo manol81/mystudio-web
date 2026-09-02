@@ -10,12 +10,14 @@
 import {
   collection,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
   orderBy,
   query,
   Timestamp,
   updateDoc,
+  where,
   type QueryDocumentSnapshot,
   type DocumentData,
 } from "firebase/firestore";
@@ -78,5 +80,43 @@ export async function fetchReportedPost(postId: string): Promise<ReportedPost | 
     title: (data.title as string) ?? "Sin título",
     authorName: (data.authorName as string) ?? "Usuario",
     audioUrl: (data.audioUrl as string) ?? "",
+  };
+}
+
+// ─── Estadísticas ────────────────────────────────────────────────────
+//
+// Conteos directos de Firestore vía getCountFromServer — factura como
+// UNA lectura sin importar cuántos documentos haya la colección, no
+// hace falta bajarlos todos para mostrar un número. Deliberadamente
+// NO incluye "usuarios activos por fecha" ni "tendencias": eso ya lo
+// da Firebase Analytics (conectado desde el principio, ver
+// lib/firebase.ts) sin escribir una sola línea de código — reconstruir
+// ese tipo de dashboard acá sería duplicar algo que ya existe gratis.
+// Tampoco incluye "espacio disponible en Storage/Firestore": es
+// información de facturación de Google Cloud, ningún SDK de cliente
+// la expone — se ve en Firebase Console → Uso y Facturación.
+
+export interface PlatformStats {
+  usersCount: number;
+  postsCount: number;
+  samplesCount: number;
+  totalReportsCount: number;
+  pendingReportsCount: number;
+}
+
+export async function fetchPlatformStats(): Promise<PlatformStats> {
+  const [users, posts, samples, totalReports, pendingReports] = await Promise.all([
+    getCountFromServer(collection(db, "users")),
+    getCountFromServer(collection(db, "community_posts")),
+    getCountFromServer(collection(db, "samples")),
+    getCountFromServer(collection(db, "reports")),
+    getCountFromServer(query(collection(db, "reports"), where("status", "==", "pending"))),
+  ]);
+  return {
+    usersCount: users.data().count,
+    postsCount: posts.data().count,
+    samplesCount: samples.data().count,
+    totalReportsCount: totalReports.data().count,
+    pendingReportsCount: pendingReports.data().count,
   };
 }
