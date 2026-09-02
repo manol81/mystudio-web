@@ -358,6 +358,13 @@ export default function ArrangerPage() {
   const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Subir un clip de audio (.mp3/.wav) desde la computadora — la
+  // versión web de "Importar audio" que ya existe en la app móvil.
+  // isUploadingAudio es solo para el estado del botón (deshabilitado +
+  // texto "Subiendo...") mientras decodeAudioData hace su trabajo.
+  const [isUploadingAudio, setIsUploadingAudio] = useState(false);
+  const audioFileInputRef = useRef<HTMLInputElement>(null);
+
   const audioContextRef = useRef<AudioContext | null>(null);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const playStartContextTimeRef = useRef(0);
@@ -913,6 +920,97 @@ export default function ArrangerPage() {
       setAddSampleError(err instanceof Error ? err.message : String(err));
     } finally {
       setPendingDrops((prev) => prev.filter((p) => p.id !== pendingId));
+    }
+  }
+
+  /**
+   * Subir un archivo de audio local (.mp3/.wav) como pista nueva —
+   * mismo lugar de la interfaz que "Abrir Proyecto", pero para un
+   * clip suelto en vez de un .mystudio completo. Se decodifica PRIMERO
+   * y recién si eso sale bien se crea la pista+clip en un solo paso —
+   * así un archivo corrupto/no soportado nunca deja una pista vacía
+   * huérfana en el arreglo.
+   *
+   * sampleType: "Loop" a propósito (no "Imported", que es lo que usan
+   * los clips reconstruidos al REABRIR un .mystudio ya exportado, sin
+   * BPM de origen disponible — ver buildImportedClip). Acá SÍ hay
+   * forma de darle un BPM de origen: originalBpm arranca en el tempo
+   * ACTUAL del proyecto (así el rate inicial es 1.0, sin cambiar nada
+   * hasta que el usuario lo edite) y queda editable desde la barra de
+   * herramientas del clip seleccionado (ver el control "BPM original"
+   * más abajo) — eso es lo que habilita playbackRateFor a
+   * time-stretchear este clip igual que cualquier loop del Banco de
+   * Sonidos, con el MISMO motor (audioDsp.ts) que ya usa el pitch.
+   */
+  async function handleUploadAudioFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permite volver a elegir el mismo archivo después
+    if (!file) return;
+
+    const lowerName = file.name.toLowerCase();
+    if (!lowerName.endsWith(".mp3") && !lowerName.endsWith(".wav")) {
+      setAddSampleError("Solo se aceptan archivos .mp3 o .wav.");
+      return;
+    }
+    const ctx = audioContextRef.current;
+    if (!ctx) {
+      setAddSampleError("El motor de audio todavía no está listo — probá de nuevo en un segundo.");
+      return;
+    }
+
+    setAddSampleError(null);
+    setIsUploadingAudio(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const buffer = await ctx.decodeAudioData(arrayBuffer);
+      const displayName = file.name.replace(/\.(mp3|wav)$/i, "");
+      const sampleId = `local:${newId()}`;
+      // Hidrata la caché global igual que cualquier otro audio que
+      // entra a la app — no estrictamente necesario para un archivo
+      // subido una sola vez, pero mantiene consistencia con el resto
+      // del código (Sound Bank, .mystudio importado).
+      setCachedBuffer(sampleId, buffer);
+
+      const trackId = newId();
+      const trackColor = TRACK_COLORS[tracks.length % TRACK_COLORS.length];
+      const clip: ArrangerClip = {
+        id: newId(),
+        sampleId,
+        sampleName: displayName,
+        originalBpm: projectTempoBpm,
+        sampleType: "Loop",
+        startSeconds: Math.max(0, playheadSeconds),
+        sourceOffsetSeconds: 0,
+        sourceDurationSeconds: buffer.duration,
+        gain: 1,
+        fadeInSeconds: 0,
+        fadeOutSeconds: 0,
+        pitchShift: 0,
+        buffer,
+        peaks: computePeaks(buffer, PEAK_BUCKETS),
+      };
+      setTracks((prev) => [
+        ...prev,
+        {
+          id: trackId,
+          name: displayName,
+          volume: 0.8,
+          pan: 0,
+          isMuted: false,
+          isSolo: false,
+          clips: [clip],
+          color: trackColor,
+        },
+      ]);
+      setSelectedClipId(clip.id);
+    } catch (err) {
+      setAddSampleError(
+        err instanceof Error
+          ? `No se pudo cargar "${file.name}": ${err.message}`
+          : `No se pudo cargar "${file.name}".`,
+      );
+    } finally {
+      setIsUploadingAudio(false);
     }
   }
 
@@ -1968,6 +2066,25 @@ export default function ArrangerPage() {
           Abrir Proyecto
         </button>
 
+        {/* Subir un clip de audio suelto (.mp3/.wav) como pista nueva —
+            equivalente web de "Importar audio" de la app móvil. */}
+        <input
+          ref={audioFileInputRef}
+          type="file"
+          accept=".mp3,.wav,audio/mpeg,audio/wav"
+          onChange={handleUploadAudioFile}
+          className="hidden"
+        />
+        <button
+          type="button"
+          onClick={() => audioFileInputRef.current?.click()}
+          disabled={isUploadingAudio}
+          title="Subir un archivo de audio (.mp3 o .wav) como pista nueva"
+          className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 hover:border-white/40 disabled:opacity-40"
+        >
+          {isUploadingAudio ? "Subiendo..." : "+ Subir Audio"}
+        </button>
+
         <input
           value={projectTitle}
           onChange={(e) => setProjectTitle(e.target.value)}
@@ -2146,6 +2263,34 @@ export default function ArrangerPage() {
                       {found.clip.pitchShift > 0 ? "+" : ""}
                       {found.clip.pitchShift} st
                     </span>
+                  </div>
+                );
+              })()}
+              {/* BPM original del clip — solo tiene efecto en clips
+                  "Loop" (playbackRateFor devuelve 1.0 para cualquier
+                  otro tipo, ver esa función). Es lo que habilita el
+                  time-stretch automático al tempo del proyecto para un
+                  clip subido desde la computadora (ver
+                  handleUploadAudioFile) con el MISMO motor que ya
+                  usaban los loops del Banco de Sonidos. */}
+              {(() => {
+                const found = findClip(selectedClipId);
+                if (!found || found.clip.sampleType !== "Loop") return null;
+                return (
+                  <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
+                    <span className="text-[10px] text-white/40" title="BPM original de este clip — el motor lo estira/comprime para que coincida con el BPM del proyecto de arriba">
+                      BPM original
+                    </span>
+                    <input
+                      type="number"
+                      min={20}
+                      max={300}
+                      value={found.clip.originalBpm}
+                      onChange={(e) =>
+                        updateClip(found.clip.id, { originalBpm: Number(e.target.value) || found.clip.originalBpm })
+                      }
+                      className="w-14 rounded-lg border border-white/15 bg-onyx-black px-2 py-1 text-[10px] text-white outline-none focus:border-neon-cyan"
+                    />
                   </div>
                 );
               })()}
