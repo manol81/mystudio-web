@@ -1,19 +1,26 @@
 "use client";
 
 // Modal de "Publicar en Comunidad" — se abre desde una tarjeta de
-// ProjectsDashboard. Publicar NO reexporta ni recodifica nada: reusa
-// el MISMO respaldo .mystudio que ya vive en Storage (storagePath del
-// proyecto, la misma fuente que ya usan "▶ Escuchar" y "↓ Descargar")
-// y solo agrega un documento liviano a community_posts apuntando a esa
-// URL de descarga. La reproducción real en el feed pasa por
-// ProjectViewer (mismo motor multipista), no por un <audio> plano —
-// ver el comentario en PostCard.tsx.
+// ProjectsDashboard. El post en sí apunta al MISMO respaldo .mystudio
+// que ya vive en Storage (storagePath del proyecto, la misma fuente
+// que ya usan "▶ Escuchar" y "↓ Descargar") — eso es lo que habilita
+// el visor multipista completo (ver PostCard.tsx).
+//
+// Además, acá se genera el preview LIVIANO (MP3) que consume el feed
+// para no tener que bajar el .mystudio completo en cada scroll (ver
+// docs/social_architecture.md Sección 1 y audioPreviewExport.ts) —
+// mezclar + codificar pasa en el navegador de quien publica, una sola
+// vez, DESPUÉS de crear el post (el path/regla de Storage del preview
+// dependen de que el doc ya exista). Si esto falla por lo que sea, el
+// post ya publicado sigue funcionando igual — cae de vuelta al visor
+// completo, no se pierde la publicación por un preview que no salió.
 
 import { useState, type FormEvent } from "react";
-import { ref, getDownloadURL } from "firebase/storage";
+import { ref, getDownloadURL, uploadBytes } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
-import { publishProjectToCommunity } from "@/lib/CommunityService";
+import { attachCommunityPreview, publishProjectToCommunity } from "@/lib/CommunityService";
+import { buildCommunityPreview } from "@/lib/audioPreviewExport";
 import { SAMPLE_GENRES } from "@/lib/sampleTaxonomy";
 
 const inputClasses =
@@ -30,19 +37,23 @@ export function PublishModal({
   const [title, setTitle] = useState(project.title || "Sin título");
   const [genre, setGenre] = useState<string>(SAMPLE_GENRES[0]);
   const [description, setDescription] = useState("");
-  const [status, setStatus] = useState<"idle" | "publishing" | "success" | "error">("idle");
+  const [status, setStatus] = useState<
+    "idle" | "publishing" | "generating-preview" | "success" | "error"
+  >("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const isBusy = status === "publishing" || status === "success";
+  const isBusy = status === "publishing" || status === "generating-preview" || status === "success";
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!user) return;
     setStatus("publishing");
     setErrorMessage(null);
+    let postId: string;
+    let audioUrl: string;
     try {
-      const audioUrl = await getDownloadURL(ref(storage, project.storagePath));
-      await publishProjectToCommunity({
+      audioUrl = await getDownloadURL(ref(storage, project.storagePath));
+      postId = await publishProjectToCommunity({
         authorId: user.uid,
         authorName: user.displayName ?? user.email ?? "Usuario",
         projectId: project.cloudId,
@@ -51,12 +62,30 @@ export function PublishModal({
         genre,
         description: description.trim(),
       });
-      setStatus("success");
-      setTimeout(onClose, 1100);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err));
       setStatus("error");
+      return;
     }
+
+    // El post YA existe en este punto — cualquier error de acá en
+    // adelante no debe bloquear el "éxito": la publicación es real,
+    // solo falta (o no) el preview liviano.
+    setStatus("generating-preview");
+    try {
+      const { blob, durationSeconds } = await buildCommunityPreview(audioUrl);
+      const previewRef = ref(storage, `community_previews/${postId}`);
+      await uploadBytes(previewRef, blob, { contentType: "audio/mpeg" });
+      const previewUrl = await getDownloadURL(previewRef);
+      await attachCommunityPreview(postId, previewUrl, durationSeconds);
+    } catch (err) {
+      // Silencioso a propósito — ver el comentario del encabezado. El
+      // post publicado sigue siendo válido sin preview.
+      console.warn("No se pudo generar el preview liviano de la publicación:", err);
+    }
+
+    setStatus("success");
+    setTimeout(onClose, 1100);
   }
 
   return (
@@ -152,7 +181,11 @@ export function PublishModal({
                 disabled={isBusy}
                 className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)] disabled:opacity-50"
               >
-                {status === "publishing" ? "Publicando..." : "Publicar"}
+                {status === "publishing"
+                  ? "Publicando..."
+                  : status === "generating-preview"
+                    ? "Generando preview..."
+                    : "Publicar"}
               </button>
             </div>
           </form>

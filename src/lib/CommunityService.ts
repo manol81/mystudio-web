@@ -29,6 +29,7 @@ import {
   setDoc,
   startAfter,
   Timestamp,
+  updateDoc,
   type DocumentData,
   type QueryDocumentSnapshot,
 } from "firebase/firestore";
@@ -44,6 +45,13 @@ export interface CommunityPost {
   projectId: string;
   title: string;
   audioUrl: string;
+  // Preview liviano (MP3, ver audioPreviewExport.ts) — null hasta que
+  // termine de generarse/subirse tras publicar (ver PublishModal.tsx).
+  // El feed cae de vuelta al .mystudio completo (audioUrl, vía
+  // ProjectViewer) mientras tanto o si el preview nunca llegó a
+  // generarse por algún error.
+  audioPreviewUrl: string | null;
+  previewDurationSeconds: number | null;
   genre: string;
   description: string;
   likesCount: number;
@@ -65,6 +73,8 @@ function toCommunityPost(doc: QueryDocumentSnapshot<DocumentData>): CommunityPos
     projectId: (data.projectId as string) ?? "",
     title: (data.title as string) ?? "Sin título",
     audioUrl: (data.audioUrl as string) ?? "",
+    audioPreviewUrl: (data.audioPreviewUrl as string) ?? null,
+    previewDurationSeconds: (data.previewDurationSeconds as number) ?? null,
     genre: (data.genre as string) ?? "",
     description: (data.description as string) ?? "",
     likesCount: (data.likesCount as number) ?? 0,
@@ -102,6 +112,9 @@ export async function fetchCommunityPostsPage(
   };
 }
 
+/// Devuelve el id del post recién creado — hace falta para poder subir
+/// el preview DESPUÉS (el path de Storage y la regla que lo protege
+/// dependen de que el doc ya exista, ver storage.rules), no antes.
 export async function publishProjectToCommunity(params: {
   authorId: string;
   authorName: string;
@@ -110,18 +123,33 @@ export async function publishProjectToCommunity(params: {
   audioUrl: string;
   genre: string;
   description: string;
-}): Promise<void> {
-  await addDoc(collection(db, COLLECTION_NAME), {
+}): Promise<string> {
+  const docRef = await addDoc(collection(db, COLLECTION_NAME), {
     authorId: params.authorId,
     authorName: params.authorName,
     projectId: params.projectId,
     title: params.title,
     audioUrl: params.audioUrl,
+    audioPreviewUrl: null,
+    previewDurationSeconds: null,
     genre: params.genre,
     description: params.description,
     likesCount: 0,
     createdAt: serverTimestamp(),
   });
+  return docRef.id;
+}
+
+/// Adjunta el preview liviano a un post ya publicado — paso separado
+/// porque la generación (descargar + mezclar + codificar) puede tardar
+/// unos segundos y, si falla, el post ya publicado sigue funcionando
+/// igual (cae de vuelta al .mystudio completo, ver CommunityPost).
+export async function attachCommunityPreview(
+  postId: string,
+  audioPreviewUrl: string,
+  previewDurationSeconds: number,
+): Promise<void> {
+  await updateDoc(doc(db, COLLECTION_NAME, postId), { audioPreviewUrl, previewDurationSeconds });
 }
 
 // ─── Moderación — reportar publicaciones y bloquear autores ─────────────

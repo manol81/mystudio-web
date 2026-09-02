@@ -3,23 +3,25 @@
 // Tarjeta de publicación del Feed de la Comunidad — consume un
 // CommunityPost REAL (ver CommunityService.ts), ya no data simulada.
 //
-// "audioUrl" del documento NO es un archivo de audio simple: es la URL
-// de descarga del MISMO respaldo .mystudio (ZIP con manifest.json +
-// WAVs de cada pista) que ya usa ProjectsDashboard — así que
-// reproducirlo requiere el mismo motor multipista que ProjectViewer,
-// no un <audio src> plano (que intentaría reproducir un ZIP como si
-// fuera un archivo de sonido). Al tocar "Escuchar" se abre exactamente
-// ese mismo componente, ya probado.
+// Reproducción: si el post ya tiene `audioPreviewUrl` (el MP3 liviano
+// que genera PublishModal al publicar, ver audioPreviewExport.ts), se
+// reproduce inline con SamplePlayer — mismo componente y misma
+// coordinación "un solo audio sonando a la vez" que ya usa el Banco de
+// Sonidos (isActive/onRequestPlay, manejado por el padre en page.tsx).
+// Si todavía no existe (se está generando, o falló, o es un post
+// publicado antes de esta función), cae de vuelta a abrir el visor
+// multipista completo (ProjectViewer) sobre el .mystudio original —
+// más pesado, pero siempre funciona.
 //
-// La "forma de onda" sigue siendo decorativa (no hay picos reales
-// hasta que ProjectViewer decodifica el audio adentro del visor) — se
-// deriva con un hash determinístico del id del post, no de
+// La "forma de onda" del estado sin preview sigue siendo decorativa —
+// se deriva con un hash determinístico del id del post, no de
 // Math.random(), para no romper la hidratación SSR/CSR.
 
 import { useState } from "react";
 import { Heart, MoreVertical, ShieldOff, Flag } from "lucide-react";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
+import { SamplePlayer } from "@/components/SamplePlayer";
 import { useAuth } from "@/context/AuthContext";
 import {
   blockUser,
@@ -53,11 +55,15 @@ export function PostCard({
   isLiked,
   onLikeToggled,
   onBlocked,
+  isPlaying,
+  onRequestPlay,
 }: {
   post: CommunityPost;
   isLiked: boolean;
   onLikeToggled: (postId: string, liked: boolean, newLikesCount: number) => void;
   onBlocked: (authorId: string) => void;
+  isPlaying: boolean;
+  onRequestPlay: () => void;
 }) {
   const { user } = useAuth();
   const [isViewerOpen, setIsViewerOpen] = useState(false);
@@ -165,29 +171,36 @@ export function PostCard({
         )}
       </div>
 
-      {/* Reproductor — abre el visor multipista real (ProjectViewer) */}
-      <button
-        type="button"
-        onClick={() => setIsViewerOpen(true)}
-        className="flex items-center gap-3 rounded-xl bg-onyx-black px-3 py-3 text-left transition-colors duration-200 hover:bg-white/5"
-      >
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 text-neon-cyan">
-          <span className="ml-0.5 block h-0 w-0 border-y-[7px] border-l-[11px] border-y-transparent border-l-current" />
-        </span>
-        <svg viewBox={`0 0 ${WAVEFORM_BARS * 3} 32`} className="h-8 w-full" preserveAspectRatio="none">
-          {heights.map((h, i) => (
-            <rect
-              key={i}
-              x={i * 3}
-              y={16 - (h * 28) / 2}
-              width={1.6}
-              height={h * 28}
-              rx={0.8}
-              fill="rgba(102,252,241,0.6)"
-            />
-          ))}
-        </svg>
-      </button>
+      {/* Reproductor — preview liviano si ya existe, si no, abre el
+          visor multipista completo sobre el .mystudio original. */}
+      {post.audioPreviewUrl ? (
+        <div className="rounded-xl bg-onyx-black px-3 py-3">
+          <SamplePlayer src={post.audioPreviewUrl} isActive={isPlaying} onRequestPlay={onRequestPlay} />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setIsViewerOpen(true)}
+          className="flex items-center gap-3 rounded-xl bg-onyx-black px-3 py-3 text-left transition-colors duration-200 hover:bg-white/5"
+        >
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 text-neon-cyan">
+            <span className="ml-0.5 block h-0 w-0 border-y-[7px] border-l-[11px] border-y-transparent border-l-current" />
+          </span>
+          <svg viewBox={`0 0 ${WAVEFORM_BARS * 3} 32`} className="h-8 w-full" preserveAspectRatio="none">
+            {heights.map((h, i) => (
+              <rect
+                key={i}
+                x={i * 3}
+                y={16 - (h * 28) / 2}
+                width={1.6}
+                height={h * 28}
+                rx={0.8}
+                fill="rgba(102,252,241,0.6)"
+              />
+            ))}
+          </svg>
+        </button>
+      )}
 
       {/* Interacción */}
       <div className="flex items-center gap-4 text-xs">

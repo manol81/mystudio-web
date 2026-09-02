@@ -35,6 +35,7 @@ export default function CommunityFeedPage() {
   const [feedError, setFeedError] = useState<string | null>(null);
   const [blockedAuthorIds, setBlockedAuthorIds] = useState<Set<string>>(new Set());
   const [likedPostIds, setLikedPostIds] = useState<Set<string>>(new Set());
+  const [playingPostId, setPlayingPostId] = useState<string | null>(null);
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   // Evita pedir el mismo lote dos veces si dos disparos del observer
@@ -172,6 +173,8 @@ export default function CommunityFeedPage() {
                       isLiked={likedPostIds.has(post.id)}
                       onLikeToggled={handleLikeToggled}
                       onBlocked={handlePostBlocked}
+                      isPlaying={playingPostId === post.id}
+                      onRequestPlay={() => setPlayingPostId(post.id)}
                     />
                   ))}
                 </div>
