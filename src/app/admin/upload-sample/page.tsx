@@ -10,14 +10,10 @@
 // Admin SDK (ver scripts/set-admin-claim.mjs) — nunca alcanzable desde
 // el cliente, a propósito: si el cliente pudiera auto-otorgárselo, las
 // reglas de seguridad no protegerían nada. Esta pantalla verifica ese
-// mismo claim antes de mostrar el formulario, así un usuario logueado
-// sin permisos ve un mensaje claro en vez de un formulario que de
-// todas formas va a fallar con permission-denied al enviarlo.
-//
-// getIdTokenResult(true) fuerza un refresh del token en vez de usar el
-// cacheado — importante la primera vez que se otorga el claim a una
-// cuenta que ya tenía sesión abierta (el token viejo no lo trae hasta
-// su próxima renovación natural, hasta 1h después).
+// mismo claim (useAdminCheck, compartido con el resto del panel de
+// admin) antes de mostrar el formulario, así un usuario logueado sin
+// permisos ve un mensaje claro en vez de un formulario que de todas
+// formas va a fallar con permission-denied al enviarlo.
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
@@ -34,14 +30,13 @@ import { deleteObject, ref, uploadBytesResumable } from "firebase/storage";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
+import { useAdminCheck } from "@/lib/useAdminCheck";
 import {
   SAMPLE_TYPES,
   SAMPLE_INSTRUMENTS,
   SAMPLE_GENRES,
   SAMPLE_KEYS,
 } from "@/lib/sampleTaxonomy";
-
-type AdminCheck = "checking" | "authorized" | "unauthorized" | "signed-out";
 
 interface SampleListItem {
   id: string;
@@ -60,21 +55,8 @@ const inputClasses =
 const selectClasses = inputClasses;
 
 export default function UploadSamplePage() {
-  const { user, loading } = useAuth();
-  // "checking"/"signed-out" se derivan directo de loading/user en cada
-  // render — solo el resultado del claim (que llega async) necesita
-  // vivir en estado propio, seteado desde el callback de la promesa
-  // (no sincrónicamente en el cuerpo del efecto).
-  const [claimCheck, setClaimCheck] = useState<"pending" | "authorized" | "unauthorized">(
-    "pending",
-  );
-  const adminCheck: AdminCheck = loading
-    ? "checking"
-    : !user
-      ? "signed-out"
-      : claimCheck === "pending"
-        ? "checking"
-        : claimCheck;
+  const { user } = useAuth();
+  const adminCheck = useAdminCheck();
 
   const [name, setName] = useState("");
   const [type, setType] = useState<string>(SAMPLE_TYPES[0]);
@@ -91,16 +73,6 @@ export default function UploadSamplePage() {
 
   const [samples, setSamples] = useState<SampleListItem[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (loading || !user) return;
-    user
-      .getIdTokenResult(true)
-      .then((result) => {
-        setClaimCheck(result.claims.admin === true ? "authorized" : "unauthorized");
-      })
-      .catch(() => setClaimCheck("unauthorized"));
-  }, [user, loading]);
 
   // Lista de samples ya publicados, para poder borrarlos — solo se
   // suscribe una vez confirmado el claim admin (mismo criterio de
@@ -225,10 +197,10 @@ export default function UploadSamplePage() {
     <div className="flex min-h-full flex-col items-center gap-8 px-6 py-16 text-center">
       <div>
         <Link
-          href="/samples"
+          href="/admin"
           className="text-xs text-white/40 transition-colors duration-200 hover:text-white/70"
         >
-          ← Banco de Sonidos
+          ← Panel de Admin
         </Link>
         <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-white sm:text-4xl">
           Subir <span className="text-neon-cyan">Sample</span>

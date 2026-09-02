@@ -15,9 +15,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "firebase/auth";
-import { Globe, FolderOpen, Piano, MessageSquare, Menu, X, LogOut } from "lucide-react";
+import { Globe, FolderOpen, Piano, MessageSquare, Shield, Menu, X, LogOut } from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
+import { useAdminCheck } from "@/lib/useAdminCheck";
 import { ProfileModal } from "@/components/ProfileModal";
 
 const NAV_ITEMS = [
@@ -29,6 +30,11 @@ const NAV_ITEMS = [
 
 function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
   const { user, profile } = useAuth();
+  // forceRefresh=false a propósito acá — este hook monta en TODAS las
+  // páginas solo para decidir si mostrar el link, no vale la pena
+  // forzar un refresh de token en cada carga para todo el mundo (ver
+  // useAdminCheck.ts). Las pantallas de /admin en sí sí lo fuerzan.
+  const adminCheck = useAdminCheck(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   return (
@@ -62,6 +68,25 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
             </Link>
           );
         })}
+
+        {/* Solo visible con el custom claim admin:true — para todos
+            los demás, /admin no existe en la navegación (la ruta
+            sigue protegida por firestore.rules de todas formas, esto
+            es puramente para no mostrar un link que va a fallar). */}
+        {adminCheck === "authorized" && (
+          <Link
+            href="/admin"
+            onClick={onNavigate}
+            className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200 ${
+              pathname.startsWith("/admin")
+                ? "bg-neon-cyan/10 text-neon-cyan"
+                : "text-white/60 hover:bg-white/5 hover:text-white"
+            }`}
+          >
+            <Shield size={18} strokeWidth={pathname.startsWith("/admin") ? 2.25 : 1.75} className="shrink-0" />
+            Admin
+          </Link>
+        )}
       </nav>
 
       {/* Cuenta — al pie, siempre en el mismo lugar sin importar la
