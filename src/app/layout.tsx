@@ -3,6 +3,7 @@ import { Space_Grotesk, Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { AppSidebar } from "@/components/AppSidebar";
+import { AppShell } from "@/components/AppShell";
 
 // Identidad "Midnight Studio": Space Grotesk para títulos/UI destacada
 // (var --font-display), Inter para texto de lectura (var --font-body).
@@ -41,7 +42,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               principal, o viceversa. */}
           <div className="flex h-screen overflow-hidden">
             <AppSidebar />
-            <main className="h-full flex-1 overflow-y-auto">{children}</main>
+            <AppShell>{children}</AppShell>
           </div>
         </AuthProvider>
       </body>
