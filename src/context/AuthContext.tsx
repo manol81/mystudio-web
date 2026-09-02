@@ -15,6 +15,7 @@ import {
 } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import { ensureUserProfile, watchUserProfile, type UserProfile } from "@/lib/UserProfileService";
 
 interface AuthContextValue {
   user: User | null;
@@ -22,16 +23,22 @@ interface AuthContextValue {
   // onAuthStateChanged — evita un parpadeo mostrando "invitado" un
   // instante antes de confirmar que en realidad hay sesión guardada.
   loading: boolean;
+  // Perfil de Firestore (/users/{uid}) — nickname, no confundir con
+  // `user` (Firebase Auth). null mientras carga o si el nickname
+  // todavía no se eligió (ver UserProfileService.ts).
+  profile: UserProfile | null;
 }
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
   loading: true,
+  profile: null,
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
@@ -41,8 +48,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    if (!user) {
+      // Wrapped en microtask (mismo criterio ya usado en otras
+      // pantallas de este proyecto) para que el linter de React no lo
+      // trate como un setState síncrono dentro del cuerpo del efecto.
+      queueMicrotask(() => setProfile(null));
+      return;
+    }
+    // Fire-and-forget: no bloquea el resto de la app esperando a que
+    // termine de crear el doc — watchUserProfile ya lo refleja apenas
+    // exista, sin importar el orden exacto en que resuelvan las dos.
+    void ensureUserProfile(user.uid, user.email);
+    return watchUserProfile(user.uid, setProfile);
+  }, [user]);
+
   return (
-    <AuthContext.Provider value={{ user, loading }}>
+    <AuthContext.Provider value={{ user, loading, profile }}>
       {children}
     </AuthContext.Provider>
   );

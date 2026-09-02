@@ -22,6 +22,7 @@ import { useAuth } from "@/context/AuthContext";
 import { attachCommunityPreview, publishProjectToCommunity } from "@/lib/CommunityService";
 import { buildCommunityPreview } from "@/lib/audioPreviewExport";
 import { SAMPLE_GENRES } from "@/lib/sampleTaxonomy";
+import { isValidUsername, setUsername as saveUsername } from "@/lib/UserProfileService";
 
 const inputClasses =
   "w-full rounded-lg border border-white/15 bg-onyx-black px-4 py-2.5 text-sm text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan focus:shadow-[0_0_0_1px_rgba(102,252,241,0.4)]";
@@ -33,7 +34,7 @@ export function PublishModal({
   project: { cloudId: string; title: string; storagePath: string };
   onClose: () => void;
 }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [title, setTitle] = useState(project.title || "Sin título");
   const [genre, setGenre] = useState<string>(SAMPLE_GENRES[0]);
   const [description, setDescription] = useState("");
@@ -44,11 +45,37 @@ export function PublishModal({
   const [previewProgress, setPreviewProgress] = useState(0);
   const [previewFailed, setPreviewFailed] = useState(false);
 
+  const [nickname, setNicknameInput] = useState("");
+  const [nicknameStatus, setNicknameStatus] = useState<"idle" | "saving" | "error">("idle");
+  const [nicknameError, setNicknameError] = useState<string | null>(null);
+
   const isBusy = status === "publishing" || status === "generating-preview" || status === "success";
+
+  async function handleSaveNickname(e: FormEvent) {
+    e.preventDefault();
+    if (!user) return;
+    const trimmed = nickname.trim();
+    if (!isValidUsername(trimmed)) {
+      setNicknameError("3 a 20 caracteres: letras, números o guión bajo, sin espacios.");
+      setNicknameStatus("error");
+      return;
+    }
+    setNicknameStatus("saving");
+    setNicknameError(null);
+    try {
+      await saveUsername(user.uid, trimmed);
+      // `profile` se actualiza solo vía el listener en tiempo real de
+      // AuthContext — apenas llegue el cambio, este modal re-renderiza
+      // y pasa directo al formulario normal de publicar.
+    } catch (err) {
+      setNicknameError(err instanceof Error ? err.message : String(err));
+      setNicknameStatus("error");
+    }
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!user) return;
+    if (!user || !profile?.username) return;
     setStatus("publishing");
     setErrorMessage(null);
     let postId: string;
@@ -57,7 +84,7 @@ export function PublishModal({
       audioUrl = await getDownloadURL(ref(storage, project.storagePath));
       postId = await publishProjectToCommunity({
         authorId: user.uid,
-        authorName: user.displayName ?? user.email ?? "Usuario",
+        authorName: profile.username,
         projectId: project.cloudId,
         title: title.trim() || "Sin título",
         audioUrl,
@@ -99,6 +126,74 @@ export function PublishModal({
 
     setStatus("success");
     setTimeout(onClose, didPreviewFail ? 2600 : 1100);
+  }
+
+  // Todavía no llegó la primera respuesta del perfil (ensureUserProfile
+  // recién está creando el doc) — un usuario logueado SIEMPRE termina
+  // teniendo perfil, así que esto es solo un instante de carga, nunca
+  // un estado final.
+  if (!profile) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-neon-cyan/30 border-t-neon-cyan" />
+      </div>
+    );
+  }
+
+  // Sin nickname todavía: se pide ACÁ, antes de mostrar el formulario
+  // de publicar — nunca se publica nada a nombre del email real.
+  if (!profile.username) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+        onClick={onClose}
+      >
+        <div
+          className="w-full max-w-sm rounded-2xl border border-white/10 bg-graphite p-8 shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <h2 className="font-display text-xl font-semibold text-white">Elegí tu nickname</h2>
+          <p className="mt-1 text-xs text-white/50">
+            Antes de publicar necesitás un nombre público — nunca vamos a mostrar tu email en la
+            Comunidad.
+          </p>
+          <form onSubmit={handleSaveNickname} className="mt-6 flex flex-col gap-4">
+            <input
+              type="text"
+              required
+              autoFocus
+              value={nickname}
+              onChange={(e) => setNicknameInput(e.target.value)}
+              className={inputClasses}
+              placeholder="tu_nombre"
+              maxLength={20}
+            />
+            {nicknameStatus === "error" && nicknameError && (
+              <p className="text-xs text-red-400" role="alert">
+                {nicknameError}
+              </p>
+            )}
+            <div className="mt-2 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={nicknameStatus === "saving"}
+                className="rounded-full px-4 py-2 text-sm text-white/60 transition-colors hover:text-white disabled:opacity-40"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={nicknameStatus === "saving"}
+                className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)] disabled:opacity-50"
+              >
+                {nicknameStatus === "saving" ? "Guardando..." : "Continuar"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
   }
 
   return (

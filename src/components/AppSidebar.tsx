@@ -18,6 +18,7 @@ import { signOut } from "firebase/auth";
 import { Globe, FolderOpen, Piano, MessageSquare, Menu, X, LogOut } from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
+import { ProfileModal } from "@/components/ProfileModal";
 
 const NAV_ITEMS = [
   { href: "/", label: "Comunidad", icon: Globe },
@@ -27,7 +28,8 @@ const NAV_ITEMS = [
 ] as const;
 
 function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   return (
     <div className="flex h-full flex-col">
@@ -66,12 +68,21 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
           página (antes "Cerrar Sesión" vivía suelto en el dashboard). */}
       {user && (
         <div className="border-t border-white/10 px-3 py-4">
-          <div className="flex items-center gap-2 rounded-xl px-3 py-2">
+          <button
+            type="button"
+            onClick={() => setIsProfileOpen(true)}
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors duration-200 hover:bg-white/5"
+          >
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 font-display text-xs font-semibold text-neon-cyan">
-              {(user.email ?? "?").charAt(0).toUpperCase()}
+              {(profile?.username ?? user.email ?? "?").charAt(0).toUpperCase()}
             </div>
-            <p className="min-w-0 truncate text-xs text-white/50">{user.email}</p>
-          </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-white/80">
+                {profile?.username ?? "Elegir nickname"}
+              </p>
+              <p className="truncate text-[10px] text-white/30">{user.email}</p>
+            </div>
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -83,6 +94,7 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
             <LogOut size={18} strokeWidth={1.75} className="shrink-0" />
             Cerrar Sesión
           </button>
+          {isProfileOpen && <ProfileModal onClose={() => setIsProfileOpen(false)} />}
         </div>
       )}
     </div>

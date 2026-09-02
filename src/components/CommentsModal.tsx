@@ -44,7 +44,7 @@ export function CommentsModal({
   onCommentAdded: () => void;
   onClose: () => void;
 }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [comments, setComments] = useState<PostComment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -74,10 +74,15 @@ export function CommentsModal({
     if (!user || !text.trim() || isSubmitting) return;
     setIsSubmitting(true);
     try {
+      // Nunca el email real acá — si todavía no eligió nickname, un
+      // nombre genérico es preferible a exponer su email en público
+      // (a diferencia de publicar, comentar no lo obliga a elegir uno
+      // antes; ver PublishModal.tsx para esa versión sí obligatoria).
+      const authorName = profile?.username ?? "Usuario";
       const timestampInAudio = anchorToCurrent && currentPlaybackSeconds != null ? currentPlaybackSeconds : null;
       await addComment(postId, {
         authorId: user.uid,
-        authorName: user.displayName ?? user.email ?? "Usuario",
+        authorName,
         text: text.trim(),
         timestampInAudio,
       });
@@ -86,7 +91,7 @@ export function CommentsModal({
         {
           id: `local-${Date.now()}`,
           authorId: user.uid,
-          authorName: user.displayName ?? user.email ?? "Usuario",
+          authorName,
           text: text.trim(),
           timestampInAudio,
           createdAt: null,
