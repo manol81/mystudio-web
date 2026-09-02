@@ -7,6 +7,7 @@
 
 import { usePathname } from "next/navigation";
 import { AdRail } from "@/components/AdRail";
+import { EmailVerificationGate } from "@/components/EmailVerificationGate";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -17,7 +18,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <main className="flex h-full flex-1 overflow-hidden">
-      <div className="h-full flex-1 overflow-y-auto">{children}</div>
+      <div className="h-full flex-1 overflow-y-auto">
+        <EmailVerificationGate>{children}</EmailVerificationGate>
+      </div>
       {showAdRail && <AdRail />}
     </main>
   );
