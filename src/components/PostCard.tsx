@@ -17,9 +17,11 @@
 // Math.random(), para no romper la hidratación SSR/CSR.
 
 import { useState } from "react";
-import { Heart } from "lucide-react";
+import { Heart, MoreVertical, ShieldOff, Flag } from "lucide-react";
 import { ProjectViewer } from "@/components/ProjectViewer";
-import { formatRelativeTime, type CommunityPost } from "@/lib/CommunityService";
+import { ReportModal } from "@/components/ReportModal";
+import { useAuth } from "@/context/AuthContext";
+import { blockUser, formatRelativeTime, type CommunityPost } from "@/lib/CommunityService";
 
 const AVATAR_COLORS = ["#66FCF1", "#C792EA", "#FFB86C", "#82E0AA"];
 const WAVEFORM_BARS = 40;
@@ -41,14 +43,37 @@ function fakeWaveformHeights(seed: number): number[] {
   });
 }
 
-export function PostCard({ post }: { post: CommunityPost }) {
+export function PostCard({
+  post,
+  onBlocked,
+}: {
+  post: CommunityPost;
+  onBlocked: (authorId: string) => void;
+}) {
+  const { user } = useAuth();
   const [isViewerOpen, setIsViewerOpen] = useState(false);
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isBlocking, setIsBlocking] = useState(false);
   const hash = hashString(post.id || post.authorId);
   const avatarColor = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   const heights = fakeWaveformHeights(hash);
+  const isOwnPost = user?.uid === post.authorId;
+
+  async function handleBlock() {
+    if (!user || isBlocking) return;
+    setIsBlocking(true);
+    try {
+      await blockUser(user.uid, post.authorId);
+      onBlocked(post.authorId);
+    } finally {
+      setIsBlocking(false);
+      setIsMenuOpen(false);
+    }
+  }
 
   return (
-    <article className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-graphite p-5 transition-colors duration-200 hover:border-neon-cyan/30">
+    <article className="relative flex flex-col gap-4 rounded-2xl border border-white/10 bg-graphite p-5 transition-colors duration-200 hover:border-neon-cyan/30">
       {/* Autor */}
       <div className="flex items-center gap-3">
         <div
@@ -57,10 +82,54 @@ export function PostCard({ post }: { post: CommunityPost }) {
         >
           {post.authorName.charAt(0).toUpperCase()}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-white">{post.authorName}</p>
           <p className="text-xs text-white/40">{formatRelativeTime(post.createdAt)}</p>
         </div>
+
+        {/* Menú de moderación — oculto en las publicaciones propias:
+            reportarse/bloquearse a uno mismo no tiene sentido. */}
+        {!isOwnPost && user && (
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsMenuOpen((prev) => !prev)}
+              aria-label="Más opciones"
+              className="flex h-7 w-7 items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-white"
+            >
+              <MoreVertical size={16} />
+            </button>
+
+            {isMenuOpen && (
+              <>
+                {/* Backdrop invisible: cualquier click afuera del menú
+                    lo cierra, sin necesitar un listener global. */}
+                <div className="fixed inset-0 z-10" onClick={() => setIsMenuOpen(false)} />
+                <div className="absolute right-0 top-8 z-20 w-48 overflow-hidden rounded-xl border border-white/10 bg-onyx-black shadow-2xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMenuOpen(false);
+                      setIsReportOpen(true);
+                    }}
+                    className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-xs text-white/70 transition-colors hover:bg-white/5 hover:text-white"
+                  >
+                    <Flag size={14} /> Reportar publicación
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBlock}
+                    disabled={isBlocking}
+                    className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-xs text-white/70 transition-colors hover:bg-red-400/10 hover:text-red-300 disabled:opacity-50"
+                  >
+                    <ShieldOff size={14} />
+                    {isBlocking ? "Bloqueando..." : `Bloquear a ${post.authorName}`}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Título de la canción */}
@@ -109,6 +178,15 @@ export function PostCard({ post }: { post: CommunityPost }) {
           storagePath={post.audioUrl}
           title={post.title}
           onClose={() => setIsViewerOpen(false)}
+        />
+      )}
+
+      {isReportOpen && user && (
+        <ReportModal
+          postId={post.id}
+          reportedAuthorId={post.authorId}
+          reporterId={user.uid}
+          onClose={() => setIsReportOpen(false)}
         />
       )}
     </article>

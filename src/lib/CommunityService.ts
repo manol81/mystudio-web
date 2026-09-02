@@ -17,11 +17,13 @@
 import {
   addDoc,
   collection,
+  doc,
   getDocs,
   limit,
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   startAfter,
   Timestamp,
   type DocumentData,
@@ -117,6 +119,54 @@ export async function publishProjectToCommunity(params: {
     likesCount: 0,
     createdAt: serverTimestamp(),
   });
+}
+
+// ─── Moderación — reportar publicaciones y bloquear autores ─────────────
+//
+// Dos mecanismos DISTINTOS a propósito: reportar (colección global
+// `reports`, de solo-escritura para el cliente — la revisión es manual)
+// avisa al equipo sin ocultar nada; bloquear (subcolección PRIVADA
+// `users/{uid}/blockedUsers`) es una preferencia personal e inmediata
+// del que bloquea, no depende de que nadie revise nada. Ver
+// firestore.rules para las reglas de cada una.
+
+export const REPORT_REASONS = [
+  { value: "copyright", label: "Derechos de autor" },
+  { value: "spam", label: "Spam" },
+  { value: "abuse", label: "Contenido ofensivo o abusivo" },
+  { value: "other", label: "Otro motivo" },
+] as const;
+
+export async function reportPost(params: {
+  postId: string;
+  reportedAuthorId: string;
+  reporterId: string;
+  reason: string;
+  details: string;
+}): Promise<void> {
+  await addDoc(collection(db, "reports"), {
+    postId: params.postId,
+    reportedAuthorId: params.reportedAuthorId,
+    reporterId: params.reporterId,
+    reason: params.reason,
+    details: params.details,
+    status: "pending",
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function blockUser(uid: string, blockedUid: string): Promise<void> {
+  await setDoc(doc(db, "users", uid, "blockedUsers", blockedUid), {
+    blockedAt: serverTimestamp(),
+  });
+}
+
+/// Se lee UNA vez al cargar el feed (ver page.tsx) — no hace falta
+/// tiempo real acá, un bloqueo hecho en OTRA pestaña/sesión recién se
+/// refleja la próxima vez que se entra a la Comunidad.
+export async function fetchBlockedAuthorIds(uid: string): Promise<Set<string>> {
+  const snapshot = await getDocs(collection(db, "users", uid, "blockedUsers"));
+  return new Set(snapshot.docs.map((d) => d.id));
 }
 
 export function formatRelativeTime(timestamp: Timestamp | null): string {

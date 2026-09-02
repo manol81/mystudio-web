@@ -15,7 +15,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
 import { PostCard } from "@/components/PostCard";
-import { fetchCommunityPostsPage, type CommunityPost } from "@/lib/CommunityService";
+import {
+  fetchBlockedAuthorIds,
+  fetchCommunityPostsPage,
+  type CommunityPost,
+} from "@/lib/CommunityService";
 import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
 
 export default function CommunityFeedPage() {
@@ -28,6 +32,7 @@ export default function CommunityFeedPage() {
   const [isLoadingInitial, setIsLoadingInitial] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
+  const [blockedAuthorIds, setBlockedAuthorIds] = useState<Set<string>>(new Set());
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   // Evita pedir el mismo lote dos veces si dos disparos del observer
@@ -73,8 +78,23 @@ export default function CommunityFeedPage() {
     if (!user) return;
     (async () => {
       await loadInitialPage();
+      // Se pide UNA vez al cargar el feed — no en tiempo real: un
+      // bloqueo hecho en otra pestaña/sesión recién se refleja la
+      // próxima vez que se entra a la Comunidad, no hace falta más.
+      try {
+        setBlockedAuthorIds(await fetchBlockedAuthorIds(user.uid));
+      } catch {
+        // si falla, simplemente no se filtra nada — no vale la pena
+        // romper el feed entero por esto.
+      }
     })();
   }, [user, loadInitialPage]);
+
+  function handlePostBlocked(authorId: string) {
+    setBlockedAuthorIds((prev) => new Set(prev).add(authorId));
+  }
+
+  const visiblePosts = posts.filter((post) => !blockedAuthorIds.has(post.authorId));
 
   useEffect(() => {
     if (!user || isLoadingInitial || posts.length === 0) return;
@@ -120,11 +140,19 @@ export default function CommunityFeedPage() {
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                {posts.map((post) => (
-                  <PostCard key={post.id} post={post} />
-                ))}
-              </div>
+              {visiblePosts.length === 0 ? (
+                <div className="rounded-2xl border border-white/10 bg-graphite p-10 text-center">
+                  <p className="text-sm text-white/60">
+                    No hay nada para mostrar acá — bloqueaste a los autores de este lote.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                  {visiblePosts.map((post) => (
+                    <PostCard key={post.id} post={post} onBlocked={handlePostBlocked} />
+                  ))}
+                </div>
+              )}
 
               {/* Centinela invisible: al entrar en el viewport dispara la
                   carga del siguiente lote (ver el useEffect de arriba). */}
