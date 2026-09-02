@@ -18,6 +18,7 @@ import {
   addDoc,
   collection,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
   increment,
@@ -236,6 +237,73 @@ export async function fetchLikedPostIds(uid: string, postIds: string[]): Promise
     }),
   );
   return new Set(results.filter((id): id is string => id !== null));
+}
+
+// ─── Comentarios ──────────────────────────────────────────────────────
+//
+// Subcolección community_posts/{postId}/comments/{commentId} — mismo
+// criterio que `likes`: lectura pública, escritura exclusiva del
+// propio autor del comentario (ver firestore.rules). `timestampInAudio`
+// es opcional: si el usuario comentó con el preview reproduciéndose y
+// eligió "anclar", queda un segundo exacto del audio; si no, el
+// comentario es general (null) — ver CommentsModal.tsx.
+
+export interface PostComment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  timestampInAudio: number | null;
+  createdAt: Timestamp | null;
+}
+
+function toPostComment(doc: QueryDocumentSnapshot<DocumentData>): PostComment {
+  const data = doc.data();
+  return {
+    id: doc.id,
+    authorId: (data.authorId as string) ?? "",
+    authorName: (data.authorName as string) ?? "Usuario",
+    text: (data.text as string) ?? "",
+    timestampInAudio: (data.timestampInAudio as number) ?? null,
+    createdAt: (data.createdAt as Timestamp) ?? null,
+  };
+}
+
+/// Orden cronológico simple (más viejo primero, como cualquier hilo de
+/// comentarios) — un post nunca tiene TANTOS comentarios como para que
+/// esto necesite paginación propia, a diferencia del feed en sí.
+export async function fetchComments(postId: string): Promise<PostComment[]> {
+  const snapshot = await getDocs(
+    query(collection(db, COLLECTION_NAME, postId, "comments"), orderBy("createdAt", "asc")),
+  );
+  return snapshot.docs.map(toPostComment);
+}
+
+export async function addComment(
+  postId: string,
+  params: { authorId: string; authorName: string; text: string; timestampInAudio: number | null },
+): Promise<void> {
+  await addDoc(collection(db, COLLECTION_NAME, postId, "comments"), {
+    authorId: params.authorId,
+    authorName: params.authorName,
+    text: params.text,
+    timestampInAudio: params.timestampInAudio,
+    createdAt: serverTimestamp(),
+  });
+}
+
+/// Para un lote de posts, cuántos comentarios tiene cada uno —
+/// getCountFromServer factura como UNA lectura sin importar cuántos
+/// documentos haya, no hace falta bajarlos todos solo para mostrar un
+/// número en la tarjeta del feed.
+export async function fetchCommentCounts(postIds: string[]): Promise<Map<string, number>> {
+  const entries = await Promise.all(
+    postIds.map(async (postId) => {
+      const snap = await getCountFromServer(collection(db, COLLECTION_NAME, postId, "comments"));
+      return [postId, snap.data().count] as const;
+    }),
+  );
+  return new Map(entries);
 }
 
 export function formatRelativeTime(timestamp: Timestamp | null): string {

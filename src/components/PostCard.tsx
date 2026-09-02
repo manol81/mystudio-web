@@ -18,7 +18,8 @@
 // Math.random(), para no romper la hidratación SSR/CSR.
 
 import { useState } from "react";
-import { Heart, MoreVertical, ShieldOff, Flag } from "lucide-react";
+import { Heart, MessageCircle, MoreVertical, ShieldOff, Flag } from "lucide-react";
+import { CommentsModal } from "@/components/CommentsModal";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
 import { SamplePlayer } from "@/components/SamplePlayer";
@@ -57,6 +58,8 @@ export function PostCard({
   onBlocked,
   isPlaying,
   onRequestPlay,
+  commentsCount,
+  onCommentAdded,
 }: {
   post: CommunityPost;
   isLiked: boolean;
@@ -64,13 +67,18 @@ export function PostCard({
   onBlocked: (authorId: string) => void;
   isPlaying: boolean;
   onRequestPlay: () => void;
+  commentsCount: number;
+  onCommentAdded: (postId: string) => void;
 }) {
   const { user } = useAuth();
   const [isViewerOpen, setIsViewerOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
+  const [isCommentsOpen, setIsCommentsOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isBlocking, setIsBlocking] = useState(false);
   const [isLiking, setIsLiking] = useState(false);
+  const [playbackSeconds, setPlaybackSeconds] = useState<number | null>(null);
+  const [seekRequest, setSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
   const hash = hashString(post.id || post.authorId);
   const avatarColor = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   const heights = fakeWaveformHeights(hash);
@@ -100,6 +108,11 @@ export function PostCard({
     } finally {
       setIsLiking(false);
     }
+  }
+
+  function handleSeekFromComment(seconds: number) {
+    onRequestPlay();
+    setSeekRequest({ seconds, nonce: Date.now() });
   }
 
   return (
@@ -175,7 +188,13 @@ export function PostCard({
           visor multipista completo sobre el .mystudio original. */}
       {post.audioPreviewUrl ? (
         <div className="rounded-xl bg-onyx-black px-3 py-3">
-          <SamplePlayer src={post.audioPreviewUrl} isActive={isPlaying} onRequestPlay={onRequestPlay} />
+          <SamplePlayer
+            src={post.audioPreviewUrl}
+            isActive={isPlaying}
+            onRequestPlay={onRequestPlay}
+            onTimeUpdate={setPlaybackSeconds}
+            seekRequest={seekRequest}
+          />
         </div>
       ) : (
         <button
@@ -215,6 +234,14 @@ export function PostCard({
         >
           <Heart size={14} fill={isLiked ? "currentColor" : "none"} /> {post.likesCount}
         </button>
+
+        <button
+          type="button"
+          onClick={() => setIsCommentsOpen(true)}
+          className="flex items-center gap-1.5 rounded-full px-1.5 py-1 text-white/40 transition-colors duration-200 hover:text-white/70"
+        >
+          <MessageCircle size={14} /> {commentsCount}
+        </button>
       </div>
 
       {isViewerOpen && (
@@ -232,6 +259,17 @@ export function PostCard({
           reportedAuthorId={post.authorId}
           reporterId={user.uid}
           onClose={() => setIsReportOpen(false)}
+        />
+      )}
+
+      {isCommentsOpen && (
+        <CommentsModal
+          postId={post.id}
+          postTitle={post.title}
+          currentPlaybackSeconds={playbackSeconds}
+          onSeek={handleSeekFromComment}
+          onCommentAdded={() => onCommentAdded(post.id)}
+          onClose={() => setIsCommentsOpen(false)}
         />
       )}
     </article>

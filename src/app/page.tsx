@@ -17,6 +17,7 @@ import { LoginModal } from "@/components/LoginModal";
 import { PostCard } from "@/components/PostCard";
 import {
   fetchBlockedAuthorIds,
+  fetchCommentCounts,
   fetchCommunityPostsPage,
   fetchLikedPostIds,
   type CommunityPost,
@@ -36,6 +37,7 @@ export default function CommunityFeedPage() {
   const [blockedAuthorIds, setBlockedAuthorIds] = useState<Set<string>>(new Set());
   const [likedPostIds, setLikedPostIds] = useState<Set<string>>(new Set());
   const [playingPostId, setPlayingPostId] = useState<string | null>(null);
+  const [commentCounts, setCommentCounts] = useState<Map<string, number>>(new Map());
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   // Evita pedir el mismo lote dos veces si dos disparos del observer
@@ -53,8 +55,13 @@ export default function CommunityFeedPage() {
       setPosts(page.posts);
       setCursor(page.cursor);
       setHasMore(page.hasMore);
-      const liked = await fetchLikedPostIds(user.uid, page.posts.map((p) => p.id));
+      const postIds = page.posts.map((p) => p.id);
+      const [liked, counts] = await Promise.all([
+        fetchLikedPostIds(user.uid, postIds),
+        fetchCommentCounts(postIds),
+      ]);
       setLikedPostIds(liked);
+      setCommentCounts(counts);
     } catch (err) {
       setFeedError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -72,8 +79,13 @@ export default function CommunityFeedPage() {
       setPosts((prev) => [...prev, ...page.posts]);
       setCursor(page.cursor);
       setHasMore(page.hasMore);
-      const liked = await fetchLikedPostIds(user.uid, page.posts.map((p) => p.id));
+      const postIds = page.posts.map((p) => p.id);
+      const [liked, counts] = await Promise.all([
+        fetchLikedPostIds(user.uid, postIds),
+        fetchCommentCounts(postIds),
+      ]);
       setLikedPostIds((prev) => new Set([...prev, ...liked]));
+      setCommentCounts((prev) => new Map([...prev, ...counts]));
     } catch (err) {
       setFeedError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -110,6 +122,14 @@ export default function CommunityFeedPage() {
       return next;
     });
     setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, likesCount: newLikesCount } : p)));
+  }
+
+  function handleCommentAdded(postId: string) {
+    setCommentCounts((prev) => {
+      const next = new Map(prev);
+      next.set(postId, (next.get(postId) ?? 0) + 1);
+      return next;
+    });
   }
 
   const visiblePosts = posts.filter((post) => !blockedAuthorIds.has(post.authorId));
@@ -175,6 +195,8 @@ export default function CommunityFeedPage() {
                       onBlocked={handlePostBlocked}
                       isPlaying={playingPostId === post.id}
                       onRequestPlay={() => setPlayingPostId(post.id)}
+                      commentsCount={commentCounts.get(post.id) ?? 0}
+                      onCommentAdded={handleCommentAdded}
                     />
                   ))}
                 </div>

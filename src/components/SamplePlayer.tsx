@@ -16,6 +16,14 @@
 // bytes a JS, solo los reproduce. getDownloadURL() (la llamada al SDK
 // que sí hacemos) nunca tuvo el problema; era exclusivo de leer el
 // contenido del archivo con fetch/getBytes.
+//
+// `onTimeUpdate`/`seekRequest` son OPCIONALES — el Banco de Sonidos no
+// los usa, solo el Feed de la Comunidad (ver PostCard.tsx), para saber
+// en qué segundo comentar y para saltar a un comentario anclado ya
+// existente. `seekRequest` lleva un `nonce`, no solo los segundos: así
+// tocar el MISMO comentario dos veces seguidas también salta (si solo
+// comparara el número de segundos, el efecto no se dispararía la
+// segunda vez por ser un valor "igual" al anterior).
 
 import { useEffect, useRef, useState } from "react";
 
@@ -23,10 +31,14 @@ export function SamplePlayer({
   src,
   isActive,
   onRequestPlay,
+  onTimeUpdate,
+  seekRequest,
 }: {
   src: string;
   isActive: boolean;
   onRequestPlay: () => void;
+  onTimeUpdate?: (currentSeconds: number) => void;
+  seekRequest?: { seconds: number; nonce: number } | null;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -37,6 +49,20 @@ export function SamplePlayer({
   useEffect(() => {
     if (!isActive) audioRef.current?.pause();
   }, [isActive]);
+
+  useEffect(() => {
+    if (!seekRequest) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = seekRequest.seconds;
+    onRequestPlay();
+    audio.play();
+    // Dispara por nonce a propósito, no por el valor de seconds en sí
+    // (ver comentario del encabezado) — onRequestPlay solo hace un
+    // setState en el padre, no hace falta re-ejecutar el seek si
+    // cambia de identidad entre renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekRequest?.nonce]);
 
   function handleToggle() {
     const audio = audioRef.current;
@@ -92,6 +118,7 @@ export function SamplePlayer({
         onTimeUpdate={(e) => {
           const audio = e.currentTarget;
           if (audio.duration) setProgress(audio.currentTime / audio.duration);
+          onTimeUpdate?.(audio.currentTime);
         }}
       />
     </div>
