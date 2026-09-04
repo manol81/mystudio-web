@@ -19,14 +19,19 @@ import { NextRequest, NextResponse } from "next/server";
 // Seguridad: getDownloadURL() ya validó del lado del cliente que el
 // usuario tiene permiso (storage.rules exige sesión + ser el dueño) —
 // la URL resultante trae su propio token de descarga, así que un fetch
-// anónimo acá adentro no repite ningún chequeo de más. Lo único que
-// esta ruta valida es que el dominio de destino sea realmente de
-// Firebase/Google Cloud Storage, para que no se pueda usar como proxy
-// abierto hacia cualquier URL arbitraria (SSRF).
+// anónimo acá adentro no repite ningún chequeo de más. Esta ruta valida
+// que el dominio de destino sea realmente de Firebase/Google Cloud
+// Storage Y que el bucket sea el NUESTRO — solo restringir por dominio
+// dejaba esta ruta funcionar como proxy abierto y anónimo hacia
+// CUALQUIER objeto público de CUALQUIER bucket de Google Cloud (propio
+// o ajeno), lo que permitía usar nuestro servidor como relay gratuito
+// de ancho de banda para contenido de terceros.
 const ALLOWED_HOSTS = new Set([
   "firebasestorage.googleapis.com",
   "storage.googleapis.com",
 ]);
+
+const OWN_BUCKET = "my-studio-4530a.firebasestorage.app";
 
 export async function GET(request: NextRequest) {
   const targetUrl = request.nextUrl.searchParams.get("url");
@@ -43,6 +48,13 @@ export async function GET(request: NextRequest) {
 
   if (!ALLOWED_HOSTS.has(parsed.hostname)) {
     return NextResponse.json({ error: "Dominio no permitido." }, { status: 403 });
+  }
+
+  // Ambos formatos de URL de descarga (firebasestorage.googleapis.com/v0/b/<bucket>/o/...
+  // y storage.googleapis.com/<bucket>/...) traen el nombre del bucket
+  // como segmento literal del path.
+  if (!parsed.pathname.includes(`/${OWN_BUCKET}/`)) {
+    return NextResponse.json({ error: "Bucket no permitido." }, { status: 403 });
   }
 
   const upstream = await fetch(parsed.toString());

@@ -272,9 +272,19 @@ function toPostComment(doc: QueryDocumentSnapshot<DocumentData>): PostComment {
 /// Orden cronológico simple (más viejo primero, como cualquier hilo de
 /// comentarios) — un post nunca tiene TANTOS comentarios como para que
 /// esto necesite paginación propia, a diferencia del feed en sí.
+///
+/// Tope duro de 500: sin esto, un post inundado de comentarios (spam)
+/// hace que CADA visitante que abra el modal pague la lectura completa
+/// de Firestore — un límite acota ese costo por más que alguien logre
+/// crear muchísimos (ver también el límite de tamaño de `text` en
+/// firestore.rules, que ataca la otra mitad del mismo problema).
 export async function fetchComments(postId: string): Promise<PostComment[]> {
   const snapshot = await getDocs(
-    query(collection(db, COLLECTION_NAME, postId, "comments"), orderBy("createdAt", "asc")),
+    query(
+      collection(db, COLLECTION_NAME, postId, "comments"),
+      orderBy("createdAt", "asc"),
+      limit(500),
+    ),
   );
   return snapshot.docs.map(toPostComment);
 }
