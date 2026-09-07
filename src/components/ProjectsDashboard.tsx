@@ -20,6 +20,7 @@ import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { PublishModal } from "@/components/PublishModal";
+import { StemSplitModal } from "@/components/StemSplitModal";
 import { Tooltip } from "@/components/Tooltip";
 
 interface CloudProject {
@@ -47,6 +48,7 @@ export function ProjectsDashboard() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [viewingProject, setViewingProject] = useState<CloudProject | null>(null);
   const [publishingProject, setPublishingProject] = useState<CloudProject | null>(null);
+  const [splittingProject, setSplittingProject] = useState<CloudProject | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -169,6 +171,15 @@ export function ProjectsDashboard() {
                 🌐 Publicar en Comunidad
               </button>
             </Tooltip>
+            <Tooltip text="Extraer voz, batería, bajo y resto de la mezcla (beta)">
+              <button
+                type="button"
+                onClick={() => setSplittingProject(project)}
+                className="flex items-center justify-center gap-1 whitespace-nowrap rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/70 transition-all duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan"
+              >
+                🎚️ Separar en Stems
+              </button>
+            </Tooltip>
           </div>
         </div>
       ))}
@@ -190,6 +201,17 @@ export function ProjectsDashboard() {
             storagePath: publishingProject.storagePath,
           }}
           onClose={() => setPublishingProject(null)}
+        />
+      )}
+
+      {splittingProject && (
+        <StemSplitModal
+          project={{
+            cloudId: splittingProject.cloudId,
+            title: splittingProject.title,
+            storagePath: splittingProject.storagePath,
+          }}
+          onClose={() => setSplittingProject(null)}
         />
       )}
     </div>
