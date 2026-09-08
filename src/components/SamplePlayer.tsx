@@ -25,7 +25,7 @@
 // comparara el número de segundos, el efecto no se dispararía la
 // segunda vez por ser un valor "igual" al anterior).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 
 export function SamplePlayer({
   src,
@@ -75,6 +75,31 @@ export function SamplePlayer({
     }
   }
 
+  // Click/tap sobre la barra = saltar a ese punto (y reproducir si
+  // estaba pausado). Con preload="none" la duración puede no estar
+  // todavía: en ese caso el salto se aplica apenas llega la metadata.
+  function handleSeekOnBar(e: MouseEvent<HTMLDivElement>) {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return; // sin layout (pestaña oculta) — nada que calcular
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const applySeek = () => {
+      if (!audio.duration || !Number.isFinite(audio.duration)) return;
+      audio.currentTime = ratio * audio.duration;
+      setProgress(ratio);
+    };
+    if (audio.duration && Number.isFinite(audio.duration)) {
+      applySeek();
+    } else {
+      audio.addEventListener("loadedmetadata", applySeek, { once: true });
+    }
+    if (audio.paused) {
+      onRequestPlay();
+      audio.play();
+    }
+  }
+
   return (
     <div className="flex items-center gap-2.5">
       <button
@@ -97,11 +122,30 @@ export function SamplePlayer({
         )}
       </button>
 
-      <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
-        <div
-          className="h-full rounded-full bg-neon-cyan transition-[width] duration-150"
-          style={{ width: `${progress * 100}%` }}
-        />
+      {/* Zona de click más alta que la barra visible (py-2) para que
+          sea fácil de tocar en el celular sin agrandar el diseño. */}
+      <div
+        role="slider"
+        aria-label="Posición de reproducción"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(progress * 100)}
+        tabIndex={0}
+        onClick={handleSeekOnBar}
+        onKeyDown={(e) => {
+          const audio = audioRef.current;
+          if (!audio || !audio.duration) return;
+          if (e.key === "ArrowRight") audio.currentTime = Math.min(audio.duration, audio.currentTime + 5);
+          if (e.key === "ArrowLeft") audio.currentTime = Math.max(0, audio.currentTime - 5);
+        }}
+        className="group flex flex-1 cursor-pointer items-center py-2"
+      >
+        <div className="h-1 w-full overflow-hidden rounded-full bg-white/10 transition-[height] group-hover:h-1.5">
+          <div
+            className="h-full rounded-full bg-neon-cyan transition-[width] duration-150"
+            style={{ width: `${progress * 100}%` }}
+          />
+        </div>
       </div>
 
       <audio

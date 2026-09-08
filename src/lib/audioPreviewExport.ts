@@ -59,8 +59,15 @@ export interface MixdownResult {
   durationSeconds: number;
 }
 
-const MP3_BITRATE_KBPS = 128;
-const SAMPLE_RATE = 44100;
+// Preview LIVIANO, no master: 32 kHz / 96 kbps en vez de 44,1 kHz / 128
+// (2026-09, punto 6 del feedback de pruebas — "demora bastante"). Menos
+// muestras que codificar (-27 %) y menos bits por frame; para un
+// preview del feed que se escucha por el parlante del celular la
+// diferencia es inaudible, y el archivo pesa ~25 % menos. La
+// exportación real de la app sigue siendo 44,1 kHz (FFmpeg, ver
+// multi_track_mixer_controller.dart).
+const MP3_BITRATE_KBPS = 96;
+const SAMPLE_RATE = 32000;
 const MP3_BLOCK_SIZE = 1152; // tamaño de frame que espera encodeBuffer, fijo por el formato MP3
 
 function constantPowerGains(volume: number, pan: number): { left: number; right: number } {
@@ -160,7 +167,48 @@ function floatTo16BitPCM(input: Float32Array): Int16Array {
 // generar overhead innecesario por ceder demasiado seguido.
 const BLOCKS_PER_CHUNK = 50;
 
+// Codifica en un Web Worker (previewEncoder.worker.ts): la UI queda
+// libre y el progreso llega por mensajes. Si el worker no se puede
+// crear (navegador viejo, CSP, error de carga), cae al codificador del
+// hilo principal de abajo — mismo resultado, solo más trabado.
 function encodeMp3(buffer: AudioBuffer, onProgress?: (ratio: number) => void): Promise<Blob> {
+  const left = floatTo16BitPCM(buffer.getChannelData(0));
+  const right = buffer.numberOfChannels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : left.slice();
+
+  return new Promise<Blob>((resolve, reject) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./previewEncoder.worker.ts", import.meta.url), { type: "module" });
+    } catch (err) {
+      console.warn("Worker de MP3 no disponible, codificando en el hilo principal:", err);
+      encodeMp3OnMainThread(buffer, onProgress).then(resolve, reject);
+      return;
+    }
+    worker.onmessage = (e: MessageEvent<{ type: string; ratio?: number; blob?: Blob; message?: string }>) => {
+      const msg = e.data;
+      if (msg.type === "progress") onProgress?.(msg.ratio ?? 0);
+      else if (msg.type === "done" && msg.blob) {
+        onProgress?.(1);
+        worker.terminate();
+        resolve(msg.blob);
+      } else if (msg.type === "error") {
+        worker.terminate();
+        reject(new Error(msg.message ?? "Error codificando el preview"));
+      }
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      console.warn("El worker de MP3 falló, codificando en el hilo principal.");
+      encodeMp3OnMainThread(buffer, onProgress).then(resolve, reject);
+    };
+    worker.postMessage(
+      { left, right, sampleRate: buffer.sampleRate, kbps: MP3_BITRATE_KBPS },
+      [left.buffer, right.buffer],
+    );
+  });
+}
+
+function encodeMp3OnMainThread(buffer: AudioBuffer, onProgress?: (ratio: number) => void): Promise<Blob> {
   const left = floatTo16BitPCM(buffer.getChannelData(0));
   const right = buffer.numberOfChannels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : left;
   const encoder = new Mp3Encoder(2, buffer.sampleRate, MP3_BITRATE_KBPS);
