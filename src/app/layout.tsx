@@ -4,6 +4,7 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { AppSidebar } from "@/components/AppSidebar";
 import { AppShell } from "@/components/AppShell";
+import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 
 // Identidad "Midnight Studio": Space Grotesk para títulos/UI destacada
 // (var --font-display), Inter para texto de lectura (var --font-body).
@@ -19,10 +20,26 @@ const inter = Inter({
   subsets: ["latin"],
 });
 
+// Metadata global (Fase 0): un solo nombre (ver src/lib/site.ts),
+// OpenGraph/Twitter para que los links compartidos muestren título e
+// imagen, y metadataBase para que las rutas relativas (opengraph-image)
+// resuelvan a la URL pública. Cada página puede sobreescribir title/
+// description; el template agrega " · MY STUDIO".
 export const metadata: Metadata = {
-  title: "My Studio Cloud",
-  description:
-    "Sincronización en la nube, banco de sonidos y cuenta de usuario para My Studio.",
+  metadataBase: new URL(SITE_URL),
+  title: { default: SITE_NAME, template: `%s · ${SITE_NAME}` },
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    title: SITE_NAME,
+    description: SITE_DESCRIPTION,
+    url: SITE_URL,
+    locale: "es_AR",
+  },
+  twitter: { card: "summary_large_image", title: SITE_NAME, description: SITE_DESCRIPTION },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

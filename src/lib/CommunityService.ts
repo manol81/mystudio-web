@@ -83,6 +83,14 @@ function toCommunityPost(doc: QueryDocumentSnapshot<DocumentData>): CommunityPos
   };
 }
 
+/// Una publicación puntual por id (página /p/[postId]) — null si no
+/// existe. Lectura pública, igual que el feed.
+export async function fetchCommunityPost(postId: string): Promise<CommunityPost | null> {
+  const snapshot = await getDoc(doc(db, COLLECTION_NAME, postId));
+  if (!snapshot.exists()) return null;
+  return toCommunityPost(snapshot as QueryDocumentSnapshot<DocumentData>);
+}
+
 /// Trae un lote de `PAGE_SIZE` posts ordenados por fecha descendente.
 /// `cursor` null = primer lote; si no, arranca después de ese doc
 /// (típicamente el último `.cursor` devuelto por la llamada anterior).

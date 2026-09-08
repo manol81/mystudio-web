@@ -18,7 +18,8 @@
 // Math.random(), para no romper la hidratación SSR/CSR.
 
 import { useState } from "react";
-import { Heart, MessageCircle, MoreVertical, ShieldOff, Flag } from "lucide-react";
+import { Heart, MessageCircle, MoreVertical, ShieldOff, Flag, Link2, Check } from "lucide-react";
+import { SITE_URL } from "@/lib/site";
 import { CommentsModal } from "@/components/CommentsModal";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
@@ -61,6 +62,7 @@ export function PostCard({
   onRequestPlay,
   commentsCount,
   onCommentAdded,
+  onRequireLogin,
 }: {
   post: CommunityPost;
   isLiked: boolean;
@@ -70,8 +72,24 @@ export function PostCard({
   onRequestPlay: () => void;
   commentsCount: number;
   onCommentAdded: (postId: string) => void;
+  // El feed es público (Fase 0): un visitante puede escuchar y leer
+  // comentarios; al intentar dar like se le pide iniciar sesión en vez
+  // de mostrarle un botón muerto.
+  onRequireLogin?: () => void;
 }) {
   const { user } = useAuth();
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  async function handleCopyLink() {
+    try {
+      await navigator.clipboard.writeText(`${SITE_URL}/p/${post.id}`);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 1800);
+    } catch {
+      // Sin permiso de portapapeles (iframe, http) — no hay nada útil
+      // que mostrar, el link sigue siendo la URL de la página.
+    }
+  }
   const [isViewerOpen, setIsViewerOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
@@ -98,7 +116,11 @@ export function PostCard({
   }
 
   async function handleToggleLike() {
-    if (!user || isLiking) return;
+    if (!user) {
+      onRequireLogin?.();
+      return;
+    }
+    if (isLiking) return;
     setIsLiking(true);
     try {
       const nowLiked = await toggleLike(post.id, user.uid);
@@ -228,11 +250,11 @@ export function PostCard({
 
       {/* Interacción */}
       <div className="flex items-center gap-4 text-xs">
-        <Tooltip text={isLiked ? "Quitar tu Me Gusta" : "Dale Me Gusta a esta publicación"}>
+        <Tooltip text={!user ? "Iniciá sesión para dar Me Gusta" : isLiked ? "Quitar tu Me Gusta" : "Dale Me Gusta a esta publicación"}>
           <button
             type="button"
             onClick={handleToggleLike}
-            disabled={!user || isLiking}
+            disabled={isLiking}
             aria-label={isLiked ? "Quitar me gusta" : "Me gusta"}
             className={`-ml-1.5 flex items-center gap-1.5 rounded-full px-1.5 py-1 transition-colors duration-200 disabled:cursor-not-allowed ${
               isLiked ? "text-neon-cyan" : "text-white/40 hover:text-white/70"
@@ -249,6 +271,20 @@ export function PostCard({
             className="flex items-center gap-1.5 rounded-full px-1.5 py-1 text-white/40 transition-colors duration-200 hover:text-white/70"
           >
             <MessageCircle size={14} /> {commentsCount}
+          </button>
+        </Tooltip>
+
+        <Tooltip text="Copiar el link de esta publicación para compartirlo" side="left" wrapperClassName="relative ml-auto inline-flex">
+          <button
+            type="button"
+            onClick={handleCopyLink}
+            aria-label="Copiar link"
+            className={`flex items-center gap-1.5 rounded-full px-1.5 py-1 transition-colors duration-200 ${
+              linkCopied ? "text-neon-cyan" : "text-white/40 hover:text-white/70"
+            }`}
+          >
+            {linkCopied ? <Check size={14} /> : <Link2 size={14} />}
+            {linkCopied ? "Copiado" : "Link"}
           </button>
         </Tooltip>
       </div>

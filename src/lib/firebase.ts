@@ -39,6 +39,21 @@ export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 
+// App Check (Fase 0) — protege la CUOTA de Firestore/Storage frente a
+// scripts que copien esta config pública. Solo se activa si existe la
+// site key de reCAPTCHA Enterprise (Firebase Console → App Check →
+// Web app → reCAPTCHA Enterprise) en NEXT_PUBLIC_APPCHECK_SITE_KEY;
+// sin la variable el sitio funciona igual que hasta ahora. En la
+// Console dejar App Check en modo monitoreo hasta ver tokens válidos.
+if (typeof window !== "undefined" && process.env.NEXT_PUBLIC_APPCHECK_SITE_KEY) {
+  import("firebase/app-check").then(({ initializeAppCheck, ReCaptchaEnterpriseProvider }) => {
+    initializeAppCheck(app, {
+      provider: new ReCaptchaEnterpriseProvider(process.env.NEXT_PUBLIC_APPCHECK_SITE_KEY!),
+      isTokenAutoRefreshEnabled: true,
+    });
+  });
+}
+
 // Analytics necesita window/indexedDB — no existe durante el render en
 // el servidor (SSR/SSG de Next.js). isSupported() además descarta
 // entornos donde el SDK no puede funcionar igual (ej. Safari en modo

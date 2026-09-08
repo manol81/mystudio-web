@@ -169,6 +169,11 @@ export function CommentsModal({
           )}
         </div>
 
+        {!user && (
+          <p className="border-t border-white/10 px-6 py-4 text-center text-xs text-white/40">
+            Iniciá sesión para dejar un comentario.
+          </p>
+        )}
         {user && (
           <form onSubmit={handleSubmit} className="border-t border-white/10 px-6 py-4">
             <textarea
