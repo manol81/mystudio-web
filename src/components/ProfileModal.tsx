@@ -17,6 +17,7 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
   const [username, setUsernameInput] = useState(profile?.username ?? "");
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [propagated, setPropagated] = useState<{ posts: number; comments: number } | null>(null);
 
   const isBusy = status === "saving" || status === "success";
 
@@ -32,9 +33,10 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
     setStatus("saving");
     setErrorMessage(null);
     try {
-      await saveUsername(user.uid, trimmed);
+      const result = await saveUsername(user.uid, trimmed);
+      setPropagated(result);
       setStatus("success");
-      setTimeout(onClose, 900);
+      setTimeout(onClose, result.posts + result.comments > 0 ? 2200 : 900);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err));
       setStatus("error");
@@ -52,7 +54,8 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
       >
         <h2 className="font-display text-xl font-semibold text-white">Editar Perfil</h2>
         <p className="mt-1 text-xs text-white/50">
-          Tu nickname es el nombre que ven los demás en la Comunidad — nunca tu email.
+          Tu nickname es el nombre que ven los demás en la Comunidad — nunca tu email. Al
+          guardarlo se actualiza también en tus publicaciones y comentarios.
         </p>
 
         {status === "success" ? (
@@ -61,6 +64,13 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
               ✓
             </div>
             <p className="text-sm text-white/70">¡Guardado!</p>
+            {propagated && propagated.posts + propagated.comments > 0 && (
+              <p className="max-w-xs text-xs text-white/40">
+                Actualizado también en {propagated.posts}{" "}
+                {propagated.posts === 1 ? "publicación" : "publicaciones"} y {propagated.comments}{" "}
+                {propagated.comments === 1 ? "comentario" : "comentarios"}.
+              </p>
+            )}
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">

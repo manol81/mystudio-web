@@ -22,7 +22,20 @@
 // necesario para que el nickname cumpla su función actual: dejar de
 // mostrar el email real en público.
 
-import { doc, getDoc, onSnapshot, serverTimestamp, setDoc, type Unsubscribe } from "firebase/firestore";
+import {
+  collection,
+  collectionGroup,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  where,
+  writeBatch,
+  type Unsubscribe,
+} from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 export interface UserProfile {
@@ -47,8 +60,50 @@ export async function ensureUserProfile(uid: string, email: string | null): Prom
   await setDoc(ref, { email, username: null, createdAt: serverTimestamp() });
 }
 
-export async function setUsername(uid: string, username: string): Promise<void> {
+export interface UsernamePropagation {
+  posts: number;
+  comments: number;
+}
+
+/// Guarda el apodo y lo PROPAGA a las copias denormalizadas en las
+/// publicaciones y comentarios propios (ver comentario de cabecera:
+/// authorName viaja como copia en cada doc). Sin esto, cambiar el
+/// apodo dejaba el viejo en todo lo ya publicado — y los posts
+/// anteriores a que existieran los apodos quedaron con el EMAIL como
+/// authorName, visible en un feed que ahora es público.
+///
+/// firestore.rules permite este update solo al autor y solo al valor
+/// exacto de users/{uid}.username — por eso el perfil se escribe
+/// PRIMERO y recién después se tocan posts/comentarios. La propagación
+/// es best-effort: si falla, el apodo igual quedó guardado.
+export async function setUsername(uid: string, username: string): Promise<UsernamePropagation> {
   await setDoc(doc(db, "users", uid), { username, updatedAt: serverTimestamp() }, { merge: true });
+  return propagateUsername(uid, username);
+}
+
+async function propagateUsername(uid: string, username: string): Promise<UsernamePropagation> {
+  const result: UsernamePropagation = { posts: 0, comments: 0 };
+  try {
+    const [postsSnap, commentsSnap] = await Promise.all([
+      getDocs(query(collection(db, "community_posts"), where("authorId", "==", uid))),
+      getDocs(query(collectionGroup(db, "comments"), where("authorId", "==", uid))),
+    ]);
+    const stale = [...postsSnap.docs, ...commentsSnap.docs].filter(
+      (d) => (d.data().authorName as string | undefined) !== username,
+    );
+    // writeBatch acepta hasta 500 operaciones — de a lotes por si
+    // alguien tiene más publicaciones/comentarios que eso.
+    for (let i = 0; i < stale.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const d of stale.slice(i, i + 400)) batch.update(d.ref, { authorName: username });
+      await batch.commit();
+    }
+    result.posts = stale.filter((d) => d.ref.parent.id === "community_posts").length;
+    result.comments = stale.length - result.posts;
+  } catch (err) {
+    console.error("No se pudo propagar el apodo a publicaciones/comentarios:", err);
+  }
+  return result;
 }
 
 /// Suscripción en tiempo real al perfil PROPIO — un cambio de nickname
