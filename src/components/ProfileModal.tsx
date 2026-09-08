@@ -6,8 +6,12 @@
 // modales (LoginModal, PublishModal, ReportModal).
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
-import { isValidUsername, setUsername as saveUsername } from "@/lib/UserProfileService";
+import {
+  isValidUsername,
+  setUsername as saveUsername,
+} from "@/lib/UserProfileService";
 
 const inputClasses =
   "w-full rounded-lg border border-white/15 bg-onyx-black px-4 py-2.5 text-sm text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan focus:shadow-[0_0_0_1px_rgba(102,252,241,0.4)]";
@@ -15,9 +19,14 @@ const inputClasses =
 export function ProfileModal({ onClose }: { onClose: () => void }) {
   const { user, profile } = useAuth();
   const [username, setUsernameInput] = useState(profile?.username ?? "");
-  const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">(
+    "idle",
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [propagated, setPropagated] = useState<{ posts: number; comments: number } | null>(null);
+  const [propagated, setPropagated] = useState<{
+    posts: number;
+    comments: number;
+  } | null>(null);
 
   const isBusy = status === "saving" || status === "success";
 
@@ -26,7 +35,9 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
     if (!user) return;
     const trimmed = username.trim();
     if (!isValidUsername(trimmed)) {
-      setErrorMessage("3 a 20 caracteres: letras, números o guión bajo, sin espacios.");
+      setErrorMessage(
+        "3 a 20 caracteres: letras, números o guión bajo, sin espacios.",
+      );
       setStatus("error");
       return;
     }
@@ -52,10 +63,13 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
         className="w-full max-w-sm rounded-2xl border border-white/10 bg-graphite p-8 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="font-display text-xl font-semibold text-white">Editar Perfil</h2>
+        <h2 className="font-display text-xl font-semibold text-white">
+          Editar Perfil
+        </h2>
         <p className="mt-1 text-xs text-white/50">
-          Tu nickname es el nombre que ven los demás en la Comunidad — nunca tu email. Al
-          guardarlo se actualiza también en tus publicaciones y comentarios.
+          Tu nickname es el nombre que ven los demás en la Comunidad — nunca tu
+          email. Al guardarlo se actualiza también en tus publicaciones y
+          comentarios.
         </p>
 
         {status === "success" ? (
@@ -67,7 +81,8 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
             {propagated && propagated.posts + propagated.comments > 0 && (
               <p className="max-w-xs text-xs text-white/40">
                 Actualizado también en {propagated.posts}{" "}
-                {propagated.posts === 1 ? "publicación" : "publicaciones"} y {propagated.comments}{" "}
+                {propagated.posts === 1 ? "publicación" : "publicaciones"} y{" "}
+                {propagated.comments}{" "}
                 {propagated.comments === 1 ? "comentario" : "comentarios"}.
               </p>
             )}
@@ -75,7 +90,10 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
         ) : (
           <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
             <div>
-              <label htmlFor="profile-username" className="mb-1.5 block text-xs text-white/60">
+              <label
+                htmlFor="profile-username"
+                className="mb-1.5 block text-xs text-white/60"
+              >
                 Nickname
               </label>
               <input
@@ -97,22 +115,33 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
               </p>
             )}
 
-            <div className="mt-2 flex items-center justify-end gap-3">
-              <button
-                type="button"
+            <div className="mt-2 flex items-center justify-between gap-3">
+              {/* Eliminación self-service — misma página que declara
+                  Google Play (Data Safety → account deletion). */}
+              <Link
+                href="/cuenta/eliminar"
                 onClick={onClose}
-                disabled={isBusy}
-                className="rounded-full px-4 py-2 text-sm text-white/60 transition-colors hover:text-white disabled:opacity-40"
+                className="text-xs text-red-400/70 underline-offset-2 transition-colors hover:text-red-300 hover:underline"
               >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={isBusy}
-                className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)] disabled:opacity-50"
-              >
-                {status === "saving" ? "Guardando..." : "Guardar"}
-              </button>
+                Eliminar mi cuenta
+              </Link>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={isBusy}
+                  className="rounded-full px-4 py-2 text-sm text-white/60 transition-colors hover:text-white disabled:opacity-40"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isBusy}
+                  className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)] disabled:opacity-50"
+                >
+                  {status === "saving" ? "Guardando..." : "Guardar"}
+                </button>
+              </div>
             </div>
           </form>
         )}
