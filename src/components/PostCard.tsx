@@ -19,7 +19,16 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Heart, MessageCircle, MoreVertical, ShieldOff, Flag, Link2, Check } from "lucide-react";
+import {
+  Heart,
+  MessageCircle,
+  MoreVertical,
+  ShieldOff,
+  Flag,
+  Link2,
+  Check,
+  SlidersHorizontal,
+} from "lucide-react";
 import { SITE_URL } from "@/lib/site";
 import { CommentsModal } from "@/components/CommentsModal";
 import { ProjectViewer } from "@/components/ProjectViewer";
@@ -282,6 +291,26 @@ export function PostCard({
             <MessageCircle size={14} /> {commentsCount}
           </button>
         </Tooltip>
+
+        {/* Escuchar por pistas, SOLO en las publicaciones propias.
+            El .mystudio vive en users/{uid}/projects, que por reglas
+            lee únicamente su dueño: para cualquier otra persona el
+            visor falla con "permiso denegado". Abrirlo a todos
+            requiere publicar una copia del proyecto en una ruta
+            pública al momento de publicar, que duplica almacenamiento
+            y es una decisión de producto pendiente. Mientras tanto se
+            muestra donde SÍ funciona, en vez de ofrecer algo roto. */}
+        {user?.uid === post.authorId && (
+          <Tooltip text="Escuchá tu canción por dentro: silenciá o destacá cada pista">
+            <button
+              type="button"
+              onClick={() => setIsViewerOpen(true)}
+              className="flex items-center gap-1.5 rounded-full px-1.5 py-1 text-white/40 transition-colors duration-200 hover:text-neon-cyan"
+            >
+              <SlidersHorizontal size={14} /> Pistas
+            </button>
+          </Tooltip>
+        )}
 
         <Tooltip text="Copiar el link de esta publicación para compartirlo" side="left" wrapperClassName="relative ml-auto inline-flex">
           <button

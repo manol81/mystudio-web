@@ -47,7 +47,7 @@
 // Web Audio no tiene pause/resume nativo, así que "resumir" es crear
 // nodos nuevos arrancando en el offset correcto de cada clip.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { ref, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
@@ -268,6 +268,22 @@ export function ProjectViewer({
   // Mezcla renderizada con efectos (null = proyecto sin efectos, se
   // reproduce por el camino de siempre).
   const [renderedMix, setRenderedMix] = useState<AudioBuffer | null>(null);
+
+  // Escuchar "por dentro" (2026-09): silenciar o destacar pistas
+  // mientras suena. Arranca con lo que traía el proyecto y a partir de
+  // ahí manda lo que toque el oyente, sin modificar nada del original.
+  const [mutedTracks, setMutedTracks] = useState<Set<number>>(new Set());
+  const [soloTracks, setSoloTracks] = useState<Set<number>>(new Set());
+  // Ganancias vivas por pista, para que silenciar sea instantáneo en
+  // los proyectos sin efectos (los que se reproducen clip por clip).
+  const trackGainsRef = useRef<Map<number, { left: GainNode; right: GainNode }>>(new Map());
+  const [isRerendering, setIsRerendering] = useState(false);
+  // Efectos del máster del proyecto, para poder rehacer la mezcla
+  // cuando el oyente silencia una pista.
+  const masterFxRef = useRef<MasterFx>(DEFAULT_MASTER_FX);
+  // Segundo donde retomar después de rehacer la mezcla: playFrom lee
+  // renderedMix del estado, que en ese mismo tick todavía es el viejo.
+  const pendingResumeRef = useRef<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playheadSeconds, setPlayheadSeconds] = useState(0);
   const [containerWidth, setContainerWidth] = useState(600);
@@ -279,6 +295,28 @@ export function ProjectViewer({
   const rafRef = useRef<number | null>(null);
   const autoStopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+
+  // Declarada acá arriba a propósito: la limpieza del efecto de
+  // carga la usa, y el linter de React exige que una función esté
+  // declarada antes de quien la referencia.
+  function stopAllSources() {
+    for (const source of activeSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // ya se había detenido solo (llegó al final del buffer) — no pasa nada
+      }
+    }
+    activeSourcesRef.current = [];
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (autoStopTimeoutRef.current !== null) {
+      clearTimeout(autoStopTimeoutRef.current);
+      autoStopTimeoutRef.current = null;
+    }
+  }
 
   // ─── Carga ──────────────────────────────────────────────────────────────
   // Dos caminos:
@@ -371,6 +409,7 @@ export function ProjectViewer({
           fx: t.fx,
           clips: t.clips.map((c) => ({ startSeconds: c.startBeat, buffer: c.buffer })),
         }));
+        masterFxRef.current = master;
         let mix: AudioBuffer | null = null;
         if (projectHasEffects(mixdownTracks)) {
           const rendered = renderProjectMix(mixdownTracks, master, ctx.sampleRate);
@@ -380,6 +419,12 @@ export function ProjectViewer({
         setTracks(runtimeTracks);
         setTotalDuration(maxEnd);
         setRenderedMix(mix);
+        setMutedTracks(
+          new Set(runtimeTracks.flatMap((t, i) => (t.isMuted ? [i] : []))),
+        );
+        setSoloTracks(
+          new Set(runtimeTracks.flatMap((t, i) => (t.isSolo ? [i] : []))),
+        );
         setStatus("ready"); // Play ya funciona acá — todavía con shadow waveforms
 
         // Fase 2: un clip por vez, en macrotasks separadas (dejan
@@ -476,22 +521,91 @@ export function ProjectViewer({
 
   // ─── Motor de reproducción ──────────────────────────────────────────────
 
-  function stopAllSources() {
-    for (const source of activeSourcesRef.current) {
-      try {
-        source.stop();
-      } catch {
-        // ya se había detenido solo (llegó al final del buffer) — no pasa nada
+
+  /// Qué pistas suenan según lo que eligió el OYENTE. Misma regla que
+  /// el mixer: destacar alguna silencia al resto, y silenciar gana
+  /// siempre.
+  const isTrackAudible = useCallback(
+    (index: number) => {
+      if (mutedTracks.has(index)) return false;
+      if (soloTracks.size > 0) return soloTracks.has(index);
+      return true;
+    },
+    [mutedTracks, soloTracks],
+  );
+
+  /// Silencia o destaca una pista. En un proyecto sin efectos el cambio
+  /// es inmediato: se mueve la ganancia del nodo y listo. Con efectos
+  /// hay que volver a mezclar, porque el audio procesado vive en un
+  /// único buffer ya sumado (el compresor y la reverb dependen de qué
+  /// pistas entran, así que no alcanza con bajar un volumen).
+  function toggleTrack(index: number, kind: "mute" | "solo") {
+    const nextMuted = new Set(mutedTracks);
+    const nextSolo = new Set(soloTracks);
+    if (kind === "mute") {
+      if (nextMuted.has(index)) nextMuted.delete(index);
+      else nextMuted.add(index);
+    } else {
+      if (nextSolo.has(index)) nextSolo.delete(index);
+      else nextSolo.add(index);
+    }
+    setMutedTracks(nextMuted);
+    setSoloTracks(nextSolo);
+
+    const audibleWith = (i: number) => {
+      if (nextMuted.has(i)) return false;
+      if (nextSolo.size > 0) return nextSolo.has(i);
+      return true;
+    };
+
+    if (!renderedMix) {
+      // Sin efectos: basta con mover las ganancias ya conectadas.
+      for (const [i, track] of tracks.entries()) {
+        const nodes = trackGainsRef.current.get(i);
+        if (!nodes) continue;
+        const { left, right } = constantPowerGains(track.volume, track.pan);
+        const on = audibleWith(i);
+        nodes.left.gain.value = on ? left : 0;
+        nodes.right.gain.value = on ? right : 0;
       }
+      return;
     }
-    activeSourcesRef.current = [];
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    if (autoStopTimeoutRef.current !== null) {
-      clearTimeout(autoStopTimeoutRef.current);
-      autoStopTimeoutRef.current = null;
+
+    // Con efectos: rehacer la mezcla con las pistas que quedan y
+    // retomar donde estaba sonando.
+    void rerenderMix(audibleWith);
+  }
+
+  async function rerenderMix(audibleWith: (index: number) => boolean) {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    const wasPlaying = isPlaying;
+    const resumeAt = playheadSeconds;
+    setIsRerendering(true);
+    stopAllSources();
+    setIsPlaying(false);
+    try {
+      const mixdownTracks: MixdownTrack[] = tracks.map((t, i) => ({
+        volume: t.volume,
+        pan: t.pan,
+        // Lo que decidió el oyente reemplaza al mute/solo del proyecto.
+        isMuted: !audibleWith(i),
+        isSolo: false,
+        fx: t.fx,
+        clips: t.clips.map((c) => ({ startSeconds: c.startBeat, buffer: c.buffer })),
+      }));
+      const rendered = renderProjectMix(mixdownTracks, masterFxRef.current, ctx.sampleRate);
+      const buffer = toAudioBuffer(rendered, ctx, ctx.sampleRate);
+      setRenderedMix(buffer);
+      if (wasPlaying) {
+        // playFrom lee renderedMix del estado, que todavía no se
+        // actualizó en este tick: se reprograma en el efecto de abajo.
+        pendingResumeRef.current = resumeAt;
+      }
+    } catch (err) {
+      console.error("No se pudo rehacer la mezcla:", err);
+    } finally {
+      setIsRerendering(false);
     }
   }
 
@@ -506,12 +620,12 @@ export function ProjectViewer({
     stopAllSources();
 
     const clamped = Math.max(0, Math.min(totalDuration, fromSeconds));
-    const anySolo = tracks.some((t) => t.isSolo);
     const startContextTime = ctx.currentTime;
     playStartContextTimeRef.current = startContextTime;
     playheadAtStartRef.current = clamped;
 
     const sources: AudioBufferSourceNode[] = [];
+    trackGainsRef.current.clear();
 
     // Proyecto CON efectos: ya está todo mezclado y procesado en un
     // solo buffer estéreo (volumen, paneo, mute/solo, EQ, compresor,
@@ -531,15 +645,19 @@ export function ProjectViewer({
       return;
     }
 
-    for (const track of tracks) {
-      const audible = !track.isMuted && (!anySolo || track.isSolo);
-      if (!audible || track.clips.length === 0) continue;
+    for (const [index, track] of tracks.entries()) {
+      if (track.clips.length === 0) continue;
 
       const { left, right } = constantPowerGains(track.volume, track.pan);
+      // Los nodos se crean SIEMPRE, aunque la pista esté silenciada: así
+      // volver a activarla es cambiar una ganancia, sin reprogramar la
+      // reproducción ni cortar el audio.
+      const audible = isTrackAudible(index);
       const gainL = ctx.createGain();
-      gainL.gain.value = left;
+      gainL.gain.value = audible ? left : 0;
       const gainR = ctx.createGain();
-      gainR.gain.value = right;
+      gainR.gain.value = audible ? right : 0;
+      trackGainsRef.current.set(index, { left: gainL, right: gainR });
       const merger = ctx.createChannelMerger(2);
       gainL.connect(merger, 0, 0);
       gainR.connect(merger, 0, 1);
@@ -586,6 +704,19 @@ export function ProjectViewer({
       setIsPlaying(false);
     }, remaining * 1000 + 150);
   }
+
+  // Retoma la reproducción con la mezcla nueva, una vez que React ya
+  // aplicó el buffer rehecho (ver rerenderMix).
+  useEffect(() => {
+    if (pendingResumeRef.current === null || !renderedMix) return;
+    const resumeAt = pendingResumeRef.current;
+    pendingResumeRef.current = null;
+    queueMicrotask(() => playFrom(resumeAt));
+    // playFrom cambia en cada render y agregarlo dispararía el efecto
+    // sin parar; lo que importa acá es el buffer nuevo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderedMix]);
+
 
   /// Pausa: el cursor queda EXACTAMENTE donde estaba, no se resetea.
   function pausePlayback() {
@@ -764,20 +895,47 @@ export function ProjectViewer({
                 </div>
 
                 <div className="flex flex-col gap-1.5 pt-1">
-                  {tracks.map((track, i) => (
+                  {tracks.map((track, i) => {
+                    const audible = isTrackAudible(i);
+                    return (
                     <div key={i} className="flex items-center gap-3">
-                      <div className="flex w-24 shrink-0 items-center gap-1.5 truncate text-xs text-white/60">
+                      <div className="flex w-24 shrink-0 items-center gap-1 truncate text-xs">
                         <span
                           className="h-2 w-2 shrink-0 rounded-full"
                           style={{ backgroundColor: track.color }}
                         />
-                        <span className="truncate">{track.name}</span>
-                        {track.isMuted && (
-                          <span className="text-red-400/70">M</span>
-                        )}
-                        {track.isSolo && (
-                          <span className="text-neon-cyan/70">S</span>
-                        )}
+                        <span className={`truncate ${audible ? "text-white/60" : "text-white/25"}`}>
+                          {track.name}
+                        </span>
+                        {/* Silenciar y destacar, en vivo: escuchar la
+                            canción por dentro es lo que diferencia a un
+                            proyecto multipista de un archivo de audio. */}
+                        <button
+                          type="button"
+                          onClick={() => toggleTrack(i, "mute")}
+                          disabled={isRerendering}
+                          title={mutedTracks.has(i) ? "Volver a escuchar" : "Silenciar"}
+                          className={`ml-auto rounded px-1 text-[10px] font-bold transition-colors duration-150 disabled:opacity-40 ${
+                            mutedTracks.has(i)
+                              ? "bg-red-400/20 text-red-300"
+                              : "text-white/30 hover:text-white/70"
+                          }`}
+                        >
+                          M
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleTrack(i, "solo")}
+                          disabled={isRerendering}
+                          title={soloTracks.has(i) ? "Dejar de destacar" : "Escuchar solo esta"}
+                          className={`rounded px-1 text-[10px] font-bold transition-colors duration-150 disabled:opacity-40 ${
+                            soloTracks.has(i)
+                              ? "bg-neon-cyan/20 text-neon-cyan"
+                              : "text-white/30 hover:text-white/70"
+                          }`}
+                        >
+                          S
+                        </button>
                       </div>
                       <div
                         className="relative rounded bg-onyx-black"
@@ -807,7 +965,8 @@ export function ProjectViewer({
                         })}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
