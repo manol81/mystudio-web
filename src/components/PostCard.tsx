@@ -292,16 +292,14 @@ export function PostCard({
           </button>
         </Tooltip>
 
-        {/* Escuchar por pistas, SOLO en las publicaciones propias.
-            El .mystudio vive en users/{uid}/projects, que por reglas
-            lee únicamente su dueño: para cualquier otra persona el
-            visor falla con "permiso denegado". Abrirlo a todos
-            requiere publicar una copia del proyecto en una ruta
-            pública al momento de publicar, que duplica almacenamiento
-            y es una decisión de producto pendiente. Mientras tanto se
-            muestra donde SÍ funciona, en vez de ofrecer algo roto. */}
-        {user?.uid === post.authorId && (
-          <Tooltip text="Escuchá tu canción por dentro: silenciá o destacá cada pista">
+        {/* Escuchar por pistas. Con el paquete liviano publicado
+            (stemsUrl) lo puede abrir CUALQUIERA; sin él solo el autor,
+            porque el .mystudio original vive en su espacio privado y
+            para el resto el visor falla con permiso denegado. Las
+            publicaciones anteriores a esta función no tienen paquete:
+            se regenera volviendo a publicar. */}
+        {(post.stemsUrl || user?.uid === post.authorId) && (
+          <Tooltip text="Escuchá la canción por dentro: silenciá o destacá cada pista">
             <button
               type="button"
               onClick={() => setIsViewerOpen(true)}
@@ -329,6 +327,7 @@ export function PostCard({
 
       {isViewerOpen && (
         <ProjectViewer
+          stemsUrl={post.stemsUrl}
           projectId={post.id}
           storagePath={post.audioUrl}
           title={post.title}

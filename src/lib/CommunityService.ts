@@ -54,6 +54,11 @@ export interface CommunityPost {
   // generarse por algún error.
   audioPreviewUrl: string | null;
   previewDurationSeconds: number | null;
+  // ZIP con un MP3 por pista, alineados desde 0 (ver stemsExport.ts).
+  // Es lo que permite a CUALQUIERA escuchar la canción por dentro: el
+  // .mystudio original solo lo puede leer su autor. null en las
+  // publicaciones anteriores a esta función o si la generación falló.
+  stemsUrl: string | null;
   genre: string;
   description: string;
   likesCount: number;
@@ -77,6 +82,7 @@ function toCommunityPost(doc: QueryDocumentSnapshot<DocumentData>): CommunityPos
     audioUrl: (data.audioUrl as string) ?? "",
     audioPreviewUrl: (data.audioPreviewUrl as string) ?? null,
     previewDurationSeconds: (data.previewDurationSeconds as number) ?? null,
+    stemsUrl: (data.stemsUrl as string) ?? null,
     genre: (data.genre as string) ?? "",
     description: (data.description as string) ?? "",
     likesCount: (data.likesCount as number) ?? 0,
@@ -181,6 +187,13 @@ export async function attachCommunityPreview(
   previewDurationSeconds: number,
 ): Promise<void> {
   await updateDoc(doc(db, COLLECTION_NAME, postId), { audioPreviewUrl, previewDurationSeconds });
+}
+
+/// Adjunta el paquete de pistas livianas, después de subirlo. Igual que
+/// el preview: se hace en un segundo paso porque el archivo se genera
+/// recién cuando el post ya existe.
+export async function attachCommunityStems(postId: string, stemsUrl: string): Promise<void> {
+  await updateDoc(doc(db, COLLECTION_NAME, postId), { stemsUrl });
 }
 
 // ─── Moderación — reportar publicaciones y bloquear autores ─────────────

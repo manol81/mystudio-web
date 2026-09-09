@@ -49,6 +49,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
+import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
 import { ref, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import {
@@ -59,6 +60,7 @@ import {
 } from "@/lib/projectMixdown";
 import {
   DEFAULT_MASTER_FX,
+  NO_TRACK_FX,
   parseMasterFx,
   parseTrackFx,
   type MasterFx,
@@ -253,11 +255,17 @@ function ClipWaveform({
 export function ProjectViewer({
   projectId,
   storagePath,
+  stemsUrl,
   title,
   onClose,
 }: {
   projectId: string;
   storagePath: string;
+  /// Paquete de pistas livianas de la publicación (ver stemsExport.ts).
+  /// Cuando existe se usa SIEMPRE, incluso para el autor: pesa una
+  /// fracción del proyecto real, se descarga mucho más rápido y es lo
+  /// único que puede leer alguien que no sea su dueño.
+  stemsUrl?: string | null;
   title: string;
   onClose: () => void;
 }) {
@@ -343,6 +351,10 @@ export function ProjectViewer({
       }
 
       try {
+        if (stemsUrl) {
+          await loadFromStems(stemsUrl);
+          return;
+        }
         const downloadUrl = await getDownloadURL(ref(storage, storagePath));
         const response = await fetch(
           `/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`,
@@ -483,6 +495,67 @@ export function ProjectViewer({
       }
     }
 
+    /// Carga desde el paquete liviano: un MP3 por pista, todos
+    /// alineados desde 0 y con sus efectos, volumen y paneo ya
+    /// aplicados. Por eso las pistas quedan con fx neutro y sin
+    /// mezcla que renderizar: se reproducen tal cual, y silenciar una
+    /// es instantáneo.
+    async function loadFromStems(url: string) {
+      const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(url)}`);
+      if (!response.ok) {
+        throw new Error(`No se pudieron descargar las pistas (HTTP ${response.status}).`);
+      }
+      const zip = await JSZip.loadAsync(await response.arrayBuffer());
+      const manifestFile = zip.file(STEMS_MANIFEST);
+      if (!manifestFile) throw new Error("El paquete de pistas está incompleto.");
+      const manifest: StemsManifest = JSON.parse(await manifestFile.async("string"));
+
+      const ctx = new AudioContext();
+      audioContextRef.current = ctx;
+
+      const runtimeTracks: RuntimeTrack[] = [];
+      for (const stem of manifest.stems) {
+        const file = zip.file(stem.file);
+        if (!file) continue;
+        const buffer = await ctx.decodeAudioData(await file.async("arraybuffer"));
+        runtimeTracks.push({
+          name: stem.name,
+          volume: 1,
+          pan: 0,
+          isMuted: false,
+          isSolo: false,
+          fx: NO_TRACK_FX,
+          clips: [{ startBeat: 0, buffer, peaks: null }],
+          color: TRACK_COLORS[runtimeTracks.length % TRACK_COLORS.length],
+        });
+      }
+
+      if (cancelled) return;
+      const maxEnd = runtimeTracks.reduce(
+        (max, t) => Math.max(max, t.clips[0]?.buffer.duration ?? 0),
+        0,
+      );
+      setTracks(runtimeTracks);
+      setTotalDuration(maxEnd || manifest.durationSeconds);
+      setRenderedMix(null);
+      setMutedTracks(new Set());
+      setSoloTracks(new Set());
+      setStatus("ready");
+
+      // Picos en segundo plano, igual que en el camino del proyecto
+      // completo: Play ya funciona con la forma de onda de sombra.
+      runtimeTracks.forEach((track, ti) => {
+        const timeoutId = setTimeout(() => {
+          if (cancelled) return;
+          const clip = track.clips[0];
+          if (!clip) return;
+          clip.peaks = computePeaks(clip.buffer, PEAK_BUCKETS);
+          setTracks((prev) => prev.map((t, i) => (i === ti ? { ...t } : t)));
+        }, 0);
+        peakTimeouts.push(timeoutId);
+      });
+    }
+
     load();
 
     return () => {
@@ -492,7 +565,7 @@ export function ProjectViewer({
       audioContextRef.current?.close();
       audioContextRef.current = null;
     };
-  }, [projectId, storagePath]);
+  }, [projectId, storagePath, stemsUrl]);
 
   // ─── Ajusta el zoom para que el proyecto completo entre en el ancho
   // disponible, sin scroll horizontal — se remide si la ventana cambia

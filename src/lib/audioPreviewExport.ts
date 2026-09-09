@@ -38,6 +38,7 @@ interface ManifestClip {
 }
 
 interface ManifestTrack {
+  name?: string;
   volume: number;
   pan: number;
   isMuted: boolean;
@@ -51,7 +52,9 @@ interface Manifest {
   tracks: ManifestTrack[];
 }
 
-type DecodedTrack = MixdownTrack;
+/// El nombre no lo necesita la mezcla, pero sí el paquete de pistas
+/// livianas (stemsExport.ts), que lo muestra al oyente.
+type DecodedTrack = MixdownTrack & { name: string };
 
 interface DecodedProject {
   tracks: DecodedTrack[];
@@ -70,8 +73,8 @@ export interface MixdownResult {
 // diferencia es inaudible, y el archivo pesa ~25 % menos. La
 // exportación real de la app sigue siendo 44,1 kHz (FFmpeg, ver
 // multi_track_mixer_controller.dart).
-const MP3_BITRATE_KBPS = 96;
-const SAMPLE_RATE = 32000;
+export const MP3_BITRATE_KBPS = 96;
+export const SAMPLE_RATE = 32000;
 const MP3_BLOCK_SIZE = 1152; // tamaño de frame que espera encodeBuffer, fijo por el formato MP3
 
 function constantPowerGains(volume: number, pan: number): { left: number; right: number } {
@@ -79,7 +82,15 @@ function constantPowerGains(volume: number, pan: number): { left: number; right:
   return { left: Math.cos(theta) * volume, right: Math.sin(theta) * volume };
 }
 
-async function loadDecodedTracks(downloadUrl: string, ctx: AudioContext): Promise<DecodedProject> {
+export type { DecodedProject };
+
+/// Descarga el .mystudio y decodifica sus pistas. Exportada porque el
+/// paquete de pistas livianas (stemsExport.ts) hace exactamente el
+/// mismo primer paso.
+export async function loadDecodedTracks(
+  downloadUrl: string,
+  ctx: AudioContext,
+): Promise<DecodedProject> {
   // Mismo motivo que ProjectViewer para pasar por /api/download-proxy:
   // decodeAudioData es una lectura por JS del contenido del archivo, y
   // eso SÍ dispara CORS contra el bucket (a diferencia de un <a href>
@@ -104,6 +115,7 @@ async function loadDecodedTracks(downloadUrl: string, ctx: AudioContext): Promis
       clips.push({ startSeconds: clip.startBeat, buffer });
     }
     tracks.push({
+      name: track.name ?? "",
       volume: track.volume,
       pan: track.pan,
       isMuted: track.isMuted,
@@ -198,7 +210,7 @@ const BLOCKS_PER_CHUNK = 50;
 // libre y el progreso llega por mensajes. Si el worker no se puede
 // crear (navegador viejo, CSP, error de carga), cae al codificador del
 // hilo principal de abajo — mismo resultado, solo más trabado.
-function encodeMp3(buffer: AudioBuffer, onProgress?: (ratio: number) => void): Promise<Blob> {
+export function encodeMp3(buffer: AudioBuffer, onProgress?: (ratio: number) => void): Promise<Blob> {
   const left = floatTo16BitPCM(buffer.getChannelData(0));
   const right = buffer.numberOfChannels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : left.slice();
 

@@ -19,8 +19,9 @@ import { useState, type FormEvent } from "react";
 import { ref, getDownloadURL, uploadBytes } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
-import { attachCommunityPreview, publishProjectToCommunity } from "@/lib/CommunityService";
+import { attachCommunityStems, attachCommunityPreview, publishProjectToCommunity } from "@/lib/CommunityService";
 import { buildCommunityPreview } from "@/lib/audioPreviewExport";
+import { buildStemsPackage } from "@/lib/stemsExport";
 import { SAMPLE_GENRES } from "@/lib/sampleTaxonomy";
 import { isValidUsername, setUsername as saveUsername } from "@/lib/UserProfileService";
 
@@ -39,7 +40,7 @@ export function PublishModal({
   const [genre, setGenre] = useState<string>(SAMPLE_GENRES[0]);
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<
-    "idle" | "publishing" | "generating-preview" | "success" | "error"
+    "idle" | "publishing" | "generating-preview" | "generating-stems" | "success" | "error"
   >("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewProgress, setPreviewProgress] = useState(0);
@@ -49,7 +50,11 @@ export function PublishModal({
   const [nicknameStatus, setNicknameStatus] = useState<"idle" | "saving" | "error">("idle");
   const [nicknameError, setNicknameError] = useState<string | null>(null);
 
-  const isBusy = status === "publishing" || status === "generating-preview" || status === "success";
+  const isBusy =
+    status === "publishing" ||
+    status === "generating-preview" ||
+    status === "generating-stems" ||
+    status === "success";
 
   async function handleSaveNickname(e: FormEvent) {
     e.preventDefault();
@@ -113,6 +118,18 @@ export function PublishModal({
       await uploadBytes(previewRef, blob, { contentType: "audio/mpeg" });
       const previewUrl = await getDownloadURL(previewRef);
       await attachCommunityPreview(postId, previewUrl, durationSeconds);
+
+      // Paquete de pistas livianas: lo que permite que cualquiera
+      // escuche la canción por dentro. Va después del preview porque
+      // es más lento (un MP3 por pista) y porque el preview es lo que
+      // el feed necesita para reproducir; si esto falla, la
+      // publicación sigue siendo válida.
+      setStatus("generating-stems");
+      setPreviewProgress(0);
+      const stems = await buildStemsPackage(audioUrl, setPreviewProgress);
+      const stemsRef = ref(storage, `community_stems/${user.uid}/${postId}.zip`);
+      await uploadBytes(stemsRef, stems.blob, { contentType: "application/zip" });
+      await attachCommunityStems(postId, await getDownloadURL(stemsRef));
     } catch (err) {
       // NO bloquea el "éxito" — ver el comentario del encabezado, el
       // post publicado sigue siendo válido sin preview. Pero sí se
@@ -299,7 +316,9 @@ export function PublishModal({
                   ? "Publicando..."
                   : status === "generating-preview"
                     ? `Generando preview... ${Math.round(previewProgress * 100)}%`
-                    : "Publicar"}
+                    : status === "generating-stems"
+                      ? `Preparando pistas... ${Math.round(previewProgress * 100)}%`
+                      : "Publicar"}
               </button>
             </div>
           </form>
