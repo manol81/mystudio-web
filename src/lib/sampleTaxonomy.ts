@@ -18,6 +18,11 @@ export const SAMPLE_INSTRUMENTS = [
   "Vocals",
   "Guitar",
   "FX",
+  // Para samples donde suenan VARIOS instrumentos a la vez (una banda
+  // entera, un loop de acompañamiento completo): no encaja en ninguna
+  // categoría única y forzarlo a una haría que no aparezca al filtrar
+  // por la otra.
+  "Multi-instrument",
 ] as const;
 export type SampleInstrument = (typeof SAMPLE_INSTRUMENTS)[number];
 
