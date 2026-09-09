@@ -168,10 +168,34 @@ export async function toggleFollow(targetUid: string, followerUid: string): Prom
       tx.update(profileRef, { followersCount: increment(-1) });
       return false;
     }
-    tx.set(followerRef, { followedAt: serverTimestamp() });
+    // followerUid duplicado adentro del doc a propósito: ver el
+    // comentario en firestore.rules. Es lo que permite la consulta
+    // "a quiénes sigo" para el feed.
+    tx.set(followerRef, { followedAt: serverTimestamp(), followerUid });
     tx.update(profileRef, { followersCount: increment(1) });
     return true;
   });
+}
+
+/// A quiénes sigue esta persona. Devuelve los uid de los perfiles
+/// seguidos, más recientes primero.
+///
+/// Los "seguir" anteriores a que el documento llevara `followerUid`
+/// adentro no aparecen acá: son de la primera versión de esta función y
+/// no hay forma de consultarlos por grupo. Volver a seguir a esa
+/// persona los regenera.
+export async function fetchFollowingUids(followerUid: string, max = 30): Promise<string[]> {
+  const snap = await getDocs(
+    query(
+      collectionGroup(db, "followers"),
+      where("followerUid", "==", followerUid),
+      orderBy("followedAt", "desc"),
+      limit(max),
+    ),
+  );
+  return snap.docs
+    .map((d) => d.ref.parent.parent?.id)
+    .filter((id): id is string => Boolean(id));
 }
 
 /// Borra el perfil público y su lista de seguidores. Lo usa la

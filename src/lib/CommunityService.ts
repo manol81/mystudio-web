@@ -31,6 +31,7 @@ import {
   startAfter,
   Timestamp,
   updateDoc,
+  where,
   type DocumentData,
   type QueryDocumentSnapshot,
 } from "firebase/firestore";
@@ -94,6 +95,27 @@ export async function fetchCommunityPost(postId: string): Promise<CommunityPost 
 /// Trae un lote de `PAGE_SIZE` posts ordenados por fecha descendente.
 /// `cursor` null = primer lote; si no, arranca después de ese doc
 /// (típicamente el último `.cursor` devuelto por la llamada anterior).
+/// Publicaciones de un conjunto de autores, para el feed de "a quiénes
+/// seguís". Firestore admite hasta 30 valores en un `in`, así que si
+/// alguien sigue a más gente se toman los 30 seguidos más recientes;
+/// para el tamaño actual de la comunidad alcanza de sobra, y evita
+/// tener que unir varias consultas en el cliente.
+export async function fetchPostsByAuthors(
+  authorIds: string[],
+  max = 50,
+): Promise<CommunityPost[]> {
+  if (authorIds.length === 0) return [];
+  const snap = await getDocs(
+    query(
+      collection(db, COLLECTION_NAME),
+      where("authorId", "in", authorIds.slice(0, 30)),
+      orderBy("createdAt", "desc"),
+      limit(max),
+    ),
+  );
+  return snap.docs.map(toCommunityPost);
+}
+
 export async function fetchCommunityPostsPage(
   cursor: QueryDocumentSnapshot<DocumentData> | null,
 ): Promise<CommunityPostsPage> {

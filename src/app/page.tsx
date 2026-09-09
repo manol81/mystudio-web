@@ -23,10 +23,12 @@ import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
 import { PostCard } from "@/components/PostCard";
 import { VisitorHero } from "@/components/VisitorHero";
+import { fetchFollowingUids } from "@/lib/PublicProfileService";
 import {
   fetchBlockedAuthorIds,
   fetchCommentCounts,
   fetchCommunityPostsPage,
+  fetchPostsByAuthors,
   fetchLikedPostIds,
   type CommunityPost,
 } from "@/lib/CommunityService";
@@ -46,6 +48,13 @@ export default function CommunityFeedPage() {
   const [likedPostIds, setLikedPostIds] = useState<Set<string>>(new Set());
   const [playingPostId, setPlayingPostId] = useState<string | null>(null);
   const [commentCounts, setCommentCounts] = useState<Map<string, number>>(new Map());
+
+  // Solapa del feed. "following" no pagina: trae de una las
+  // publicaciones de a quiénes seguís, que por definición son muchas
+  // menos que el feed completo (ver fetchPostsByAuthors).
+  const [feedMode, setFeedMode] = useState<"all" | "following">("all");
+  const [followingPosts, setFollowingPosts] = useState<CommunityPost[] | null>(null);
+  const [isLoadingFollowing, setIsLoadingFollowing] = useState(false);
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   // Evita pedir el mismo lote dos veces si dos disparos del observer
@@ -150,7 +159,31 @@ export default function CommunityFeedPage() {
     });
   }
 
-  const visiblePosts = posts.filter((post) => !blockedAuthorIds.has(post.authorId));
+  // Carga perezosa de la solapa "Siguiendo": recién al entrar, y una
+  // sola vez por visita a la página.
+  useEffect(() => {
+    if (feedMode !== "following" || !user || followingPosts !== null) return;
+    let cancelled = false;
+    queueMicrotask(() => setIsLoadingFollowing(true));
+    void (async () => {
+      try {
+        const uids = await fetchFollowingUids(user.uid);
+        const list = await fetchPostsByAuthors(uids);
+        if (!cancelled) setFollowingPosts(list);
+      } catch (err) {
+        console.error("No se pudo cargar el feed de seguidos:", err);
+        if (!cancelled) setFollowingPosts([]);
+      } finally {
+        if (!cancelled) setIsLoadingFollowing(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [feedMode, user, followingPosts]);
+
+  const sourcePosts = feedMode === "following" ? (followingPosts ?? []) : posts;
+  const visiblePosts = sourcePosts.filter((post) => !blockedAuthorIds.has(post.authorId));
 
   useEffect(() => {
     if (isLoadingInitial || posts.length === 0) return;
@@ -191,7 +224,34 @@ export default function CommunityFeedPage() {
         </p>
       </div>
 
-      {loading || isLoadingInitial ? (
+      {/* Solapas del feed — solo con sesión: sin cuenta no hay a quién
+          seguir, y mostrar una pestaña que siempre está vacía sería
+          ruido para el visitante. */}
+      {user && (
+        <div className="flex gap-1 border-b border-white/10">
+          {(
+            [
+              ["all", "Todo"],
+              ["following", "Siguiendo"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setFeedMode(value)}
+              className={`-mb-px border-b-2 px-4 py-2 text-sm transition-colors duration-200 ${
+                feedMode === value
+                  ? "border-neon-cyan text-neon-cyan"
+                  : "border-transparent text-white/50 hover:text-white/80"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {loading || isLoadingInitial || (feedMode === "following" && isLoadingFollowing) ? (
         <div className="flex justify-center py-16">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-neon-cyan/30 border-t-neon-cyan" />
         </div>
@@ -200,7 +260,22 @@ export default function CommunityFeedPage() {
           <p className="text-sm text-red-400">No se pudo cargar la comunidad.</p>
           <p className="mt-1 text-xs text-white/40">{feedError}</p>
         </div>
-      ) : posts.length === 0 ? (
+      ) : feedMode === "following" && sourcePosts.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-graphite p-10 text-center">
+          <p className="text-sm text-white/60">Todavía no seguís a nadie.</p>
+          <p className="mt-2 text-xs text-white/40">
+            Entrá al perfil de quien te guste desde su nombre en el feed y tocá Seguir. Acá vas
+            a ver solo lo que publican ellos.
+          </p>
+          <button
+            type="button"
+            onClick={() => setFeedMode("all")}
+            className="mt-4 rounded-full border border-neon-cyan/40 bg-onyx-black px-5 py-2 font-display text-xs font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan"
+          >
+            Explorar la Comunidad
+          </button>
+        </div>
+      ) : sourcePosts.length === 0 ? (
         <div className="rounded-2xl border border-white/10 bg-graphite p-10 text-center">
           <p className="text-sm text-white/60">
             La comunidad está tranquila hoy. ¡Sé el primero en publicar!
