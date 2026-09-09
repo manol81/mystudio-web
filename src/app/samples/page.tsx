@@ -187,7 +187,9 @@ function SampleCard({
 // ─── Página ─────────────────────────────────────────────────────────────
 
 export default function SamplesPage() {
-  const { user, loading } = useAuth();
+  // `loading` ya no se usa: el catálogo no espera al estado de sesión
+  // para mostrarse, solo las acciones que necesitan cuenta lo consultan.
+  const { user } = useAuth();
   const router = useRouter();
   const [samples, setSamples] = useState<Sample[]>([]);
   const [loadingSamples, setLoadingSamples] = useState(true);
@@ -207,9 +209,11 @@ export default function SamplesPage() {
   const [bpmMax, setBpmMax] = useState("");
   const [sortBy, setSortBy] = useState<SortOption>("recent");
 
+  // Catálogo PÚBLICO (2026-09): las reglas de Firestore ya permiten
+  // leer /samples sin sesión, igual que en la app — es una vidriera,
+  // no contenido de nadie. Sin dependencia de `user`: los samples son
+  // los mismos para todos, iniciar sesión no cambia la lista.
   useEffect(() => {
-    if (!user) return;
-
     const q = query(collection(db, "samples"), orderBy("createdAt", "desc"));
     const unsubscribe = onSnapshot(
       q,
@@ -238,7 +242,7 @@ export default function SamplesPage() {
     );
 
     return unsubscribe;
-  }, [user]);
+  }, []);
 
   const hasActiveFilters =
     searchQuery.trim() !== "" ||
@@ -308,9 +312,15 @@ export default function SamplesPage() {
    * MISMA colección que lee ProjectsDashboard.
    */
   async function openProjectPicker() {
+    // Escuchar el catálogo no pide cuenta, pero mandar samples a un
+    // proyecto sí: hay que saber a QUIÉN pertenece. Sin sesión se
+    // ofrece iniciarla en vez de abrir un selector vacío.
+    if (!user) {
+      setIsLoginOpen(true);
+      return;
+    }
     setShowProjectPicker(true);
     if (projectOptions !== null) return; // ya se trajo antes en esta visita a la página
-    if (!user) return;
     setLoadingProjectOptions(true);
     try {
       const snap = await getDocs(collection(db, "users", user.uid, "projects"));
@@ -386,20 +396,7 @@ export default function SamplesPage() {
         </p>
       </div>
 
-      {loading ? null : !user ? (
-        <div className="flex flex-col items-center gap-4 rounded-2xl border border-white/10 bg-graphite p-8">
-          <p className="text-sm text-white/60">
-            Iniciá sesión para acceder al catálogo.
-          </p>
-          <button
-            type="button"
-            onClick={() => setIsLoginOpen(true)}
-            className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)]"
-          >
-            Iniciar Sesión
-          </button>
-        </div>
-      ) : loadingSamples ? (
+      {loadingSamples ? (
         <p className="text-xs text-white/40">Cargando catálogo...</p>
       ) : samples.length === 0 ? (
         <p className="text-xs text-white/30">
