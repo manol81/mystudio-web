@@ -1,17 +1,22 @@
 "use client";
 
-// Modal de "Editar Perfil" — por ahora solo el nickname público (el
-// nombre que aparece en publicaciones y comentarios de la Comunidad,
-// en vez del email real). Mismo criterio visual que el resto de los
-// modales (LoginModal, PublishModal, ReportModal).
+// Modal de "Editar Perfil": el nickname público (el nombre que aparece
+// en publicaciones y comentarios de la Comunidad, en vez del email
+// real) y la presentación que se ve en el perfil público. Mismo
+// criterio visual que el resto de los modales.
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import {
   isValidUsername,
   setUsername as saveUsername,
 } from "@/lib/UserProfileService";
+import {
+  fetchPublicProfile,
+  savePublicProfile,
+  MAX_BIO_LENGTH,
+} from "@/lib/PublicProfileService";
 
 const inputClasses =
   "w-full rounded-lg border border-white/15 bg-onyx-black px-4 py-2.5 text-sm text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan focus:shadow-[0_0_0_1px_rgba(102,252,241,0.4)]";
@@ -19,6 +24,22 @@ const inputClasses =
 export function ProfileModal({ onClose }: { onClose: () => void }) {
   const { user, profile } = useAuth();
   const [username, setUsernameInput] = useState(profile?.username ?? "");
+  const [bio, setBio] = useState("");
+
+  // La presentación vive en el perfil PÚBLICO, que es otra colección
+  // (ver PublicProfileService.ts) — hay que traerla aparte.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    fetchPublicProfile(user.uid)
+      .then((p) => {
+        if (!cancelled && p) setBio(p.bio);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">(
     "idle",
   );
@@ -45,6 +66,10 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
     setErrorMessage(null);
     try {
       const result = await saveUsername(user.uid, trimmed);
+      // Después del apodo, nunca antes: las reglas del perfil público
+      // exigen que el nombre coincida con el privado, que es la fuente
+      // de verdad.
+      await savePublicProfile(user.uid, { username: trimmed, bio: bio.trim() });
       setPropagated(result);
       setStatus("success");
       setTimeout(onClose, result.posts + result.comments > 0 ? 2200 : 900);
@@ -108,6 +133,33 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
                 maxLength={20}
               />
             </div>
+
+            <div>
+              <label htmlFor="profile-bio" className="mb-1.5 block text-xs text-white/60">
+                Presentación
+              </label>
+              <textarea
+                id="profile-bio"
+                value={bio}
+                onChange={(e) => setBio(e.target.value.slice(0, MAX_BIO_LENGTH))}
+                rows={3}
+                className={`${inputClasses} resize-none`}
+                placeholder="Contá qué tocás, de dónde sos, qué estás buscando…"
+              />
+              <p className="mt-1 text-right text-[10px] text-white/30">
+                {bio.length}/{MAX_BIO_LENGTH}
+              </p>
+            </div>
+
+            {user && (
+              <Link
+                href={`/u/${user.uid}`}
+                onClick={onClose}
+                className="text-xs text-neon-cyan/80 underline-offset-2 hover:underline"
+              >
+                Ver mi perfil público
+              </Link>
+            )}
 
             {status === "error" && errorMessage && (
               <p className="text-xs text-red-400" role="alert">

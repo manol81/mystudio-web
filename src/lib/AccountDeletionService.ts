@@ -21,7 +21,9 @@
 // política de privacidad): los "likes" que este usuario dio en posts
 // ajenos (community_posts/*/likes/{uid}, un doc sin más dato que una
 // fecha; no se puede consultar por id de doc en un collectionGroup) y
-// los reportes de moderación que envió (reports, solo admin).
+// los reportes de moderación que envió (reports, solo admin), y los
+// "seguir" que dio a otras personas, que viven bajo el perfil del
+// seguido por el mismo motivo que los likes.
 
 import {
   EmailAuthProvider,
@@ -44,6 +46,7 @@ import {
 } from "firebase/firestore";
 import { deleteObject, listAll, ref, type StorageReference } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
+import { deletePublicProfile } from "@/lib/PublicProfileService";
 
 export type AccountDeletionStep =
   | "reauthenticating"
@@ -99,6 +102,10 @@ export async function deleteAccount(
 
   onProgress?.("deletingProfile");
   await deleteCollection(collection(db, "users", uid, "blockedUsers"));
+  // El perfil público vive en otra colección: se borra aparte, con su
+  // lista de seguidores, porque Firestore no borra subcolecciones en
+  // cascada.
+  await deletePublicProfile(uid);
   await deleteDoc(doc(db, "users", uid));
 
   onProgress?.("deletingAuthUser");

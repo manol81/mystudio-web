@@ -63,6 +63,30 @@ export async function fetchPostSummaryFromServer(postId: string): Promise<Public
   return toSummary((await res.json()) as FirestoreDocument);
 }
 
+export interface PublicProfileSummary {
+  username: string;
+  bio: string;
+}
+
+/// Perfil público para la metadata de /u/{uid}. public_profiles es de
+/// lectura pública igual que community_posts, así que alcanza con la
+/// API key. Nunca toca /users/{uid}, que es privado y tiene el email.
+export async function fetchPublicProfileFromServer(
+  uid: string,
+): Promise<PublicProfileSummary | null> {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) return null;
+  const res = await fetch(`${BASE}/public_profiles/${uid}?key=${FIREBASE_WEB_API_KEY}`, {
+    next: { revalidate: 300 },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Firestore REST ${res.status}`);
+  const docu = (await res.json()) as FirestoreDocument;
+  return {
+    username: str(docu.fields, "username"),
+    bio: str(docu.fields, "bio"),
+  };
+}
+
 export async function fetchRecentPostIdsFromServer(max: number): Promise<PublicPostSummary[]> {
   const res = await fetch(`${BASE}:runQuery?key=${FIREBASE_WEB_API_KEY}`, {
     method: "POST",

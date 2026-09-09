@@ -18,6 +18,7 @@
 // Math.random(), para no romper la hidratación SSR/CSR.
 
 import { useState } from "react";
+import Link from "next/link";
 import { Heart, MessageCircle, MoreVertical, ShieldOff, Flag, Link2, Check } from "lucide-react";
 import { SITE_URL } from "@/lib/site";
 import { CommentsModal } from "@/components/CommentsModal";
@@ -149,7 +150,15 @@ export function PostCard({
           {post.authorName.charAt(0).toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-white">{post.authorName}</p>
+          {/* El autor lleva a su perfil público: hasta ahora un nombre
+              en el feed era un callejón sin salida, no se podía ver qué
+              más había hecho esa persona. */}
+          <Link
+            href={`/u/${post.authorId}`}
+            className="truncate text-sm font-semibold text-white transition-colors duration-200 hover:text-neon-cyan"
+          >
+            {post.authorName}
+          </Link>
           <p className="text-xs text-white/40">{formatRelativeTime(post.createdAt)}</p>
         </div>
 
