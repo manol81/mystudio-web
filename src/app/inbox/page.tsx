@@ -10,7 +10,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, Handshake, Heart, MessageCircle, MessageSquare, X } from "lucide-react";
+import {
+  Check,
+  Download,
+  Handshake,
+  Heart,
+  MessageCircle,
+  MessageSquare,
+  X,
+} from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
 import {
@@ -19,7 +27,12 @@ import {
   type CommunityNotification,
 } from "@/lib/NotificationsService";
 import {
+  daysUntilExpiry,
+  DELIVERY_LIFETIME_DAYS,
   fetchReceivedRequests,
+  fetchSentRequests,
+  isDeliveryExpired,
+  markDeliveryDownloaded,
   respondToCollaboration,
   type CollabRequest,
 } from "@/lib/CollabService";
@@ -51,18 +64,23 @@ export default function InboxPage() {
   // Pedidos de colaboración recibidos. Van arriba de las novedades: es
   // lo único de la bandeja que espera una decisión, no solo una mirada.
   const [collabs, setCollabs] = useState<CollabRequest[]>([]);
+  // Los pedidos que HICISTE, para saber en qué quedaron sin tener que
+  // volver a cada publicación.
+  const [sent, setSent] = useState<CollabRequest[]>([]);
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user) return;
     try {
       const seenAt = profile?.notificationsSeenAt ?? null;
-      const [list, requests] = await Promise.all([
+      const [list, requests, mine] = await Promise.all([
         fetchNotifications(user.uid, seenAt),
         fetchReceivedRequests(user.uid).catch(() => [] as CollabRequest[]),
+        fetchSentRequests(user.uid).catch(() => [] as CollabRequest[]),
       ]);
       setNotifications(list);
       setCollabs(requests);
+      setSent(mine);
       // Se marcan como leídas DESPUÉS de traerlas: si se hiciera antes,
       // esta misma carga ya las mostraría todas como vistas y el
       // resaltado de lo nuevo no se vería nunca.
@@ -85,6 +103,21 @@ export default function InboxPage() {
     queueMicrotask(() => void load());
   }, [load]);
 
+  async function markDownloaded(request: CollabRequest) {
+    try {
+      await markDeliveryDownloaded(request.postId, request.requesterUid);
+      setCollabs((prev) =>
+        prev.map((c) =>
+          c.postId === request.postId && c.requesterUid === request.requesterUid
+            ? { ...c, downloadedAt: new Date() }
+            : c,
+        ),
+      );
+    } catch (err) {
+      console.error("No se pudo marcar la pista como bajada:", err);
+    }
+  }
+
   async function respond(request: CollabRequest, status: "accepted" | "rejected") {
     setRespondingTo(request.requesterUid);
     try {
@@ -102,6 +135,13 @@ export default function InboxPage() {
       setRespondingTo(null);
     }
   }
+
+  // Entregas que todavía esperan al autor: con archivo, sin vencer y
+  // sin haberse bajado. Las vencidas no se muestran porque el archivo
+  // ya no está (ver la regla de ciclo de vida del bucket).
+  const pendingDeliveries = collabs.filter(
+    (c) => c.deliveryUrl && !c.downloadedAt && !isDeliveryExpired(c.expiresAt),
+  );
 
   if (loading) return null;
 
@@ -135,8 +175,68 @@ export default function InboxPage() {
         Bandeja de <span className="text-neon-cyan">Entrada</span>
       </h1>
       <p className="mt-1 text-sm text-white/50">
-        Lo que recibieron tus publicaciones en la Comunidad.
+        Lo que recibieron tus publicaciones en la Comunidad. Las pistas que te manden se
+        guardan {DELIVERY_LIFETIME_DAYS} días.
       </p>
+
+      {/* Pistas que ya te mandaron. Van PRIMERO y con el plazo bien
+          visible: se borran a los pocos días y hay que bajarlas a la
+          app antes de eso (ver DELIVERY_LIFETIME_DAYS). */}
+      {pendingDeliveries.length > 0 && (
+        <section className="mt-8">
+          <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-white">
+            <Download size={16} className="text-orange-300" />
+            Pistas esperando que las bajes
+          </h2>
+          <ul className="mt-3 flex flex-col gap-2">
+            {pendingDeliveries.map((c) => {
+              const days = daysUntilExpiry(c.expiresAt);
+              return (
+                <li
+                  key={`d_${c.postId}_${c.requesterUid}`}
+                  className="rounded-xl border border-orange-400/30 bg-orange-400/5 p-4"
+                >
+                  <p className="text-sm text-white/80">
+                    <Link
+                      href={`/u/${c.requesterUid}`}
+                      className="font-semibold text-white hover:text-neon-cyan"
+                    >
+                      {c.requesterName}
+                    </Link>{" "}
+                    te mandó su <span className="text-neon-cyan">{c.role}</span> para{" "}
+                    <Link href={`/p/${c.postId}`} className="text-white/60 hover:text-white">
+                      tu canción
+                    </Link>
+                  </p>
+                  <p className="mt-1.5 text-xs font-semibold text-orange-300">
+                    {days === 1
+                      ? "Se borra mañana."
+                      : `Se borra en ${days} días.`}{" "}
+                    <span className="font-normal text-white/50">
+                      Abrí MY STUDIO en el celular y agregala a tu proyecto antes de que venza.
+                    </span>
+                  </p>
+                  {c.deliveryUrl && (
+                    <audio
+                      src={c.deliveryUrl}
+                      controls
+                      preload="none"
+                      className="mt-3 h-9 w-full"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void markDownloaded(c)}
+                    className="mt-3 rounded-full border border-white/20 px-4 py-1.5 text-xs text-white/60 transition-colors hover:border-white/40 hover:text-white"
+                  >
+                    Ya la bajé a la app
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
 
       {/* Pedidos de colaboración: lo primero, porque son los únicos que
           esperan una respuesta tuya. */}
@@ -190,6 +290,53 @@ export default function InboxPage() {
                   </div>
                 </li>
               ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Tus pedidos: en qué quedaron y qué te toca hacer. */}
+      {sent.length > 0 && (
+        <section className="mt-8">
+          <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-white">
+            <Handshake size={16} className="text-white/40" />
+            Tus pedidos para sumarte
+          </h2>
+          <ul className="mt-3 flex flex-col gap-2">
+            {sent.map((c) => {
+              const days = daysUntilExpiry(c.expiresAt);
+              const delivered = Boolean(c.deliveryUrl) && !isDeliveryExpired(c.expiresAt);
+              return (
+                <li
+                  key={`s_${c.postId}_${c.requesterUid}`}
+                  className="rounded-xl border border-white/10 bg-graphite p-4"
+                >
+                  <p className="text-sm text-white/70">
+                    Pediste sumar <span className="text-white">{c.role}</span> a{" "}
+                    <Link href={`/p/${c.postId}`} className="text-white/60 hover:text-white">
+                      una canción
+                    </Link>
+                  </p>
+                  <p className="mt-1 text-xs text-white/40">
+                    {c.status === "pending"
+                      ? "Esperando la respuesta del autor."
+                      : c.status === "rejected"
+                        ? "El autor no lo tomó esta vez."
+                        : delivered
+                          ? c.downloadedAt
+                            ? "El autor ya se bajó tu pista."
+                            : `Tu pista está esperando que el autor la baje. Se borra en ${days} ${days === 1 ? "día" : "días"}.`
+                          : "Aceptado. Grabá tu pista en la app y mandásela."}
+                  </p>
+                  {c.status === "accepted" && (
+                    <p className="mt-2 rounded-lg border border-white/10 bg-onyx-black/60 p-2.5 text-[11px] leading-relaxed text-white/45">
+                      Guardá tu pista en un proyecto propio dentro de la app. Lo que subís acá se
+                      borra a los {DELIVERY_LIFETIME_DAYS} días, y si el autor la pierde vas a
+                      poder volver a mandársela.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}

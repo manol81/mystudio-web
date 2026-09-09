@@ -36,6 +36,29 @@ import { db } from "@/lib/firebase";
 
 export type CollabStatus = "pending" | "accepted" | "rejected";
 
+/// Cuántos días vive la pista que manda el colaborador antes de
+/// borrarse. Es corto a propósito: un audio en buena calidad son
+/// decenas de MB y el plan gratuito son 5 GB en total. El autor tiene
+/// que bajarla a su app dentro de ese plazo.
+///
+/// ⚠️ El borrado REAL lo hace una regla de ciclo de vida del bucket,
+/// configurada a mano en la consola de Google Cloud sobre el prefijo
+/// `collab_deliveries/` — sin Cloud Functions no hay ningún proceso que
+/// pueda correr solo. Acá se calcula la fecha, se muestran los días que
+/// quedan y se deja de ofrecer lo vencido.
+export const DELIVERY_LIFETIME_DAYS = 7;
+
+/// Días que le quedan a una entrega, redondeando hacia arriba. 0 o
+/// menos significa vencida.
+export function daysUntilExpiry(expiresAt: Date | null): number {
+  if (!expiresAt) return 0;
+  return Math.ceil((expiresAt.getTime() - Date.now()) / 86_400_000);
+}
+
+export function isDeliveryExpired(expiresAt: Date | null): boolean {
+  return daysUntilExpiry(expiresAt) <= 0;
+}
+
 export interface CollabRequest {
   postId: string;
   requesterUid: string;
@@ -46,6 +69,14 @@ export interface CollabRequest {
   message: string;
   status: CollabStatus;
   createdAt: Date | null;
+  /// Audio que grabó el colaborador en la app, null hasta que lo manda.
+  deliveryUrl: string | null;
+  deliveredAt: Date | null;
+  /// Cuándo deja de estar disponible. Ver DELIVERY_LIFETIME_DAYS.
+  expiresAt: Date | null;
+  /// Cuándo el autor la bajó a su app. Sirve para dejar de insistirle
+  /// con el aviso de vencimiento.
+  downloadedAt: Date | null;
 }
 
 export const MAX_COLLAB_MESSAGE = 500;
@@ -65,6 +96,11 @@ function toRequest(
     message: (data.message as string) ?? "",
     status: (data.status as CollabStatus) ?? "pending",
     createdAt: createdAt instanceof Timestamp ? createdAt.toDate() : null,
+    deliveryUrl: (data.deliveryUrl as string) ?? null,
+    deliveredAt: data.deliveredAt instanceof Timestamp ? data.deliveredAt.toDate() : null,
+    expiresAt: data.expiresAt instanceof Timestamp ? data.expiresAt.toDate() : null,
+    downloadedAt:
+      data.downloadedAt instanceof Timestamp ? data.downloadedAt.toDate() : null,
   };
 }
 
@@ -122,6 +158,33 @@ export async function respondToCollaboration(
     doc(db, "community_posts", postId, "collab_requests", requesterUid),
     { status },
   );
+}
+
+/// Adjunta la pista que el colaborador grabó en la app. El archivo ya
+/// tiene que estar subido a `collab_deliveries/{uid}/{postId}`. Las
+/// reglas solo lo permiten si el pedido está aceptado.
+export async function attachDelivery(
+  postId: string,
+  requesterUid: string,
+  deliveryUrl: string,
+): Promise<void> {
+  const expiresAt = new Date(Date.now() + DELIVERY_LIFETIME_DAYS * 86_400_000);
+  await updateDoc(doc(db, "community_posts", postId, "collab_requests", requesterUid), {
+    deliveryUrl,
+    deliveredAt: serverTimestamp(),
+    expiresAt: Timestamp.fromDate(expiresAt),
+  });
+}
+
+/// El autor marca que ya se la bajó a su app. A partir de ahí deja de
+/// verse el aviso de vencimiento.
+export async function markDeliveryDownloaded(
+  postId: string,
+  requesterUid: string,
+): Promise<void> {
+  await updateDoc(doc(db, "community_posts", postId, "collab_requests", requesterUid), {
+    downloadedAt: serverTimestamp(),
+  });
 }
 
 /// Todo lo que recibieron las publicaciones de esta persona.
