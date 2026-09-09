@@ -123,7 +123,7 @@ export function PostCard({
     if (isLiking) return;
     setIsLiking(true);
     try {
-      const nowLiked = await toggleLike(post.id, user.uid);
+      const nowLiked = await toggleLike(post.id, user.uid, post.authorId);
       onLikeToggled(post.id, nowLiked, post.likesCount + (nowLiked ? 1 : -1));
     } catch {
       // silencioso — si algo falló, el corazón queda como estaba y el
@@ -311,6 +311,7 @@ export function PostCard({
         <CommentsModal
           postId={post.id}
           postTitle={post.title}
+          postAuthorId={post.authorId}
           currentPlaybackSeconds={playbackSeconds}
           onSeek={handleSeekFromComment}
           onCommentAdded={() => onCommentAdded(post.id)}

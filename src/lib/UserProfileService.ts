@@ -41,6 +41,9 @@ import { db } from "@/lib/firebase";
 export interface UserProfile {
   email: string | null;
   username: string | null;
+  /// Hasta cuándo el usuario vio sus notificaciones. Todo lo posterior
+  /// cuenta como sin leer (ver NotificationsService.ts).
+  notificationsSeenAt: Date | null;
 }
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
@@ -119,9 +122,12 @@ export function watchUserProfile(
       return;
     }
     const data = snap.data();
+    const seenAt = data.notificationsSeenAt;
     onChange({
       email: (data.email as string) ?? null,
       username: (data.username as string) ?? null,
+      notificationsSeenAt:
+        seenAt && typeof seenAt.toDate === "function" ? seenAt.toDate() : null,
     });
   });
 }

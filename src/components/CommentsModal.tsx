@@ -32,6 +32,7 @@ function formatTimestamp(seconds: number): string {
 export function CommentsModal({
   postId,
   postTitle,
+  postAuthorId,
   currentPlaybackSeconds,
   onSeek,
   onCommentAdded,
@@ -39,6 +40,9 @@ export function CommentsModal({
 }: {
   postId: string;
   postTitle: string;
+  /// Necesario para que el autor del post reciba la notificación del
+  /// comentario (ver NotificationsService.ts).
+  postAuthorId: string;
   currentPlaybackSeconds: number | null;
   onSeek: (seconds: number) => void;
   onCommentAdded: () => void;
@@ -85,6 +89,7 @@ export function CommentsModal({
         authorName,
         text: text.trim(),
         timestampInAudio,
+        postAuthorId,
       });
       setComments((prev) => [
         ...prev,

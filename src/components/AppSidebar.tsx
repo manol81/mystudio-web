@@ -11,7 +11,7 @@
 // superior izquierda) que abre un drawer superpuesto — nunca reserva
 // ancho de la pantalla chica, que es toda para el contenido.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "firebase/auth";
@@ -20,6 +20,7 @@ import { auth } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 import { ProfileModal } from "@/components/ProfileModal";
+import { countUnreadNotifications } from "@/lib/NotificationsService";
 import { Tooltip } from "@/components/Tooltip";
 
 const NAV_ITEMS = [
@@ -45,9 +46,15 @@ const NAV_ITEMS = [
     href: "/inbox",
     label: "Bandeja de Entrada",
     icon: MessageSquare,
-    hint: "Tus mensajes directos (próximamente)",
+    hint: "Los comentarios y me gusta que recibieron tus publicaciones",
   },
 ] as const;
+
+/// La Bandeja de Entrada marca todo como leído al abrirse, así que
+/// estando adentro el contador no tiene sentido.
+function isActiveInbox(pathname: string): boolean {
+  return pathname.startsWith("/inbox");
+}
 
 function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
   const { user, profile } = useAuth();
@@ -57,6 +64,31 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
   // useAdminCheck.ts). Las pantallas de /admin en sí sí lo fuerzan.
   const adminCheck = useAdminCheck(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+
+  // Novedades sin leer, para el punto del menú. Se recalcula al cambiar
+  // de página: alcanza para que aparezca al rato de recibir algo, y
+  // evita un listener en vivo corriendo en TODAS las pantallas.
+  const [unreadCount, setUnreadCount] = useState(0);
+  const seenAt = profile?.notificationsSeenAt ?? null;
+  useEffect(() => {
+    if (!user) {
+      // Microtask por el linter de React, igual que en AuthContext.
+      queueMicrotask(() => setUnreadCount(0));
+      return;
+    }
+    let cancelled = false;
+    countUnreadNotifications(user.uid, seenAt)
+      .then((count) => {
+        if (!cancelled) setUnreadCount(count);
+      })
+      .catch(() => {
+        // Un fallo acá no puede romper la navegación entera: sin
+        // número, el menú se ve como siempre.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, seenAt, pathname]);
 
   return (
     <div className="flex h-full flex-col">
@@ -68,6 +100,9 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
 
       <nav className="flex flex-1 flex-col gap-1 px-3">
         {NAV_ITEMS.map(({ href, label, icon: Icon, hint }) => {
+          // El contador solo aplica a la Bandeja de Entrada; se oculta
+          // al entrar, porque abrirla marca todo como leído.
+          const badge = href === "/inbox" && !isActiveInbox(pathname) ? unreadCount : 0;
           // "/" necesita coincidencia EXACTA (si no, siempre estaría
           // "activo" para cualquier ruta, ya que todas empiezan con
           // "/") — el resto sí puede matchear sub-rutas futuras
@@ -85,7 +120,15 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
                 }`}
               >
                 <Icon size={18} strokeWidth={isActive ? 2.25 : 1.75} className="shrink-0" />
-                {label}
+                <span className="flex-1">{label}</span>
+                {badge > 0 && (
+                  <span
+                    className="ml-auto min-w-[20px] rounded-full bg-neon-cyan px-1.5 py-0.5 text-center font-display text-[11px] font-bold text-onyx-black"
+                    aria-label={`${badge} novedades sin leer`}
+                  >
+                    {badge > 9 ? "9+" : badge}
+                  </span>
+                )}
               </Link>
             </Tooltip>
           );

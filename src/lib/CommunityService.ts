@@ -217,7 +217,11 @@ export async function fetchBlockedAuthorIds(uid: string): Promise<Set<string>> {
 // de `update` exige que ambos writes queden en sincronía exacta, así
 // que si esta transacción no incluyera el doc de like, el ajuste de
 // likesCount sería directamente rechazado por el servidor).
-export async function toggleLike(postId: string, uid: string): Promise<boolean> {
+export async function toggleLike(
+  postId: string,
+  uid: string,
+  postAuthorId: string,
+): Promise<boolean> {
   const postRef = doc(db, COLLECTION_NAME, postId);
   const likeRef = doc(db, COLLECTION_NAME, postId, "likes", uid);
   return runTransaction(db, async (tx) => {
@@ -227,7 +231,8 @@ export async function toggleLike(postId: string, uid: string): Promise<boolean> 
       tx.update(postRef, { likesCount: increment(-1) });
       return false;
     }
-    tx.set(likeRef, { likedAt: serverTimestamp() });
+    // postAuthorId denormalizado: ver el comentario en addComment.
+    tx.set(likeRef, { likedAt: serverTimestamp(), postAuthorId });
     tx.update(postRef, { likesCount: increment(1) });
     return true;
   });
@@ -299,13 +304,24 @@ export async function fetchComments(postId: string): Promise<PostComment[]> {
 
 export async function addComment(
   postId: string,
-  params: { authorId: string; authorName: string; text: string; timestampInAudio: number | null },
+  params: {
+    authorId: string;
+    authorName: string;
+    text: string;
+    timestampInAudio: number | null;
+    /// Autor del post que se está comentando. Viaja denormalizado para
+    /// que ESE autor pueda encontrar de una sola consulta todo lo que
+    /// recibió (ver NotificationsService.ts). firestore.rules lo valida
+    /// contra el post real, así que no se puede falsear.
+    postAuthorId: string;
+  },
 ): Promise<void> {
   await addDoc(collection(db, COLLECTION_NAME, postId, "comments"), {
     authorId: params.authorId,
     authorName: params.authorName,
     text: params.text,
     timestampInAudio: params.timestampInAudio,
+    postAuthorId: params.postAuthorId,
     createdAt: serverTimestamp(),
   });
 }
