@@ -23,6 +23,14 @@
 
 import JSZip from "jszip";
 import { Mp3Encoder } from "@breezystack/lamejs";
+import {
+  contentDurationSeconds,
+  projectHasEffects,
+  renderProjectMix,
+  toAudioBuffer,
+  type MixdownTrack,
+} from "@/lib/projectMixdown";
+import { DEFAULT_MASTER_FX, parseMasterFx, parseTrackFx, type MasterFx } from "@/lib/trackEffects";
 
 interface ManifestClip {
   audioFileName: string;
@@ -35,23 +43,19 @@ interface ManifestTrack {
   isMuted: boolean;
   isSolo: boolean;
   clips: ManifestClip[];
+  fx?: unknown;
 }
 
 interface Manifest {
+  project?: { masterFx?: unknown };
   tracks: ManifestTrack[];
 }
 
-interface DecodedClip {
-  startBeat: number;
-  buffer: AudioBuffer;
-}
+type DecodedTrack = MixdownTrack;
 
-interface DecodedTrack {
-  volume: number;
-  pan: number;
-  isMuted: boolean;
-  isSolo: boolean;
-  clips: DecodedClip[];
+interface DecodedProject {
+  tracks: DecodedTrack[];
+  master: MasterFx;
 }
 
 export interface MixdownResult {
@@ -75,7 +79,7 @@ function constantPowerGains(volume: number, pan: number): { left: number; right:
   return { left: Math.cos(theta) * volume, right: Math.sin(theta) * volume };
 }
 
-async function loadDecodedTracks(downloadUrl: string, ctx: AudioContext): Promise<DecodedTrack[]> {
+async function loadDecodedTracks(downloadUrl: string, ctx: AudioContext): Promise<DecodedProject> {
   // Mismo motivo que ProjectViewer para pasar por /api/download-proxy:
   // decodeAudioData es una lectura por JS del contenido del archivo, y
   // eso SÍ dispara CORS contra el bucket (a diferencia de un <a href>
@@ -92,31 +96,54 @@ async function loadDecodedTracks(downloadUrl: string, ctx: AudioContext): Promis
 
   const tracks: DecodedTrack[] = [];
   for (const track of manifest.tracks) {
-    const clips: DecodedClip[] = [];
+    const clips: { startSeconds: number; buffer: AudioBuffer }[] = [];
     for (const clip of track.clips) {
       const audioFile = zip.file(clip.audioFileName);
       if (!audioFile) continue; // clip huérfano, mismo criterio que ProjectViewer/Flutter
       const buffer = await ctx.decodeAudioData(await audioFile.async("arraybuffer"));
-      clips.push({ startBeat: clip.startBeat, buffer });
+      clips.push({ startSeconds: clip.startBeat, buffer });
     }
     tracks.push({
       volume: track.volume,
       pan: track.pan,
       isMuted: track.isMuted,
       isSolo: track.isSolo,
+      // Ausente en respaldos anteriores a los efectos → todo neutro.
+      fx: parseTrackFx(track.fx),
       clips,
     });
   }
-  return tracks;
+  // masterFx llegó al manifest en formatVersion 2; antes de eso el
+  // máster queda en sus valores por defecto (los mismos de la app).
+  const master = manifest.project?.masterFx
+    ? parseMasterFx(manifest.project.masterFx)
+    : DEFAULT_MASTER_FX;
+  return { tracks, master };
 }
 
-async function renderMixdown(tracks: DecodedTrack[]): Promise<{ buffer: AudioBuffer; durationSeconds: number }> {
+async function renderMixdown(
+  project: DecodedProject,
+): Promise<{ buffer: AudioBuffer; durationSeconds: number }> {
+  const { tracks, master } = project;
   const durationSeconds = Math.max(
     0.1, // piso chico — evita un OfflineAudioContext de longitud 0 en un proyecto vacío
-    tracks
-      .flatMap((t) => t.clips.map((c) => c.startBeat + c.buffer.duration))
-      .reduce((max, end) => Math.max(max, end), 0),
+    contentDurationSeconds(tracks),
   );
+
+  // Camino con efectos (2026-09): el preview que escucha la Comunidad
+  // tiene que sonar como el proyecto en la app, con su EQ, compresor,
+  // reverb y limitador. Se hace con el DSP propio (ver
+  // projectMixdown.ts) en vez del grafo de Web Audio porque los nodos
+  // del navegador no son los mismos algoritmos.
+  if (projectHasEffects(tracks)) {
+    const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * SAMPLE_RATE), SAMPLE_RATE);
+    const mix = renderProjectMix(tracks, master, SAMPLE_RATE);
+    return {
+      buffer: toAudioBuffer(mix, offlineCtx, SAMPLE_RATE),
+      durationSeconds: mix.durationSeconds,
+    };
+  }
+
 
   const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * SAMPLE_RATE), SAMPLE_RATE);
   const anySolo = tracks.some((t) => t.isSolo);
@@ -140,7 +167,7 @@ async function renderMixdown(tracks: DecodedTrack[]): Promise<{ buffer: AudioBuf
       source.buffer = clip.buffer;
       source.connect(gainL);
       source.connect(gainR);
-      source.start(clip.startBeat);
+      source.start(clip.startSeconds);
     }
   }
 
@@ -254,8 +281,8 @@ export async function buildCommunityPreview(
 ): Promise<MixdownResult> {
   const ctx = new AudioContext();
   try {
-    const tracks = await loadDecodedTracks(downloadUrl, ctx);
-    const { buffer, durationSeconds } = await renderMixdown(tracks);
+    const project = await loadDecodedTracks(downloadUrl, ctx);
+    const { buffer, durationSeconds } = await renderMixdown(project);
     const blob = await encodeMp3(buffer, onProgress);
     return { blob, durationSeconds };
   } finally {

@@ -51,6 +51,19 @@ import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { ref, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
+import {
+  projectHasEffects,
+  renderProjectMix,
+  toAudioBuffer,
+  type MixdownTrack,
+} from "@/lib/projectMixdown";
+import {
+  DEFAULT_MASTER_FX,
+  parseMasterFx,
+  parseTrackFx,
+  type MasterFx,
+  type TrackFx,
+} from "@/lib/trackEffects";
 
 interface ManifestClip {
   audioFileName: string;
@@ -66,11 +79,13 @@ interface ManifestTrack {
   isMuted: boolean;
   isSolo: boolean;
   clips: ManifestClip[];
+  // Efectos por pista (formatVersion 2). Ausente en respaldos viejos.
+  fx?: unknown;
 }
 
 interface Manifest {
   formatVersion: number;
-  project: { title: string; tempoBpm: number };
+  project: { title: string; tempoBpm: number; masterFx?: unknown };
   tracks: ManifestTrack[];
 }
 
@@ -88,6 +103,7 @@ interface RuntimeTrack {
   pan: number;
   isMuted: boolean;
   isSolo: boolean;
+  fx: TrackFx;
   clips: DecodedClip[];
   color: string;
 }
@@ -95,6 +111,12 @@ interface RuntimeTrack {
 interface CachedProject {
   tracks: RuntimeTrack[];
   totalDuration: number;
+  master: MasterFx;
+  /// Mezcla ya procesada con efectos, o null si el proyecto no tiene
+  /// (ver playFrom: sin efectos se reproduce clip por clip como
+  /// siempre). Se guarda en la caché de sesión junto con los clips
+  /// para no volver a renderizar al reabrir el mismo proyecto.
+  renderedMix: AudioBuffer | null;
 }
 
 // Caché en memoria de la SESIÓN del navegador (vive fuera del
@@ -243,6 +265,9 @@ export function ProjectViewer({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [tracks, setTracks] = useState<RuntimeTrack[]>([]);
   const [totalDuration, setTotalDuration] = useState(0);
+  // Mezcla renderizada con efectos (null = proyecto sin efectos, se
+  // reproduce por el camino de siempre).
+  const [renderedMix, setRenderedMix] = useState<AudioBuffer | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playheadSeconds, setPlayheadSeconds] = useState(0);
   const [containerWidth, setContainerWidth] = useState(600);
@@ -274,6 +299,7 @@ export function ProjectViewer({
         audioContextRef.current = ctx;
         setTracks(cached.tracks);
         setTotalDuration(cached.totalDuration);
+        setRenderedMix(cached.renderedMix);
         setStatus("ready");
         return;
       }
@@ -317,6 +343,7 @@ export function ProjectViewer({
             pan: track.pan,
             isMuted: track.isMuted,
             isSolo: track.isSolo,
+            fx: parseTrackFx(track.fx),
             clips: decodedClips,
             color: TRACK_COLORS[runtimeTracks.length % TRACK_COLORS.length],
           });
@@ -328,8 +355,31 @@ export function ProjectViewer({
           .flatMap((t) => t.clips.map((c) => c.startBeat + c.buffer.duration))
           .reduce((max, end) => Math.max(max, end), 0);
 
+        // Efectos (2026-09): si el proyecto los usa, se renderiza la
+        // mezcla entera con el DSP portado del motor (projectMixdown)
+        // y se reproduce ESE buffer. Sin efectos, nada cambia: cada
+        // clip sigue siendo su propio AudioBufferSourceNode.
+        // masterFx llegó al manifest en formatVersion 2.
+        const master = manifest.project.masterFx
+          ? parseMasterFx(manifest.project.masterFx)
+          : DEFAULT_MASTER_FX;
+        const mixdownTracks: MixdownTrack[] = runtimeTracks.map((t) => ({
+          volume: t.volume,
+          pan: t.pan,
+          isMuted: t.isMuted,
+          isSolo: t.isSolo,
+          fx: t.fx,
+          clips: t.clips.map((c) => ({ startSeconds: c.startBeat, buffer: c.buffer })),
+        }));
+        let mix: AudioBuffer | null = null;
+        if (projectHasEffects(mixdownTracks)) {
+          const rendered = renderProjectMix(mixdownTracks, master, ctx.sampleRate);
+          mix = toAudioBuffer(rendered, ctx, ctx.sampleRate);
+        }
+
         setTracks(runtimeTracks);
         setTotalDuration(maxEnd);
+        setRenderedMix(mix);
         setStatus("ready"); // Play ya funciona acá — todavía con shadow waveforms
 
         // Fase 2: un clip por vez, en macrotasks separadas (dejan
@@ -339,7 +389,12 @@ export function ProjectViewer({
         // tenga los picos completos y sirva tal cual para la caché.
         let remaining = runtimeTracks.reduce((sum, t) => sum + t.clips.length, 0);
         if (remaining === 0) {
-          sessionCache.set(projectId, { tracks: runtimeTracks, totalDuration: maxEnd });
+          sessionCache.set(projectId, {
+            tracks: runtimeTracks,
+            totalDuration: maxEnd,
+            master,
+            renderedMix: mix,
+          });
         }
         runtimeTracks.forEach((track, ti) => {
           track.clips.forEach((clip, ci) => {
@@ -364,7 +419,12 @@ export function ProjectViewer({
                 // Todos los picos listos: cachear la versión completa
                 // para que la próxima apertura de este proyecto, en lo
                 // que dure la sesión, sea instantánea y sin sombras.
-                sessionCache.set(projectId, { tracks: runtimeTracks, totalDuration: maxEnd });
+                sessionCache.set(projectId, {
+            tracks: runtimeTracks,
+            totalDuration: maxEnd,
+            master,
+            renderedMix: mix,
+          });
               }
             }, 0);
             peakTimeouts.push(timeoutId);
@@ -453,6 +513,24 @@ export function ProjectViewer({
 
     const sources: AudioBufferSourceNode[] = [];
 
+    // Proyecto CON efectos: ya está todo mezclado y procesado en un
+    // solo buffer estéreo (volumen, paneo, mute/solo, EQ, compresor,
+    // reverb y limitador incluidos), así que se reproduce tal cual.
+    // Resumir desde el medio es el mismo offset de siempre.
+    if (renderedMix) {
+      const source = ctx.createBufferSource();
+      source.buffer = renderedMix;
+      source.connect(ctx.destination);
+      source.start(startContextTime, clamped);
+      activeSourcesRef.current = [source];
+      setIsPlaying(true);
+      // La mezcla dura MÁS que el proyecto cuando hay reverb (la cola
+      // sigue sonando después de la última nota): el cursor se detiene
+      // al final del audio, pero el sonido se deja terminar.
+      startPlayheadAnimation(clamped, renderedMix.duration);
+      return;
+    }
+
     for (const track of tracks) {
       const audible = !track.isMuted && (!anySolo || track.isSolo);
       if (!audible || track.clips.length === 0) continue;
@@ -485,7 +563,13 @@ export function ProjectViewer({
 
     activeSourcesRef.current = sources;
     setIsPlaying(true);
+    startPlayheadAnimation(clamped, totalDuration);
+  }
 
+  /// Anima el cabezal y programa el auto-stop. [audioEndSeconds] puede
+  /// ser mayor que `totalDuration` (cola de reverb): el cursor nunca
+  /// pasa del final del proyecto, pero el audio se deja terminar.
+  function startPlayheadAnimation(fromSeconds: number, audioEndSeconds: number) {
     const tick = () => {
       const c = audioContextRef.current;
       if (!c) return;
@@ -495,7 +579,7 @@ export function ProjectViewer({
     };
     rafRef.current = requestAnimationFrame(tick);
 
-    const remaining = Math.max(0, totalDuration - clamped);
+    const remaining = Math.max(0, audioEndSeconds - fromSeconds);
     autoStopTimeoutRef.current = setTimeout(() => {
       stopAllSources();
       setPlayheadSeconds(totalDuration);

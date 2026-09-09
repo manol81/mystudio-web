@@ -39,6 +39,14 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { ref, getDownloadURL, uploadBytesResumable } from "firebase/storage";
+import {
+  DEFAULT_MASTER_FX,
+  NO_TRACK_FX,
+  parseMasterFx,
+  parseTrackFx,
+  type MasterFx,
+  type TrackFx,
+} from "@/lib/trackEffects";
 import JSZip from "jszip";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
@@ -130,6 +138,12 @@ interface ArrangerTrack {
   isSolo: boolean;
   clips: ArrangerClip[];
   color: string;
+  // Efectos por pista de la app (EQ, compresor, envío a reverb). El
+  // Arranger NO los edita ni los reproduce — los transporta tal cual
+  // para que un round-trip app → Arranger → app no los pierda. Sin
+  // esto, editar un arreglo en la web borraba silenciosamente el
+  // trabajo de mezcla hecho en el teléfono.
+  fx: TrackFx;
 }
 
 /**
@@ -179,6 +193,7 @@ interface ImportManifestTrack {
   isMuted: boolean;
   isSolo: boolean;
   clips: ImportManifestClip[];
+  fx?: unknown;
 }
 
 interface ImportManifest {
@@ -190,6 +205,8 @@ interface ImportManifest {
     // todavía no exporta compás) — se completan con 4/4 si faltan.
     timeSignatureNumerator?: number;
     timeSignatureDenominator?: number;
+    // Reverb y limitador del máster (formatVersion 2 de la app).
+    masterFx?: unknown;
   };
   tracks: ImportManifestTrack[];
 }
@@ -320,6 +337,9 @@ export default function ArrangerPage() {
 
   const [projectTitle, setProjectTitle] = useState("Nuevo Arreglo");
   const [projectTempoBpm, setProjectTempoBpm] = useState(120);
+  // Efectos del máster del proyecto importado — el Arranger no los toca,
+  // los devuelve al exportar para no perderlos (igual que ArrangerTrack.fx).
+  const [importedMasterFx, setImportedMasterFx] = useState<MasterFx>(DEFAULT_MASTER_FX);
   // Tipo de compás del proyecto — junto con el BPM, define la grilla
   // musical de la regla (ver rulerTicks) y viaja en el manifest.json
   // exportado (ver handleExport). El motor de reproducción/export en
@@ -844,6 +864,7 @@ export default function ArrangerPage() {
         isSolo: false,
         clips: [],
         color: TRACK_COLORS[prev.length % TRACK_COLORS.length],
+        fx: NO_TRACK_FX,
       },
     ]);
   }
@@ -1000,6 +1021,7 @@ export default function ArrangerPage() {
           isSolo: false,
           clips: [clip],
           color: trackColor,
+          fx: NO_TRACK_FX,
         },
       ]);
       setSelectedClipId(clip.id);
@@ -1029,6 +1051,7 @@ export default function ArrangerPage() {
           isSolo: false,
           clips: [],
           color: TRACK_COLORS[0],
+          fx: NO_TRACK_FX,
         },
       ]);
     }
@@ -1561,10 +1584,14 @@ export default function ArrangerPage() {
       }
 
       const manifest = {
-        formatVersion: 1,
+        // 2 desde que el manifest lleva efectos (ver
+        // project_backup_service.dart). El Arranger no los edita, pero
+        // los devuelve intactos, así que exporta la misma versión.
+        formatVersion: 2,
         project: {
           title: projectTitle.trim() || "Arreglo sin título",
           tempoBpm: projectTempoBpm,
+          masterFx: importedMasterFx,
           // Campos NUEVOS (Paso 1) — project_backup_service.dart del
           // lado Flutter todavía no los lee (solo toma title/tempoBpm
           // de este objeto), así que agregarlos acá es 100%
@@ -1579,6 +1606,7 @@ export default function ArrangerPage() {
           pan: track.pan,
           isMuted: track.isMuted,
           isSolo: track.isSolo,
+          fx: track.fx,
           clips: track.clips.map((clip) => {
             const rate = playbackRateFor(clip, projectTempoBpm);
             const rendered = renderedByKey.get(keyFor(clip, rate))!;
@@ -1796,6 +1824,9 @@ export default function ArrangerPage() {
     setProjectTempoBpm(manifest.project.tempoBpm > 0 ? manifest.project.tempoBpm : 120);
     setTimeSignatureNumerator(manifest.project.timeSignatureNumerator ?? 4);
     setTimeSignatureDenominator(manifest.project.timeSignatureDenominator ?? 4);
+    setImportedMasterFx(
+      manifest.project.masterFx ? parseMasterFx(manifest.project.masterFx) : DEFAULT_MASTER_FX,
+    );
     setTracks([]);
 
     // Fase 1: una pista por vez, con una pausa de un tick entre cada
@@ -1820,6 +1851,9 @@ export default function ArrangerPage() {
         isSolo: track.isSolo,
         color: TRACK_COLORS[ti % TRACK_COLORS.length],
         clips,
+        // Se conservan tal cual vinieron: el Arranger no los edita ni
+        // los reproduce, solo evita que un round-trip los borre.
+        fx: parseTrackFx(track.fx),
       };
       setTracks((prev) => [...prev, newTrack]);
       setImportStage(`Agregando pistas... (${ti + 1}/${manifest.tracks.length})`);
@@ -1937,6 +1971,7 @@ export default function ArrangerPage() {
               isSolo: false,
               clips: [],
               color: TRACK_COLORS[prev.length % TRACK_COLORS.length],
+              fx: NO_TRACK_FX,
             },
           ]);
           void addSampleToTrack(sample, trackId, 0);
