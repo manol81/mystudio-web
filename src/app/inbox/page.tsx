@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Heart, MessageCircle, MessageSquare } from "lucide-react";
+import { Check, Handshake, Heart, MessageCircle, MessageSquare, X } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
 import {
@@ -18,6 +18,11 @@ import {
   markNotificationsSeen,
   type CommunityNotification,
 } from "@/lib/NotificationsService";
+import {
+  fetchReceivedRequests,
+  respondToCollaboration,
+  type CollabRequest,
+} from "@/lib/CollabService";
 
 function formatRelativeTime(date: Date | null): string {
   if (!date) return "";
@@ -43,13 +48,21 @@ export default function InboxPage() {
   const [notifications, setNotifications] = useState<CommunityNotification[] | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Pedidos de colaboración recibidos. Van arriba de las novedades: es
+  // lo único de la bandeja que espera una decisión, no solo una mirada.
+  const [collabs, setCollabs] = useState<CollabRequest[]>([]);
+  const [respondingTo, setRespondingTo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user) return;
     try {
       const seenAt = profile?.notificationsSeenAt ?? null;
-      const list = await fetchNotifications(user.uid, seenAt);
+      const [list, requests] = await Promise.all([
+        fetchNotifications(user.uid, seenAt),
+        fetchReceivedRequests(user.uid).catch(() => [] as CollabRequest[]),
+      ]);
       setNotifications(list);
+      setCollabs(requests);
       // Se marcan como leídas DESPUÉS de traerlas: si se hiciera antes,
       // esta misma carga ya las mostraría todas como vistas y el
       // resaltado de lo nuevo no se vería nunca.
@@ -71,6 +84,24 @@ export default function InboxPage() {
     // aunque el estado recién se toca después de la consulta.
     queueMicrotask(() => void load());
   }, [load]);
+
+  async function respond(request: CollabRequest, status: "accepted" | "rejected") {
+    setRespondingTo(request.requesterUid);
+    try {
+      await respondToCollaboration(request.postId, request.requesterUid, status);
+      setCollabs((prev) =>
+        prev.map((c) =>
+          c.postId === request.postId && c.requesterUid === request.requesterUid
+            ? { ...c, status }
+            : c,
+        ),
+      );
+    } catch (err) {
+      console.error("No se pudo responder al pedido:", err);
+    } finally {
+      setRespondingTo(null);
+    }
+  }
 
   if (loading) return null;
 
@@ -106,6 +137,62 @@ export default function InboxPage() {
       <p className="mt-1 text-sm text-white/50">
         Lo que recibieron tus publicaciones en la Comunidad.
       </p>
+
+      {/* Pedidos de colaboración: lo primero, porque son los únicos que
+          esperan una respuesta tuya. */}
+      {collabs.filter((c) => c.status === "pending").length > 0 && (
+        <section className="mt-8">
+          <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-white">
+            <Handshake size={16} className="text-neon-cyan" />
+            Quieren sumarse a tus canciones
+          </h2>
+          <ul className="mt-3 flex flex-col gap-2">
+            {collabs
+              .filter((c) => c.status === "pending")
+              .map((c) => (
+                <li
+                  key={`${c.postId}_${c.requesterUid}`}
+                  className="rounded-xl border border-neon-cyan/25 bg-neon-cyan/5 p-4"
+                >
+                  <p className="text-sm text-white/80">
+                    <Link
+                      href={`/u/${c.requesterUid}`}
+                      className="font-semibold text-white hover:text-neon-cyan"
+                    >
+                      {c.requesterName}
+                    </Link>{" "}
+                    quiere sumar{" "}
+                    <span className="text-neon-cyan">{c.role}</span> a{" "}
+                    <Link href={`/p/${c.postId}`} className="text-white/60 hover:text-white">
+                      tu canción
+                    </Link>
+                  </p>
+                  {c.message && (
+                    <p className="mt-1.5 text-xs leading-relaxed text-white/50">{c.message}</p>
+                  )}
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      disabled={respondingTo === c.requesterUid}
+                      onClick={() => void respond(c, "accepted")}
+                      className="flex items-center gap-1.5 rounded-full border border-neon-cyan/40 bg-onyx-black px-4 py-1.5 font-display text-xs font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan disabled:opacity-40"
+                    >
+                      <Check size={13} /> Aceptar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={respondingTo === c.requesterUid}
+                      onClick={() => void respond(c, "rejected")}
+                      className="flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs text-white/50 transition-colors hover:text-red-300 disabled:opacity-40"
+                    >
+                      <X size={13} /> Ahora no
+                    </button>
+                  </div>
+                </li>
+              ))}
+          </ul>
+        </section>
+      )}
 
       {error && (
         <p className="mt-6 text-sm text-red-400" role="alert">

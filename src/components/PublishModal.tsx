@@ -23,6 +23,7 @@ import { attachCommunityStems, attachCommunityPreview, publishProjectToCommunity
 import { buildCommunityPreview } from "@/lib/audioPreviewExport";
 import { buildStemsPackage } from "@/lib/stemsExport";
 import { SAMPLE_GENRES } from "@/lib/sampleTaxonomy";
+import { COLLAB_ROLES, MAX_WANTED_ROLES } from "@/lib/collabRoles";
 import { isValidUsername, setUsername as saveUsername } from "@/lib/UserProfileService";
 
 const inputClasses =
@@ -38,6 +39,10 @@ export function PublishModal({
   const { user, profile } = useAuth();
   const [title, setTitle] = useState(project.title || "Sin título");
   const [genre, setGenre] = useState<string>(SAMPLE_GENRES[0]);
+  // Qué le falta a la canción. Es lo que convierte al feed en un lugar
+  // donde buscar dónde tocar, y no solo una vidriera de temas
+  // terminados.
+  const [wantedRoles, setWantedRoles] = useState<string[]>([]);
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<
     "idle" | "publishing" | "generating-preview" | "generating-stems" | "success" | "error"
@@ -94,6 +99,7 @@ export function PublishModal({
         title: title.trim() || "Sin título",
         audioUrl,
         genre,
+        wantedRoles,
         description: description.trim(),
       });
     } catch (err) {
@@ -276,6 +282,43 @@ export function PublishModal({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div>
+              <span className="mb-1.5 block text-xs text-white/60">
+                ¿Buscás que alguien sume algo? (opcional)
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {COLLAB_ROLES.map((role) => {
+                  const selected = wantedRoles.includes(role);
+                  const atLimit = wantedRoles.length >= MAX_WANTED_ROLES && !selected;
+                  return (
+                    <button
+                      key={role}
+                      type="button"
+                      disabled={atLimit || isBusy}
+                      onClick={() =>
+                        setWantedRoles((prev) =>
+                          prev.includes(role)
+                            ? prev.filter((r) => r !== role)
+                            : [...prev, role],
+                        )
+                      }
+                      className={`rounded-full border px-3 py-1 text-xs transition-colors duration-200 disabled:opacity-30 ${
+                        selected
+                          ? "border-neon-cyan bg-neon-cyan/10 text-neon-cyan"
+                          : "border-white/15 text-white/50 hover:border-white/35 hover:text-white/80"
+                      }`}
+                    >
+                      {role}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[10px] text-white/30">
+                Otros músicos van a poder encontrar tu canción buscando por lo que falta, y
+                pedirte sumarse. Hasta {MAX_WANTED_ROLES}.
+              </p>
             </div>
 
             <div>

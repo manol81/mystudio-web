@@ -24,11 +24,13 @@ import { LoginModal } from "@/components/LoginModal";
 import { PostCard } from "@/components/PostCard";
 import { VisitorHero } from "@/components/VisitorHero";
 import { fetchFollowingUids } from "@/lib/PublicProfileService";
+import { COLLAB_ROLES } from "@/lib/collabRoles";
 import {
   fetchBlockedAuthorIds,
   fetchCommentCounts,
   fetchCommunityPostsPage,
   fetchPostsByAuthors,
+  fetchPostsByWantedRole,
   fetchLikedPostIds,
   type CommunityPost,
 } from "@/lib/CommunityService";
@@ -52,7 +54,13 @@ export default function CommunityFeedPage() {
   // Solapa del feed. "following" no pagina: trae de una las
   // publicaciones de a quiénes seguís, que por definición son muchas
   // menos que el feed completo (ver fetchPostsByAuthors).
-  const [feedMode, setFeedMode] = useState<"all" | "following">("all");
+  const [feedMode, setFeedMode] = useState<"all" | "following" | "collabs">("all");
+  // Filtro de "dónde puedo tocar": null = todas las que buscan a
+  // alguien, o un instrumento concreto.
+  const [wantedRole, setWantedRole] = useState<string | null>(null);
+  const [collabPosts, setCollabPosts] = useState<CommunityPost[] | null>(null);
+  const [isLoadingCollabs, setIsLoadingCollabs] = useState(false);
+  const [collabError, setCollabError] = useState<string | null>(null);
   const [followingPosts, setFollowingPosts] = useState<CommunityPost[] | null>(null);
   const [isLoadingFollowing, setIsLoadingFollowing] = useState(false);
 
@@ -182,7 +190,54 @@ export default function CommunityFeedPage() {
     };
   }, [feedMode, user, followingPosts]);
 
-  const sourcePosts = feedMode === "following" ? (followingPosts ?? []) : posts;
+  // Solapa de colaboraciones: sin instrumento elegido se filtran en el
+  // cliente las publicaciones ya cargadas que piden algo; con uno
+  // elegido se consulta por ese rol, que es lo que hace útil el filtro
+  // para quien toca un instrumento concreto.
+  useEffect(() => {
+    if (feedMode !== "collabs") return;
+    let cancelled = false;
+    if (!wantedRole) {
+      queueMicrotask(() => setCollabPosts(posts.filter((p) => p.wantedRoles.length > 0)));
+      return;
+    }
+    queueMicrotask(() => {
+      setIsLoadingCollabs(true);
+      setCollabError(null);
+    });
+    void (async () => {
+      try {
+        const list = await fetchPostsByWantedRole(wantedRole);
+        if (!cancelled) setCollabPosts(list);
+      } catch (err) {
+        console.error("No se pudieron cargar las colaboraciones:", err);
+        if (!cancelled) {
+          setCollabPosts([]);
+          // Un índice recién creado tarda unos minutos en construirse y
+          // hasta entonces Firestore rechaza la consulta. Sin este
+          // mensaje, el fallo se vería igual que "no hay nada", que es
+          // justo la conclusión equivocada.
+          setCollabError(
+            (err as { code?: string }).code === "failed-precondition"
+              ? "El buscador se está preparando. Probá de nuevo en unos minutos."
+              : "No se pudo buscar por instrumento. Probá de nuevo en un momento.",
+          );
+        }
+      } finally {
+        if (!cancelled) setIsLoadingCollabs(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [feedMode, wantedRole, posts]);
+
+  const sourcePosts =
+    feedMode === "following"
+      ? (followingPosts ?? [])
+      : feedMode === "collabs"
+        ? (collabPosts ?? [])
+        : posts;
   const visiblePosts = sourcePosts.filter((post) => !blockedAuthorIds.has(post.authorId));
 
   useEffect(() => {
@@ -224,34 +279,68 @@ export default function CommunityFeedPage() {
         </p>
       </div>
 
-      {/* Solapas del feed — solo con sesión: sin cuenta no hay a quién
-          seguir, y mostrar una pestaña que siempre está vacía sería
-          ruido para el visitante. */}
-      {user && (
-        <div className="flex gap-1 border-b border-white/10">
-          {(
-            [
-              ["all", "Todo"],
-              ["following", "Siguiendo"],
-            ] as const
-          ).map(([value, label]) => (
+      {/* Solapas del feed. "Buscan músicos" se muestra SIEMPRE, incluso
+          sin cuenta: es la puerta de entrada para alguien que llega
+          buscando dónde tocar. "Siguiendo" necesita sesión, porque sin
+          cuenta no hay a quién seguir. */}
+      <div className="flex gap-1 border-b border-white/10">
+        {(
+          [
+            ["all", "Todo"],
+            ["collabs", "Buscan músicos"],
+            ...(user ? ([["following", "Siguiendo"]] as const) : []),
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setFeedMode(value)}
+            className={`-mb-px border-b-2 px-4 py-2 text-sm transition-colors duration-200 ${
+              feedMode === value
+                ? "border-neon-cyan text-neon-cyan"
+                : "border-transparent text-white/50 hover:text-white/80"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {feedMode === "collabs" && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs text-white/40">Tocás:</span>
+          <button
+            type="button"
+            onClick={() => setWantedRole(null)}
+            className={`rounded-full border px-3 py-1 text-xs transition-colors duration-200 ${
+              wantedRole === null
+                ? "border-neon-cyan bg-neon-cyan/10 text-neon-cyan"
+                : "border-white/15 text-white/50 hover:border-white/35 hover:text-white/80"
+            }`}
+          >
+            Todo
+          </button>
+          {COLLAB_ROLES.map((role) => (
             <button
-              key={value}
+              key={role}
               type="button"
-              onClick={() => setFeedMode(value)}
-              className={`-mb-px border-b-2 px-4 py-2 text-sm transition-colors duration-200 ${
-                feedMode === value
-                  ? "border-neon-cyan text-neon-cyan"
-                  : "border-transparent text-white/50 hover:text-white/80"
+              onClick={() => setWantedRole(role)}
+              className={`rounded-full border px-3 py-1 text-xs transition-colors duration-200 ${
+                wantedRole === role
+                  ? "border-neon-cyan bg-neon-cyan/10 text-neon-cyan"
+                  : "border-white/15 text-white/50 hover:border-white/35 hover:text-white/80"
               }`}
             >
-              {label}
+              {role}
             </button>
           ))}
         </div>
       )}
 
-      {loading || isLoadingInitial || (feedMode === "following" && isLoadingFollowing) ? (
+      {loading ||
+      isLoadingInitial ||
+      (feedMode === "following" && isLoadingFollowing) ||
+      (feedMode === "collabs" && isLoadingCollabs) ? (
         <div className="flex justify-center py-16">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-neon-cyan/30 border-t-neon-cyan" />
         </div>
@@ -259,6 +348,19 @@ export default function CommunityFeedPage() {
         <div className="rounded-2xl border border-white/10 bg-graphite p-8 text-center">
           <p className="text-sm text-red-400">No se pudo cargar la comunidad.</p>
           <p className="mt-1 text-xs text-white/40">{feedError}</p>
+        </div>
+      ) : feedMode === "collabs" && sourcePosts.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-graphite p-10 text-center">
+          <p className={`text-sm ${collabError ? "text-orange-300" : "text-white/60"}`}>
+            {collabError
+              ? collabError
+              : wantedRole
+                ? `Ninguna canción está buscando ${wantedRole.toLowerCase()} por ahora.`
+                : "Todavía nadie pidió que le sumen un instrumento."}
+          </p>
+          <p className="mt-2 text-xs text-white/40">
+            Al publicar podés marcar qué te falta, y quien toque eso te va a encontrar acá.
+          </p>
         </div>
       ) : feedMode === "following" && sourcePosts.length === 0 ? (
         <div className="rounded-2xl border border-white/10 bg-graphite p-10 text-center">

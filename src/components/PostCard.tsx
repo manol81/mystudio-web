@@ -28,8 +28,10 @@ import {
   Link2,
   Check,
   SlidersHorizontal,
+  Handshake,
 } from "lucide-react";
 import { SITE_URL } from "@/lib/site";
+import { CollabRequestModal } from "@/components/CollabRequestModal";
 import { CommentsModal } from "@/components/CommentsModal";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
@@ -101,6 +103,7 @@ export function PostCard({
     }
   }
   const [isViewerOpen, setIsViewerOpen] = useState(false);
+  const [isCollabOpen, setIsCollabOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -222,6 +225,19 @@ export function PostCard({
       <div>
         <p className="truncate font-display text-lg font-semibold text-white">{post.title}</p>
         <p className="text-xs uppercase tracking-wide text-white/40">{post.genre}</p>
+        {post.wantedRoles.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-white/30">Busca</span>
+            {post.wantedRoles.map((role) => (
+              <span
+                key={role}
+                className="rounded-full border border-neon-cyan/30 bg-neon-cyan/5 px-2 py-0.5 text-[10px] text-neon-cyan"
+              >
+                {role}
+              </span>
+            ))}
+          </div>
+        )}
         {post.description && (
           <p className="mt-1.5 line-clamp-2 text-xs text-white/50">{post.description}</p>
         )}
@@ -310,6 +326,21 @@ export function PostCard({
           </Tooltip>
         )}
 
+        {/* Sumarse: solo en canciones ajenas. No graba audio acá, pide
+            el permiso — la grabación pasa en la app, que es donde la
+            latencia está resuelta (ver CollabService.ts). */}
+        {user?.uid !== post.authorId && (
+          <Tooltip text="Proponerle al autor sumar tu instrumento a esta canción">
+            <button
+              type="button"
+              onClick={() => (user ? setIsCollabOpen(true) : onRequireLogin?.())}
+              className="flex items-center gap-1.5 rounded-full px-1.5 py-1 text-white/40 transition-colors duration-200 hover:text-neon-cyan"
+            >
+              <Handshake size={14} /> Sumarme
+            </button>
+          </Tooltip>
+        )}
+
         <Tooltip text="Copiar el link de esta publicación para compartirlo" side="left" wrapperClassName="relative ml-auto inline-flex">
           <button
             type="button"
@@ -324,6 +355,16 @@ export function PostCard({
           </button>
         </Tooltip>
       </div>
+
+      {isCollabOpen && (
+        <CollabRequestModal
+          postId={post.id}
+          postTitle={post.title}
+          postAuthorId={post.authorId}
+          wantedRoles={post.wantedRoles}
+          onClose={() => setIsCollabOpen(false)}
+        />
+      )}
 
       {isViewerOpen && (
         <ProjectViewer

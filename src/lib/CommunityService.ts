@@ -59,6 +59,9 @@ export interface CommunityPost {
   // .mystudio original solo lo puede leer su autor. null en las
   // publicaciones anteriores a esta función o si la generación falló.
   stemsUrl: string | null;
+  /// Qué instrumentos busca esta canción (ver collabRoles.ts). Vacío
+  /// si el autor no pidió nada: la publicación es solo para escuchar.
+  wantedRoles: string[];
   genre: string;
   description: string;
   likesCount: number;
@@ -83,6 +86,7 @@ function toCommunityPost(doc: QueryDocumentSnapshot<DocumentData>): CommunityPos
     audioPreviewUrl: (data.audioPreviewUrl as string) ?? null,
     previewDurationSeconds: (data.previewDurationSeconds as number) ?? null,
     stemsUrl: (data.stemsUrl as string) ?? null,
+    wantedRoles: (data.wantedRoles as string[]) ?? [],
     genre: (data.genre as string) ?? "",
     description: (data.description as string) ?? "",
     likesCount: (data.likesCount as number) ?? 0,
@@ -115,6 +119,25 @@ export async function fetchPostsByAuthors(
     query(
       collection(db, COLLECTION_NAME),
       where("authorId", "in", authorIds.slice(0, 30)),
+      orderBy("createdAt", "desc"),
+      limit(max),
+    ),
+  );
+  return snap.docs.map(toCommunityPost);
+}
+
+/// Publicaciones que buscan un instrumento concreto, para el filtro de
+/// "dónde puedo tocar". `array-contains` sobre wantedRoles: es lo que
+/// convierte al feed en un tablero de oportunidades en vez de una
+/// vidriera.
+export async function fetchPostsByWantedRole(
+  role: string,
+  max = 50,
+): Promise<CommunityPost[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, COLLECTION_NAME),
+      where("wantedRoles", "array-contains", role),
       orderBy("createdAt", "desc"),
       limit(max),
     ),
@@ -160,6 +183,7 @@ export async function publishProjectToCommunity(params: {
   audioUrl: string;
   genre: string;
   description: string;
+  wantedRoles: string[];
 }): Promise<string> {
   const docRef = await addDoc(collection(db, COLLECTION_NAME), {
     authorId: params.authorId,
@@ -171,6 +195,7 @@ export async function publishProjectToCommunity(params: {
     previewDurationSeconds: null,
     genre: params.genre,
     description: params.description,
+    wantedRoles: params.wantedRoles,
     likesCount: 0,
     createdAt: serverTimestamp(),
   });
