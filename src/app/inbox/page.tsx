@@ -31,6 +31,7 @@ import {
   DELIVERY_LIFETIME_DAYS,
   fetchReceivedRequests,
   fetchSentRequests,
+  hasUnreadMessages,
   isDeliveryExpired,
   markDeliveryDownloaded,
   respondToCollaboration,
@@ -143,6 +144,14 @@ export default function InboxPage() {
     (c) => c.deliveryUrl && !c.downloadedAt && !isDeliveryExpired(c.expiresAt),
   );
 
+  // Mensajes sin leer en las colaboraciones, de las dos puntas. Sale
+  // gratis: los pedidos ya vinieron en la carga de arriba y la marca del
+  // último mensaje viaja en cada uno (ver CollabService.ts). La
+  // conversación en sí vive en /colaboraciones.
+  const unreadThreads = user
+    ? [...collabs, ...sent].filter((c) => hasUnreadMessages(c, user.uid))
+    : [];
+
   if (loading) return null;
 
   if (!user) {
@@ -178,6 +187,29 @@ export default function InboxPage() {
         Lo que recibieron tus publicaciones en la Comunidad. Las pistas que te manden se
         guardan {DELIVERY_LIFETIME_DAYS} días.
       </p>
+
+      {/* Mensajes sin leer de las colaboraciones. Van arriba de todo:
+          es alguien esperando una respuesta, no una novedad para mirar. */}
+      {unreadThreads.length > 0 && (
+        <Link
+          href="/colaboraciones"
+          className="mt-6 flex items-center gap-3 rounded-xl border border-neon-cyan/30 bg-neon-cyan/5 p-4 transition-colors hover:border-neon-cyan/60"
+        >
+          <MessageCircle size={17} className="shrink-0 text-neon-cyan" />
+          <p className="flex-1 text-sm text-white/80">
+            Tenés mensajes sin leer en{" "}
+            <span className="font-semibold text-white">
+              {unreadThreads.length === 1
+                ? "una colaboración"
+                : `${unreadThreads.length} colaboraciones`}
+            </span>
+            .
+          </p>
+          <span className="shrink-0 font-display text-xs font-semibold text-neon-cyan">
+            Abrir
+          </span>
+        </Link>
+      )}
 
       {/* Pistas que ya te mandaron. Van PRIMERO y con el plazo bien
           visible: se borran a los pocos días y hay que bajarlas a la

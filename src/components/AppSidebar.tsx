@@ -15,7 +15,18 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "firebase/auth";
-import { Globe, FolderOpen, Piano, MessageSquare, Shield, Menu, X, LogOut } from "lucide-react";
+import {
+  Globe,
+  FolderOpen,
+  Piano,
+  MessageSquare,
+  Handshake,
+  Search,
+  Shield,
+  Menu,
+  X,
+  LogOut,
+} from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
@@ -47,6 +58,18 @@ const NAV_ITEMS = [
     label: "Bandeja de Entrada",
     icon: MessageSquare,
     hint: "Los comentarios y me gusta que recibieron tus publicaciones",
+  },
+  {
+    href: "/colaboraciones",
+    label: "Colaboraciones",
+    icon: Handshake,
+    hint: "Con quién estás trabajando, en qué tema, y la conversación de cada colaboración",
+  },
+  {
+    href: "/buscar",
+    label: "Buscar Personas",
+    icon: Search,
+    hint: "Encontrá a alguien por su apodo",
   },
 ] as const;
 

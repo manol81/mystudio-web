@@ -124,6 +124,15 @@ async function deleteCommunityFootprint(uid: string): Promise<void> {
     // likes/comentarios ajenos dentro de SU post.
     await deleteCollection(collection(post.ref, "likes"));
     await deleteCollection(collection(post.ref, "comments"));
+    // Pedidos de colaboración recibidos en este post, con su hilo de
+    // mensajes adentro: el hilo es una subcolección y Firestore no
+    // borra en cascada, así que si se borra el pedido primero, los
+    // mensajes quedan huérfanos y sin nadie que pueda alcanzarlos.
+    const requests = await getDocs(collection(post.ref, "collab_requests"));
+    for (const request of requests.docs) {
+      await deleteCollection(collection(request.ref, "messages"));
+      await deleteDoc(request.ref);
+    }
     await deleteDoc(post.ref);
   }
   await deleteStorageFolder(ref(storage, `community_previews/${uid}`));
@@ -132,6 +141,28 @@ async function deleteCommunityFootprint(uid: string): Promise<void> {
     query(collectionGroup(db, "comments"), where("authorId", "==", uid)),
   );
   await deleteRefs(comments.docs.map((d) => d.ref));
+
+  // Pedidos de colaboración que ESTA persona hizo en temas ajenos, más
+  // la pista que haya subido en cada uno. El archivo se borra por su
+  // ruta exacta (`collab_deliveries/{uid}/{postId}`) y no listando la
+  // carpeta: las reglas de Storage dan permiso sobre el objeto, no
+  // sobre el prefijo, así que un listado fallaría.
+  const myRequests = await getDocs(
+    query(collectionGroup(db, "collab_requests"), where("requesterUid", "==", uid)),
+  );
+  for (const request of myRequests.docs) {
+    const postId = request.ref.parent.parent?.id;
+    await deleteCollection(collection(request.ref, "messages"));
+    await deleteDoc(request.ref);
+    if (!postId) continue;
+    try {
+      await deleteObject(ref(storage, `collab_deliveries/${uid}/${postId}`));
+    } catch (err) {
+      // Si ya venció, la regla de ciclo de vida del bucket se le
+      // adelantó — que no exista es exactamente el estado buscado.
+      if ((err as { code?: string }).code !== "storage/object-not-found") throw err;
+    }
+  }
 }
 
 async function deleteCollection(col: CollectionReference): Promise<void> {

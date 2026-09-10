@@ -18,6 +18,8 @@
 // recibió (mismo patrón que las notificaciones).
 
 import {
+  addDoc,
+  collection,
   collectionGroup,
   deleteDoc,
   doc,
@@ -77,6 +79,41 @@ export interface CollabRequest {
   /// Cuándo el autor la bajó a su app. Sirve para dejar de insistirle
   /// con el aviso de vencimiento.
   downloadedAt: Date | null;
+  /// Último mensaje del hilo, duplicado acá arriba para poder mostrar
+  /// "tenés mensajes sin leer" sin abrir cada conversación.
+  lastMessageAt: Date | null;
+  lastMessageSenderUid: string | null;
+  /// Hasta dónde leyó cada uno. Campos separados porque cada persona
+  /// solo puede tocar el suyo (ver firestore.rules).
+  authorSeenAt: Date | null;
+  requesterSeenAt: Date | null;
+}
+
+/// Un mensaje del hilo de una colaboración.
+export interface CollabMessage {
+  id: string;
+  senderUid: string;
+  senderName: string;
+  text: string;
+  createdAt: Date | null;
+}
+
+export const MAX_THREAD_MESSAGE = 1000;
+
+/// El uid de la otra persona de la colaboración, mirada desde [myUid].
+export function otherParticipant(request: CollabRequest, myUid: string): string {
+  return request.requesterUid === myUid ? request.postAuthorId : request.requesterUid;
+}
+
+/// ¿Hay mensajes que [myUid] todavía no vio en esta colaboración?
+/// Los propios nunca cuentan: mandar algo no deja el hilo sin leer.
+export function hasUnreadMessages(request: CollabRequest, myUid: string): boolean {
+  if (!request.lastMessageAt) return false;
+  if (request.lastMessageSenderUid === myUid) return false;
+  const seenAt =
+    request.postAuthorId === myUid ? request.authorSeenAt : request.requesterSeenAt;
+  if (!seenAt) return true;
+  return request.lastMessageAt.getTime() > seenAt.getTime();
 }
 
 export const MAX_COLLAB_MESSAGE = 500;
@@ -101,6 +138,12 @@ function toRequest(
     expiresAt: data.expiresAt instanceof Timestamp ? data.expiresAt.toDate() : null,
     downloadedAt:
       data.downloadedAt instanceof Timestamp ? data.downloadedAt.toDate() : null,
+    lastMessageAt:
+      data.lastMessageAt instanceof Timestamp ? data.lastMessageAt.toDate() : null,
+    lastMessageSenderUid: (data.lastMessageSenderUid as string) ?? null,
+    authorSeenAt: data.authorSeenAt instanceof Timestamp ? data.authorSeenAt.toDate() : null,
+    requesterSeenAt:
+      data.requesterSeenAt instanceof Timestamp ? data.requesterSeenAt.toDate() : null,
   };
 }
 
@@ -223,4 +266,122 @@ export async function fetchSentRequests(
     const postId = d.ref.parent.parent?.id;
     return postId ? [toRequest(postId, d.id, d.data())] : [];
   });
+}
+
+// ─── Hilo de mensajes ───────────────────────────────────────────────────
+//
+// La única mensajería privada del proyecto, y no es un chat general a
+// propósito: solo existe entre dos personas que YA se vincularon por una
+// colaboración aceptada. Eso deja fuera de raíz el spam y la moderación
+// de mensajes privados entre desconocidos, que sin backend no tendríamos
+// forma de atender.
+//
+// El hilo vive como subcolección del pedido, así que no hace falta
+// ninguna entidad nueva ni denormalizar el vínculo en otro lado: el
+// pedido aceptado ES la constancia de que colaboraron.
+
+function messagesRef(postId: string, requesterUid: string) {
+  return collection(db, "community_posts", postId, "collab_requests", requesterUid, "messages");
+}
+
+export async function fetchCollabMessages(
+  postId: string,
+  requesterUid: string,
+  max = 100,
+): Promise<CollabMessage[]> {
+  const snap = await getDocs(
+    query(messagesRef(postId, requesterUid), orderBy("createdAt", "asc"), limit(max)),
+  );
+  return snap.docs.map((d) => {
+    const data = d.data();
+    return {
+      id: d.id,
+      senderUid: (data.senderUid as string) ?? "",
+      senderName: (data.senderName as string) ?? "Alguien",
+      text: (data.text as string) ?? "",
+      createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : null,
+    };
+  });
+}
+
+/// Manda un mensaje y deja la marca en el pedido para que al otro le
+/// aparezca el aviso sin tener que abrir el hilo.
+///
+/// Son dos escrituras separadas y no una transacción: si la segunda
+/// falla, el mensaje igual quedó guardado y se ve al abrir la
+/// conversación — perder el aviso es mucho menos grave que perder el
+/// mensaje.
+export async function sendCollabMessage(params: {
+  postId: string;
+  requesterUid: string;
+  senderUid: string;
+  senderName: string;
+  text: string;
+}): Promise<void> {
+  const text = params.text.trim().slice(0, MAX_THREAD_MESSAGE);
+  if (!text) return;
+  await addDoc(messagesRef(params.postId, params.requesterUid), {
+    senderUid: params.senderUid,
+    senderName: params.senderName.slice(0, 30),
+    text,
+    createdAt: serverTimestamp(),
+  });
+  await updateDoc(
+    doc(db, "community_posts", params.postId, "collab_requests", params.requesterUid),
+    { lastMessageAt: serverTimestamp(), lastMessageSenderUid: params.senderUid },
+  );
+}
+
+/// Marca el hilo como leído. Cada uno escribe SU propio campo: las
+/// reglas no dejan marcar como leído lo del otro.
+export async function markThreadSeen(
+  request: CollabRequest,
+  myUid: string,
+): Promise<void> {
+  const field = request.postAuthorId === myUid ? "authorSeenAt" : "requesterSeenAt";
+  await updateDoc(
+    doc(db, "community_posts", request.postId, "collab_requests", request.requesterUid),
+    { [field]: serverTimestamp() },
+  );
+}
+
+/// Vacía el hilo. Lo necesita la eliminación de cuenta y el borrado de
+/// una publicación: Firestore no borra subcolecciones en cascada.
+export async function deleteCollabThread(
+  postId: string,
+  requesterUid: string,
+): Promise<void> {
+  const snap = await getDocs(messagesRef(postId, requesterUid));
+  await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+}
+
+// ─── Todas mis colaboraciones, de las dos puntas ────────────────────────
+
+/// Todo lo que vincula a esta persona con otra: lo que le pidieron y lo
+/// que pidió. Es la fuente de la página /colaboraciones.
+///
+/// Son dos consultas porque un pedido guarda a cada participante en un
+/// campo distinto (`postAuthorId` y `requesterUid`) y Firestore no sabe
+/// hacer un OR entre dos campos con orden. Se unen y se ordenan acá.
+export async function fetchMyCollaborations(uid: string): Promise<CollabRequest[]> {
+  const [received, sent] = await Promise.all([
+    fetchReceivedRequests(uid).catch(() => [] as CollabRequest[]),
+    fetchSentRequests(uid).catch(() => [] as CollabRequest[]),
+  ]);
+  return [...received, ...sent].sort((a, b) => {
+    const at = a.lastMessageAt ?? a.createdAt;
+    const bt = b.lastMessageAt ?? b.createdAt;
+    return (bt?.getTime() ?? 0) - (at?.getTime() ?? 0);
+  });
+}
+
+/// Las colaboraciones ACEPTADAS de una persona, para mostrarlas en su
+/// perfil público. Es información que ya era pública (los pedidos se
+/// leen sin sesión), acá solo se junta y se filtra.
+export async function fetchAcceptedCollabs(
+  uid: string,
+  max = 20,
+): Promise<CollabRequest[]> {
+  const all = await fetchMyCollaborations(uid);
+  return all.filter((c) => c.status === "accepted").slice(0, max);
 }

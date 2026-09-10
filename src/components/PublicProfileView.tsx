@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Heart, MessageCircle, Music, UserPlus, UserCheck } from "lucide-react";
+import { Handshake, Heart, MessageCircle, Music, UserPlus, UserCheck } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
 import {
@@ -22,6 +22,8 @@ import {
   type ProfilePost,
   type PublicProfile,
 } from "@/lib/PublicProfileService";
+import { fetchAcceptedCollabs, type CollabRequest } from "@/lib/CollabService";
+import { fetchCommunityPost } from "@/lib/CommunityService";
 
 // Misma paleta que usa el feed para el avatar, derivada del nombre, así
 // una persona tiene siempre el mismo color en todos lados.
@@ -37,13 +39,28 @@ function formatDate(date: Date | null): string {
   return date ? date.toLocaleDateString("es-AR", { day: "numeric", month: "short" }) : "";
 }
 
-type Tab = "posts" | "activity";
+type Tab = "posts" | "activity" | "collabs";
+
+/// Lo mínimo que hace falta de la publicación para contar una
+/// colaboración: el pedido no guarda ni el título ni el nombre del
+/// autor, y resolverlos leyendo el post (que es público) evita tener
+/// que migrar los pedidos que ya existían.
+interface CollabPostInfo {
+  title: string;
+  authorName: string;
+}
 
 export function PublicProfileView({ uid }: { uid: string }) {
   const { user } = useAuth();
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [posts, setPosts] = useState<ProfilePost[]>([]);
   const [activity, setActivity] = useState<ProfileActivity[]>([]);
+  // Colaboraciones aceptadas de esta persona, de las dos puntas: las que
+  // recibió en sus temas y las que aportó en temas ajenos. Es
+  // información que ya era pública (los pedidos se leen sin sesión);
+  // acá solo se junta y se cuenta.
+  const [collabs, setCollabs] = useState<CollabRequest[]>([]);
+  const [collabPosts, setCollabPosts] = useState<Map<string, CollabPostInfo>>(new Map());
   const [status, setStatus] = useState<"loading" | "ready" | "missing">("loading");
   const [tab, setTab] = useState<Tab>("posts");
   const [following, setFollowing] = useState(false);
@@ -53,13 +70,17 @@ export function PublicProfileView({ uid }: { uid: string }) {
   const isOwnProfile = user?.uid === uid;
 
   const load = useCallback(async () => {
-    const [profileData, postsData, activityData] = await Promise.all([
+    const [profileData, postsData, activityData, collabData] = await Promise.all([
       fetchPublicProfile(uid),
       fetchProfilePosts(uid),
       fetchProfileActivity(uid),
+      // Un fallo acá no puede tumbar el perfil entero: sin
+      // colaboraciones la página se ve como siempre.
+      fetchAcceptedCollabs(uid).catch(() => [] as CollabRequest[]),
     ]);
     setPosts(postsData);
     setActivity(activityData);
+    setCollabs(collabData);
     // Sin perfil creado pero con publicaciones, igual vale la pena
     // mostrar la página: el apodo sale de lo que publicó.
     if (!profileData && postsData.length === 0) {
@@ -80,6 +101,22 @@ export function PublicProfileView({ uid }: { uid: string }) {
     setStatus("ready");
     if (user && user.uid !== uid) {
       setFollowing(await checkIsFollowing(uid, user.uid));
+    }
+    // Los títulos de los temas colaborados, después de pintar el
+    // perfil: son una lectura por publicación y no vale la pena que
+    // demoren el resto de la página.
+    if (collabData.length > 0) {
+      const ids = [...new Set(collabData.map((c) => c.postId))];
+      const entries = await Promise.all(
+        ids.map(async (id) => {
+          const post = await fetchCommunityPost(id).catch(() => null);
+          return [
+            id,
+            { title: post?.title ?? "un tema", authorName: post?.authorName ?? "" },
+          ] as const;
+        }),
+      );
+      setCollabPosts(new Map(entries));
     }
   }, [uid, user]);
 
@@ -203,6 +240,7 @@ export function PublicProfileView({ uid }: { uid: string }) {
           [
             ["posts", `Publicaciones (${posts.length})`],
             ["activity", `Actividad (${activity.length})`],
+            ["collabs", `Colaboraciones (${collabs.length})`],
           ] as const
         ).map(([value, label]) => (
           <button
@@ -251,7 +289,8 @@ export function PublicProfileView({ uid }: { uid: string }) {
             ))}
           </ul>
         )
-      ) : activity.length === 0 ? (
+      ) : tab === "activity" ? (
+        activity.length === 0 ? (
         <p className="mt-8 text-center text-sm text-white/40">Todavía no comentó nada.</p>
       ) : (
         <ul className="mt-6 flex flex-col gap-2">
@@ -271,6 +310,73 @@ export function PublicProfileView({ uid }: { uid: string }) {
               </Link>
             </li>
           ))}
+        </ul>
+        )
+      ) : collabs.length === 0 ? (
+        <p className="mt-8 text-center text-sm text-white/40">
+          Todavía no colaboró con nadie.
+        </p>
+      ) : (
+        <ul className="mt-6 flex flex-col gap-2">
+          {collabs.map((c) => {
+            // Dos puntas del mismo vínculo: o el tema es suyo y alguien
+            // le sumó un instrumento, o aportó el suyo en un tema ajeno.
+            const iAuthored = c.postAuthorId === uid;
+            const info = collabPosts.get(c.postId);
+            const otherUid = iAuthored ? c.requesterUid : c.postAuthorId;
+            const otherName = iAuthored
+              ? c.requesterName
+              : info?.authorName || "otro usuario";
+            return (
+              <li
+                key={`${c.postId}_${c.requesterUid}`}
+                className="flex items-start gap-3 rounded-xl border border-white/10 bg-graphite p-4"
+              >
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neon-cyan/10 text-neon-cyan">
+                  <Handshake size={15} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-white/70">
+                    {iAuthored ? (
+                      <>
+                        <Link
+                          href={`/u/${otherUid}`}
+                          className="font-semibold text-white hover:text-neon-cyan"
+                        >
+                          {otherName}
+                        </Link>{" "}
+                        sumó <span className="text-neon-cyan">{c.role}</span> a{" "}
+                        <Link
+                          href={`/p/${c.postId}`}
+                          className="font-semibold text-white hover:text-neon-cyan"
+                        >
+                          {info?.title ?? "un tema"}
+                        </Link>
+                      </>
+                    ) : (
+                      <>
+                        Aportó <span className="text-neon-cyan">{c.role}</span> en{" "}
+                        <Link
+                          href={`/p/${c.postId}`}
+                          className="font-semibold text-white hover:text-neon-cyan"
+                        >
+                          {info?.title ?? "un tema"}
+                        </Link>
+                        , de{" "}
+                        <Link
+                          href={`/u/${otherUid}`}
+                          className="font-semibold text-white hover:text-neon-cyan"
+                        >
+                          {otherName}
+                        </Link>
+                      </>
+                    )}
+                  </p>
+                  <p className="mt-1 text-[11px] text-white/30">{formatDate(c.createdAt)}</p>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
 

@@ -96,6 +96,11 @@ export async function savePublicProfile(
   const existing = await getDoc(ref);
   const payload: Record<string, unknown> = {
     username: params.username,
+    // El mismo apodo en minúsculas: es lo único que hace buscable a una
+    // persona, porque Firestore compara cadenas distinguiendo mayúsculas
+    // y no tiene búsqueda insensible. Las reglas lo validan derivado del
+    // apodo real, así que nadie puede hacerse encontrar con otro nombre.
+    usernameLower: params.username.toLowerCase(),
     bio: params.bio.slice(0, MAX_BIO_LENGTH),
     updatedAt: serverTimestamp(),
   };
@@ -149,6 +154,45 @@ export async function fetchProfileActivity(uid: string, max = 20): Promise<Profi
     });
   }
   return items;
+}
+
+/// Busca personas por apodo. Es una consulta de PREFIJO, que es lo
+/// máximo que da Firestore sin un servicio de búsqueda aparte: "mar"
+/// encuentra "Marcelo" y "María", pero no "Ramiro". Alcanza para el uso
+/// real, que es "sé cómo se llama y quiero llegar a su perfil".
+///
+/// El truco del `` es el idioma estándar de Firestore para un
+/// prefijo: es el último carácter del rango Unicode que usa, así que
+/// `>= "mar"` y `<= "mar"` delimitan exactamente todo lo que
+/// empieza con "mar".
+///
+/// Los apodos NO son únicos en este proyecto, así que esto devuelve una
+/// lista y la desambiguación es visual (presentación y seguidores).
+///
+/// ⚠️ Los perfiles guardados antes de que existiera `usernameLower` no
+/// aparecen. Se regeneran solos la próxima vez que su dueño guarde el
+/// perfil desde "Editar Perfil".
+export async function searchProfiles(term: string, max = 20): Promise<PublicProfile[]> {
+  const prefix = term.trim().toLowerCase();
+  if (prefix.length < 2) return [];
+  const snap = await getDocs(
+    query(
+      collection(db, "public_profiles"),
+      orderBy("usernameLower"),
+      where("usernameLower", ">=", prefix),
+      where("usernameLower", "<=", `${prefix}`),
+      limit(max),
+    ),
+  );
+  return snap.docs.map((d) => {
+    const data = d.data();
+    return {
+      uid: d.id,
+      username: (data.username as string) ?? "",
+      bio: (data.bio as string) ?? "",
+      followersCount: (data.followersCount as number) ?? 0,
+    };
+  });
 }
 
 export async function isFollowing(targetUid: string, followerUid: string): Promise<boolean> {
