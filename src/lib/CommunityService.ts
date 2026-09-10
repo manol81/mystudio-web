@@ -193,6 +193,10 @@ export async function publishProjectToCommunity(params: {
     audioUrl: params.audioUrl,
     audioPreviewUrl: null,
     previewDurationSeconds: null,
+    // Se adjunta después, con attachCommunityStems, igual que el
+    // preview. Va explícito y no omitido: las reglas comparan este
+    // campo al crear, y una clave ausente ahí es un error, no un null.
+    stemsUrl: null,
     genre: params.genre,
     description: params.description,
     wantedRoles: params.wantedRoles,
