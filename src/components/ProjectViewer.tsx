@@ -828,7 +828,18 @@ export function ProjectViewer({
   }
 
   function handleTimelinePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    // Los controles de cada pista (M/S) viven DENTRO de este contenedor,
+    // así que su pointerdown burbujea hasta acá. Sin este corte pasaban
+    // dos cosas a la vez: el seek los interpretaba como un click en la
+    // columna de nombres (x < offset → segundo 0, la canción volvía al
+    // principio) y, peor, setPointerCapture se robaba el puntero, con lo
+    // cual el pointerup ya no caía sobre el botón y su onClick NUNCA se
+    // disparaba. De ahí que silenciar/destacar pareciera no funcionar.
+    if ((e.target as HTMLElement).closest("button")) return;
     const rect = e.currentTarget.getBoundingClientRect();
+    // La columna de nombres tampoco es línea de tiempo: un click ahí no
+    // tiene por qué mover el cabezal.
+    if (e.clientX - rect.left < TIMELINE_OFFSET_PX) return;
     const target = e.currentTarget;
     const seekFromClientX = (clientX: number) => {
       // TIMELINE_OFFSET_PX: mismo motivo que en la regla/cabezal — el
