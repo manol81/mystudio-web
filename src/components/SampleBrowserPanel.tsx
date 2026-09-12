@@ -257,7 +257,11 @@ function SampleBrowserCard({
     >
       <p className="truncate text-xs font-semibold text-white">{sample.name}</p>
       <p className="mt-0.5 truncate text-[10px] text-white/40">
-        {[sample.instrument, `${Math.round(sample.bpm)} BPM`, sample.key]
+        {[
+          sample.instrument,
+          sample.bpm > 0 ? `${Math.round(sample.bpm)} BPM` : null,
+          sample.key,
+        ]
           .filter(Boolean)
           .join(" · ")}
       </p>

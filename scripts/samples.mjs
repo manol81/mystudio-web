@@ -14,7 +14,10 @@
 //      archivo, que es donde los packs suelen ponerlos
 //      (`kick_90bpm_Am.wav`). Lo que no puede adivinar queda vacío.
 //
-//   2) Completás/corregís el CSV con cualquier editor o planilla.
+//   2) Completás/corregís el CSV con cualquier editor o planilla. Las
+//      columnas `bpm` y `key` admiten quedar sin tempo y sin tonalidad
+//      (vacío y "N/A" respectivamente) — un One-Shot de percusión no
+//      tiene ninguna de las dos.
 //
 //   3) node scripts/samples.mjs upload ./mis-samples
 //      Valida TODO antes de tocar nada, y recién ahí sube.
@@ -228,6 +231,7 @@ function cmdScan(dir) {
   console.log(`  type:       ${tax.types.join(" | ")}`);
   console.log(`  instrument: ${tax.instruments.join(" | ")}`);
   console.log(`  genre:      ${tax.genres.join(" | ")}`);
+  console.log(`  bpm:        un número, o VACÍO si el sample no tiene tempo (One-Shots)`);
   console.log(`  key:        N/A, o "C Major" / "A Minor" (12 raíces × Major/Minor)`);
   console.log(`\nDespués: node scripts/samples.mjs upload ${dir}`);
 }
@@ -295,8 +299,18 @@ async function cmdUpload(dir, keyPath) {
     if (!tax.genres.includes(genre)) errores.push(`${donde}: genre "${genre}" no es válido`);
     if (!tax.keys.includes(key)) errores.push(`${donde}: key "${key}" no es válida`);
 
-    const bpm = Number(bpmRaw);
-    if (!Number.isFinite(bpm) || bpm <= 0) errores.push(`${donde}: bpm "${bpmRaw}" no es un número`);
+    // bpm VACÍO = el sample no tiene tempo, y eso es legítimo: un
+    // One-Shot de bombo o un golpe de FX no están en ningún BPM. Se
+    // guarda 0, que es el valor que el resto del proyecto ya interpreta
+    // como "no estirar" (`playbackRateFor` en el Arranger corta en seco
+    // con originalBpm <= 0). Obligar a inventar un número era peor: el
+    // sample aparecía al filtrar por un tempo que no tiene.
+    const bpm = bpmRaw === "" ? 0 : Number(bpmRaw);
+    if (!Number.isFinite(bpm) || bpm < 0) {
+      errores.push(
+        `${donde}: bpm "${bpmRaw}" no es un número — dejalo VACÍO si el sample no tiene tempo`,
+      );
+    }
 
     items.push({ id, ruta, archivo, name, type, instrument, genre, bpm, key });
   }

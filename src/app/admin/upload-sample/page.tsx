@@ -144,9 +144,11 @@ export default function UploadSamplePage() {
       setError("Solo se aceptan archivos .wav o .mp3.");
       return;
     }
-    const bpmValue = Number(bpm);
-    if (!name.trim() || !bpmValue) {
-      setError("Completá nombre y BPM.");
+    // BPM vacío = sin tempo, igual que en scripts/samples.mjs. Se guarda
+    // 0, el valor que el Arranger ya lee como "no estirar".
+    const bpmValue = bpm.trim() === "" ? 0 : Number(bpm);
+    if (!name.trim() || !Number.isFinite(bpmValue) || bpmValue < 0) {
+      setError("Completá el nombre. El BPM dejalo vacío si el sample no tiene tempo.");
       return;
     }
 
@@ -259,10 +261,12 @@ export default function UploadSamplePage() {
             </div>
 
             <div>
-              <label className="mb-1.5 block text-xs text-white/60">BPM</label>
+              <label className="mb-1.5 block text-xs text-white/60">
+                BPM <span className="text-white/30">(vacío si no tiene)</span>
+              </label>
               <input
                 type="number"
-                min={1}
+                min={0}
                 value={bpm}
                 onChange={(e) => setBpm(e.target.value)}
                 className={inputClasses}
@@ -386,7 +390,7 @@ export default function UploadSamplePage() {
                       {[
                         sample.instrument,
                         sample.genre,
-                        `${Math.round(sample.bpm)} BPM`,
+                        sample.bpm > 0 ? `${Math.round(sample.bpm)} BPM` : null,
                       ]
                         .filter(Boolean)
                         .join(" · ")}

@@ -166,7 +166,7 @@ function SampleCard({
         </p>
         <p className="mt-1 truncate text-xs text-white/40">
           {[
-            `${Math.round(sample.bpm)} BPM`,
+            sample.bpm > 0 ? `${Math.round(sample.bpm)} BPM` : null,
             sample.key && sample.key !== "N/A" ? sample.key : null,
             formatSize(sample.sizeBytes),
           ]
