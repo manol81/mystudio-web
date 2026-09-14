@@ -147,15 +147,20 @@ export async function fetchPostsByWantedRole(
 
 export async function fetchCommunityPostsPage(
   cursor: QueryDocumentSnapshot<DocumentData> | null,
+  // El panel de moderación pide lotes más grandes: ahí no se está
+  // navegando un feed sino buscando una publicación puntual entre
+  // todas, y de a 8 eso son muchos clics. El feed sigue con su valor
+  // de siempre.
+  pageSize: number = PAGE_SIZE,
 ): Promise<CommunityPostsPage> {
   const q = cursor
     ? query(
         collection(db, COLLECTION_NAME),
         orderBy("createdAt", "desc"),
         startAfter(cursor),
-        limit(PAGE_SIZE),
+        limit(pageSize),
       )
-    : query(collection(db, COLLECTION_NAME), orderBy("createdAt", "desc"), limit(PAGE_SIZE));
+    : query(collection(db, COLLECTION_NAME), orderBy("createdAt", "desc"), limit(pageSize));
 
   const snapshot = await getDocs(q);
   const posts = snapshot.docs.map(toCommunityPost);
@@ -165,10 +170,12 @@ export async function fetchCommunityPostsPage(
     posts,
     cursor: lastDoc,
     // Heurística estándar de paginación por cursor: si el lote vino
-    // completo (== PAGE_SIZE), asumimos que puede haber más y lo
-    // confirmamos recién en el próximo pedido; un lote incompleto
-    // significa que no queda nada más.
-    hasMore: snapshot.docs.length === PAGE_SIZE,
+    // completo, asumimos que puede haber más y lo confirmamos recién en
+    // el próximo pedido; un lote incompleto significa que no queda nada
+    // más. Se compara contra `pageSize`, el tamaño REALMENTE pedido, no
+    // contra la constante: con un lote grande la constante daría
+    // siempre false y "Cargar más" no aparecería nunca.
+    hasMore: snapshot.docs.length === pageSize,
   };
 }
 

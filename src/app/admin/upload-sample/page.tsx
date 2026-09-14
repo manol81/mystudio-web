@@ -31,6 +31,7 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { useAdminCheck } from "@/lib/useAdminCheck";
+import { updateSampleMetadata, type SampleMetadataPatch } from "@/lib/AdminService";
 import {
   SAMPLE_TYPES,
   SAMPLE_INSTRUMENTS,
@@ -41,9 +42,11 @@ import {
 interface SampleListItem {
   id: string;
   name: string;
+  type: string;
   instrument: string;
   genre: string;
   bpm: number;
+  key: string;
   audioPath: string;
 }
 
@@ -74,6 +77,61 @@ export default function UploadSamplePage() {
   const [samples, setSamples] = useState<SampleListItem[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // Edición en el lugar de un sample ya publicado. `editing` es el
+  // borrador; mientras haya uno abierto, la lista de arriba se sigue
+  // actualizando sola por el onSnapshot y no lo pisa — el borrador vive
+  // en su propio estado, no en `samples`.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<SampleMetadataPatch | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  function startEditing(sample: SampleListItem) {
+    setError(null);
+    setSuccessMessage(null);
+    setEditingId(sample.id);
+    setEditing({
+      name: sample.name,
+      type: sample.type,
+      instrument: sample.instrument,
+      genre: sample.genre,
+      bpm: sample.bpm,
+      key: sample.key,
+    });
+  }
+
+  function cancelEditing() {
+    setEditingId(null);
+    setEditing(null);
+  }
+
+  async function handleSaveEdit(sampleId: string) {
+    if (!editing) return;
+    if (!editing.name.trim()) {
+      setError("El nombre no puede quedar vacío.");
+      return;
+    }
+    if (!Number.isFinite(editing.bpm) || editing.bpm < 0) {
+      setError("El BPM tiene que ser un número, o 0 si el sample no tiene tempo.");
+      return;
+    }
+
+    setError(null);
+    setSuccessMessage(null);
+    setSavingId(sampleId);
+    try {
+      // Solo metadata: el audio no se toca. Por eso editar no pide
+      // volver a subir el archivo, que era justamente lo que antes
+      // obligaba a borrar el sample entero para corregir un BPM.
+      await updateSampleMetadata(sampleId, { ...editing, name: editing.name.trim() });
+      setSuccessMessage(`"${editing.name.trim()}" se actualizó.`);
+      cancelEditing();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar el cambio.");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   // Lista de samples ya publicados, para poder borrarlos — solo se
   // suscribe una vez confirmado el claim admin (mismo criterio de
   // gating que el resto de la pantalla).
@@ -88,9 +146,11 @@ export default function UploadSamplePage() {
           return {
             id: d.id,
             name: (data.name as string) ?? "",
-            instrument: (data.instrument as string) ?? "",
-            genre: (data.genre as string) ?? "",
+            type: (data.type as string) ?? SAMPLE_TYPES[0],
+            instrument: (data.instrument as string) ?? SAMPLE_INSTRUMENTS[0],
+            genre: (data.genre as string) ?? SAMPLE_GENRES[0],
             bpm: (data.bpm as number) ?? 0,
+            key: (data.key as string) ?? SAMPLE_KEYS[0],
             audioPath: (data.audioPath as string) ?? "",
           };
         }),
@@ -368,7 +428,7 @@ export default function UploadSamplePage() {
           </button>
         </form>
 
-        <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-graphite p-6 text-left">
+        <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-graphite p-6 text-left">
           <h2 className="font-display text-xs font-semibold uppercase tracking-widest text-white/50">
             Samples publicados ({samples.length})
           </h2>
@@ -379,33 +439,171 @@ export default function UploadSamplePage() {
             </p>
           ) : (
             <ul className="mt-4 flex flex-col gap-2">
-              {samples.map((sample) => (
-                <li
-                  key={sample.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-onyx-black px-4 py-2.5"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm text-white">{sample.name}</p>
-                    <p className="truncate text-xs text-white/40">
-                      {[
-                        sample.instrument,
-                        sample.genre,
-                        sample.bpm > 0 ? `${Math.round(sample.bpm)} BPM` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteSample(sample)}
-                    disabled={deletingId === sample.id}
-                    className="shrink-0 rounded-full border border-red-400/30 px-3 py-1.5 text-xs text-red-300 transition-colors duration-200 hover:border-red-400 hover:bg-red-400/10 disabled:opacity-50"
+              {samples.map((sample) =>
+                editingId === sample.id && editing ? (
+                  <li
+                    key={sample.id}
+                    className="flex flex-col gap-3 rounded-lg border border-neon-cyan/30 bg-onyx-black px-4 py-4"
                   >
-                    {deletingId === sample.id ? "..." : "Borrar"}
-                  </button>
-                </li>
-              ))}
+                    <div>
+                      <label className="mb-1.5 block text-xs text-white/60">Nombre</label>
+                      <input
+                        value={editing.name}
+                        onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                        className={inputClasses}
+                        disabled={savingId === sample.id}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="mb-1.5 block text-xs text-white/60">Tipo</label>
+                        <select
+                          value={editing.type}
+                          onChange={(e) => setEditing({ ...editing, type: e.target.value })}
+                          className={selectClasses}
+                          disabled={savingId === sample.id}
+                        >
+                          {SAMPLE_TYPES.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="mb-1.5 block text-xs text-white/60">
+                          BPM <span className="text-white/30">(0 = sin tempo)</span>
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={editing.bpm}
+                          onChange={(e) =>
+                            setEditing({ ...editing, bpm: Number(e.target.value) })
+                          }
+                          className={inputClasses}
+                          disabled={savingId === sample.id}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="mb-1.5 block text-xs text-white/60">Instrumento</label>
+                        <select
+                          value={editing.instrument}
+                          onChange={(e) =>
+                            setEditing({ ...editing, instrument: e.target.value })
+                          }
+                          className={selectClasses}
+                          disabled={savingId === sample.id}
+                        >
+                          {SAMPLE_INSTRUMENTS.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="mb-1.5 block text-xs text-white/60">Género</label>
+                        <select
+                          value={editing.genre}
+                          onChange={(e) => setEditing({ ...editing, genre: e.target.value })}
+                          className={selectClasses}
+                          disabled={savingId === sample.id}
+                        >
+                          {SAMPLE_GENRES.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-xs text-white/60">Tonalidad</label>
+                      <select
+                        value={editing.key}
+                        onChange={(e) => setEditing({ ...editing, key: e.target.value })}
+                        className={selectClasses}
+                        disabled={savingId === sample.id}
+                      >
+                        {SAMPLE_KEYS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <p className="text-[11px] text-white/30">
+                      El archivo de audio no se toca — solo cambia cómo se lo encuentra.
+                    </p>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSaveEdit(sample.id)}
+                        disabled={savingId === sample.id}
+                        className="rounded-full border border-neon-cyan/40 px-4 py-1.5 text-xs font-semibold text-neon-cyan transition-colors duration-200 hover:border-neon-cyan disabled:opacity-50"
+                      >
+                        {savingId === sample.id ? "Guardando..." : "Guardar"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEditing}
+                        disabled={savingId === sample.id}
+                        className="rounded-full border border-white/20 px-4 py-1.5 text-xs text-white/60 transition-colors duration-200 hover:border-white/40 hover:text-white disabled:opacity-50"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </li>
+                ) : (
+                  <li
+                    key={sample.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-onyx-black px-4 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-white">{sample.name}</p>
+                      <p className="truncate text-xs text-white/40">
+                        {[
+                          sample.type,
+                          sample.instrument,
+                          sample.genre,
+                          sample.bpm > 0 ? `${Math.round(sample.bpm)} BPM` : null,
+                          sample.key && sample.key !== "N/A" ? sample.key : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => startEditing(sample)}
+                        disabled={deletingId === sample.id || editingId !== null}
+                        className="rounded-full border border-white/20 px-3 py-1.5 text-xs text-white/70 transition-colors duration-200 hover:border-neon-cyan/50 hover:text-neon-cyan disabled:opacity-40"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSample(sample)}
+                        disabled={deletingId === sample.id || editingId !== null}
+                        className="rounded-full border border-red-400/30 px-3 py-1.5 text-xs text-red-300 transition-colors duration-200 hover:border-red-400 hover:bg-red-400/10 disabled:opacity-40"
+                      >
+                        {deletingId === sample.id ? "..." : "Borrar"}
+                      </button>
+                    </div>
+                  </li>
+                ),
+              )}
             </ul>
           )}
         </div>

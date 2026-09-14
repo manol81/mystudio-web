@@ -9,19 +9,23 @@
 
 import {
   collection,
+  deleteDoc,
   doc,
   getCountFromServer,
   getDoc,
   getDocs,
+  limit,
   orderBy,
   query,
   Timestamp,
   updateDoc,
   where,
+  type CollectionReference,
   type QueryDocumentSnapshot,
   type DocumentData,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { deleteObject, ref as storageRef } from "firebase/storage";
+import { db, storage } from "@/lib/firebase";
 
 export interface Report {
   id: string;
@@ -61,6 +65,12 @@ export async function updateReportStatus(
 }
 
 export interface ReportedPost {
+  id: string;
+  // El uid del autor REAL del post, leído del post mismo. El reporte
+  // trae un `reportedAuthorId`, pero lo escribió quien denunció: sirve
+  // para agrupar, no para decidir qué archivos de Storage borrar. Las
+  // rutas del preview y del ZIP de pistas se arman con este.
+  authorId: string;
   title: string;
   authorName: string;
   audioUrl: string;
@@ -77,6 +87,8 @@ export async function fetchReportedPost(postId: string): Promise<ReportedPost | 
   if (!snap.exists()) return null;
   const data = snap.data();
   return {
+    id: snap.id,
+    authorId: (data.authorId as string) ?? "",
     title: (data.title as string) ?? "Sin título",
     authorName: (data.authorName as string) ?? "Usuario",
     audioUrl: (data.audioUrl as string) ?? "",
@@ -119,4 +131,121 @@ export async function fetchPlatformStats(): Promise<PlatformStats> {
     totalReportsCount: totalReports.data().count,
     pendingReportsCount: pendingReports.data().count,
   };
+}
+
+// ─── Moderación: borrar una publicación ajena ────────────────────────
+//
+// Hasta ahora el panel de reportes solo podía marcar un reporte como
+// "revisado": el contenido denunciado seguía publicado, y la única
+// salida real era pedirle al autor que lo borrara o entrar a mano por
+// Firebase Console. Las reglas ahora dejan borrar al admin (ver la
+// función isAdmin() en firestore.rules), acá está el barrido completo.
+//
+// Lo que NO se toca, a propósito: el `.mystudio` del autor en
+// `users/{uid}/projects`. Eso es su proyecto, no la publicación —
+// despublicar no es confiscarle el trabajo. Lo que sí se va es todo lo
+// que existía SOLO por estar publicado: el preview y el ZIP de pistas,
+// los dos de lectura pública.
+
+export interface AdminDeletePostResult {
+  likes: number;
+  comments: number;
+  collabRequests: number;
+  storageObjects: number;
+}
+
+/// Borra una publicación con TODO lo que cuelga de ella.
+///
+/// Firestore no borra subcolecciones en cascada: si se borrara solo el
+/// documento, los likes, comentarios, pedidos de colaboración y sus
+/// hilos quedarían vivos colgando de un padre inexistente — invisibles
+/// desde la app y ya imposibles de alcanzar para borrarlos después. Por
+/// eso el documento padre se borra ÚLTIMO: si algo falla a mitad de
+/// camino, el post sigue ahí y se puede reintentar.
+export async function deletePostAsAdmin(post: {
+  id: string;
+  authorId: string;
+}): Promise<AdminDeletePostResult> {
+  const postRef = doc(db, "community_posts", post.id);
+  const result: AdminDeletePostResult = {
+    likes: 0,
+    comments: 0,
+    collabRequests: 0,
+    storageObjects: 0,
+  };
+
+  result.likes = await deleteEntireCollection(collection(postRef, "likes"));
+  result.comments = await deleteEntireCollection(collection(postRef, "comments"));
+
+  // El hilo de mensajes vive DENTRO de cada pedido, así que se vacía
+  // antes de borrar el pedido — al revés quedarían huérfanos.
+  const requests = await getDocs(collection(postRef, "collab_requests"));
+  for (const request of requests.docs) {
+    await deleteEntireCollection(collection(request.ref, "messages"));
+    await deleteDoc(request.ref);
+    result.collabRequests++;
+  }
+
+  // Rutas EXACTAS, sin listar la carpeta: las reglas de Storage dan
+  // permiso sobre el objeto, no sobre el prefijo (mismo criterio que
+  // AccountDeletionService con las pistas de colaboración). Que un
+  // archivo no exista es un final válido, no un error: las
+  // publicaciones viejas no tienen ZIP de pistas, y un preview puede
+  // haber fallado al generarse.
+  for (const path of [
+    `community_previews/${post.authorId}/${post.id}`,
+    `community_stems/${post.authorId}/${post.id}.zip`,
+  ]) {
+    try {
+      await deleteObject(storageRef(storage, path));
+      result.storageObjects++;
+    } catch (err) {
+      if ((err as { code?: string }).code !== "storage/object-not-found") throw err;
+    }
+  }
+
+  await deleteDoc(postRef);
+  return result;
+}
+
+/// Vacía una colección de a páginas y devuelve cuántos documentos
+/// borró. De a 400 porque un post con suerte puede tener miles de
+/// likes y un `getDocs` sin límite los traería todos a memoria.
+async function deleteEntireCollection(col: CollectionReference): Promise<number> {
+  let total = 0;
+  for (;;) {
+    const page = await getDocs(query(col, limit(400)));
+    if (page.empty) return total;
+    await Promise.all(page.docs.map((d) => deleteDoc(d.ref)));
+    total += page.size;
+    if (page.size < 400) return total;
+  }
+}
+
+// ─── Edición de un sample ya publicado ───────────────────────────────
+//
+// Corregir un BPM mal cargado obligaba a borrar el sample y volver a
+// subirlo: perdías el id, la fecha de alta y el archivo tenía que
+// viajar de nuevo. Ninguno de estos cuatro campos describe al AUDIO,
+// solo cómo se lo encuentra — cambiarlos no invalida el archivo.
+//
+// `audioPath` y `sizeBytes` quedan deliberadamente afuera: son el
+// vínculo con el objeto real en Storage. Reescribirlos desde un
+// formulario dejaría la ficha apuntando a un archivo que no existe, y
+// el sample se vería en el catálogo pero no sonaría.
+
+export interface SampleMetadataPatch {
+  name: string;
+  type: string;
+  instrument: string;
+  genre: string;
+  bpm: number;
+  key: string;
+}
+
+export async function updateSampleMetadata(
+  sampleId: string,
+  patch: SampleMetadataPatch,
+): Promise<void> {
+  await updateDoc(doc(db, "samples", sampleId), { ...patch });
 }

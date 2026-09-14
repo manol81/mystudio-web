@@ -6,7 +6,7 @@
 // del panel — ver AdminService.ts / firestore.rules.
 
 import Link from "next/link";
-import { BarChart3, Flag, Piano } from "lucide-react";
+import { BarChart3, Flag, Piano, Radio } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 
@@ -15,13 +15,19 @@ const SECTIONS = [
     href: "/admin/upload-sample",
     icon: Piano,
     title: "Banco de Sonidos",
-    description: "Subir y borrar samples del catálogo.",
+    description: "Subir, editar y borrar samples del catálogo.",
   },
   {
     href: "/admin/reports",
     icon: Flag,
     title: "Reportes",
     description: "Revisar publicaciones reportadas por la comunidad.",
+  },
+  {
+    href: "/admin/posts",
+    icon: Radio,
+    title: "Publicaciones",
+    description: "Todo el feed, para sacar lo que nadie reportó.",
   },
   {
     href: "/admin/stats",

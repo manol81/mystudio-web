@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 import {
+  deletePostAsAdmin,
   fetchReportedPost,
   fetchReports,
   updateReportStatus,
@@ -45,6 +46,11 @@ export default function AdminReportsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Los reportes cuyo post ya se borró desde acá. El reporte SIGUE
+  // existiendo (es la constancia de la denuncia y de qué se hizo con
+  // ella), pero ya no tiene sentido ofrecer borrar de nuevo.
+  const [deletedPostIds, setDeletedPostIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (adminCheck !== "authorized") return;
@@ -88,6 +94,50 @@ export default function AdminReportsPage() {
       window.alert(err instanceof Error ? err.message : "No se pudo obtener el proyecto.");
     } finally {
       setDownloadingId(null);
+    }
+  }
+
+  /// Borra la publicación denunciada y deja el reporte marcado como
+  /// revisado. Hasta ahora esta pantalla solo podía cambiarle el estado
+  /// al reporte: el contenido seguía publicado y había que entrar a
+  /// Firebase Console a mano.
+  async function handleDeletePost(report: Report) {
+    setDeletingId(report.id);
+    try {
+      const post = await fetchReportedPost(report.postId);
+      if (!post) {
+        window.alert("La publicación ya no existe — puede haberla borrado su autor.");
+        setDeletedPostIds((prev) => new Set(prev).add(report.postId));
+        return;
+      }
+
+      // Escribir el título, no un "aceptar": esto borra contenido de
+      // otra persona, no se puede deshacer, y el botón vive al lado de
+      // "Descargar" y "Descartar".
+      const typed = window.prompt(
+        `Vas a borrar la publicación de ${post.authorName} con todo lo que cuelga de ella ` +
+          `(me gusta, comentarios, pedidos de colaboración y sus mensajes, preview y pistas). ` +
+          `No se puede deshacer.\n\nEscribí el título exacto para confirmar:\n${post.title}`,
+      );
+      if (typed === null) return;
+      if (typed.trim() !== post.title.trim()) {
+        window.alert("El título no coincide. No se borró nada.");
+        return;
+      }
+
+      await deletePostAsAdmin(post);
+      setDeletedPostIds((prev) => new Set(prev).add(report.postId));
+
+      // El reporte queda "revisado" solo si el borrado salió bien: si
+      // falla, tiene que seguir figurando como pendiente.
+      await updateReportStatus(report.id, "reviewed");
+      setReports((prev) =>
+        prev.map((r) => (r.id === report.id ? { ...r, status: "reviewed" } : r)),
+      );
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "No se pudo borrar la publicación.");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -171,6 +221,20 @@ export default function AdminReportsPage() {
                         className="rounded-full border border-neon-cyan/30 px-4 py-1.5 text-xs font-semibold text-neon-cyan transition-colors duration-200 hover:border-neon-cyan disabled:opacity-50"
                       >
                         {downloadingId === report.id ? "..." : "↓ Descargar proyecto reclamado"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePost(report)}
+                        disabled={
+                          deletingId === report.id || deletedPostIds.has(report.postId)
+                        }
+                        className="rounded-full border border-red-400/40 px-4 py-1.5 text-xs font-semibold text-red-300 transition-colors duration-200 hover:border-red-400 hover:bg-red-400/10 disabled:opacity-40"
+                      >
+                        {deletingId === report.id
+                          ? "Borrando..."
+                          : deletedPostIds.has(report.postId)
+                            ? "Publicación borrada"
+                            : "Borrar publicación"}
                       </button>
                       <button
                         type="button"
