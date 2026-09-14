@@ -45,7 +45,6 @@ import {
   parseMasterFx,
   parseTrackFx,
   type MasterFx,
-  type TrackFx,
 } from "@/lib/trackEffects";
 import JSZip from "jszip";
 import Link from "next/link";
@@ -55,6 +54,17 @@ import { renderClipToWav } from "@/lib/wavExport";
 import { scheduleGainEnvelope } from "@/lib/clipEnvelope";
 import { getOrProcessBuffer } from "@/lib/audioDsp";
 import { getCachedBuffer, loadAndCacheBuffer, setCachedBuffer } from "@/lib/sampleBufferCache";
+import type { ArrangerClip, ArrangerTrack } from "@/lib/arrangerTypes";
+import {
+  arrangementSignature,
+  clearArrangerDraft,
+  describeDraftAge,
+  peekLiveArrangerDraft,
+  readStoredArrangerDraft,
+  rememberArrangerDraft,
+  type ArrangerDraft,
+  type StoredArrangerDraft,
+} from "@/lib/arrangerDraft";
 import { takeQueuedSamplesForArranger } from "@/lib/pendingArrangerSamples";
 import { LoginModal } from "@/components/LoginModal";
 import {
@@ -97,54 +107,6 @@ const PLACEHOLDER_DURATION_SECONDS = 2;
 // Compartido entre el selector de la barra superior y el diálogo de
 // "Nuevo Proyecto" (ver TIME_SIGNATURE_PRESETS más abajo).
 const TIME_SIGNATURE_PRESETS = ["4/4", "3/4", "2/4", "6/8", "9/8", "12/8", "5/4", "7/8"];
-
-interface ArrangerClip {
-  id: string;
-  sampleId: string;
-  sampleName: string;
-  originalBpm: number;
-  /** "Loop" | "One-Shot" (ver sampleTaxonomy.ts) — determina si este clip se adapta al tempo del proyecto (ver playbackRateFor). */
-  sampleType: string;
-  startSeconds: number;
-  /** Offset DENTRO de `buffer` (segundos, base de tiempo nativa del buffer) donde arranca lo que suena. */
-  sourceOffsetSeconds: number;
-  /** Cuánto de `buffer`, desde sourceOffsetSeconds, suena — base de tiempo nativa (no la toca el tempo). */
-  sourceDurationSeconds: number;
-  /** Volumen propio del clip (1 = sin cambio), independiente del volumen de la pista. */
-  gain: number;
-  /** Fade-in/out en segundos de LÍNEA DE TIEMPO (ya con el tempo aplicado) — arrastrables desde las esquinas superiores del clip. */
-  fadeInSeconds: number;
-  fadeOutSeconds: number;
-  /**
-   * Pitch-shift en semitonos enteros, -12 a +12 (0 = tono original).
-   * Independiente del tempo aunque se resuelvan en la MISMA pasada de
-   * DSP (ver getProcessedBuffer/audioDsp.ts) — son parámetros
-   * separados de la misma llamada, cambiar uno no altera el otro.
-   * Motor: signalsmith-stretch (WASM + AudioWorklet, MIT — ver la nota
-   * larga en audioDsp.ts sobre por qué no se usó un port de Rubber Band).
-   */
-  pitchShift: number;
-  buffer: AudioBuffer;
-  /** Picos sobre el buffer COMPLETO — se recorta la porción visible al dibujar (ver slicePeaksForWindow). */
-  peaks: Float32Array;
-}
-
-interface ArrangerTrack {
-  id: string;
-  name: string;
-  volume: number;
-  pan: number;
-  isMuted: boolean;
-  isSolo: boolean;
-  clips: ArrangerClip[];
-  color: string;
-  // Efectos por pista de la app (EQ, compresor, envío a reverb). El
-  // Arranger NO los edita ni los reproduce — los transporta tal cual
-  // para que un round-trip app → Arranger → app no los pierda. Sin
-  // esto, editar un arreglo en la web borraba silenciosamente el
-  // trabajo de mezcla hecho en el teléfono.
-  fx: TrackFx;
-}
 
 /**
  * Paso 4 (rendimiento) — un drop "en vuelo": el usuario ya soltó el
@@ -360,6 +322,32 @@ export default function ArrangerPage() {
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [playheadSeconds, setPlayheadSeconds] = useState(0);
+
+  // El proyecto de la nube que estamos editando, si entramos con
+  // ?open=<cloudId> o si ya guardamos una vez. Sin esto, cada guardado
+  // minteaba un id nuevo y creaba un DUPLICADO en vez de actualizar —
+  // el proyecto original se quedaba como estaba y parecía que no se
+  // había guardado nada.
+  const [cloudProjectId, setCloudProjectId] = useState<string | null>(null);
+
+  // ¿Hay cambios que todavía no están en la nube? Decide el cartelito
+  // de la barra y el aviso antes de cerrar la pestaña.
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Un borrador de una sesión ANTERIOR (recargaste o cerraste el
+  // navegador). No se aplica solo: restaurar puede tardar (hay que
+  // volver a bajar el audio) y puede perder clips, así que se ofrece y
+  // decide el usuario. El de esta misma sesión sí se restaura solo —
+  // ver el efecto de más abajo.
+  const [recoverableDraft, setRecoverableDraft] = useState<StoredArrangerDraft | null>(null);
+  const [isRestoringDraft, setIsRestoringDraft] = useState(false);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
+
+  // La instantánea viva se lee UNA vez, en el primer render, antes de
+  // que cualquier efecto la pise.
+  const liveDraftRef = useRef(
+    typeof window === "undefined" ? null : peekLiveArrangerDraft(),
+  );
 
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
@@ -889,6 +877,10 @@ export default function ArrangerPage() {
       id: newId(),
       sampleId: sample.id,
       sampleName: sample.name,
+      // Lo que hace recuperable este clip después de recargar: el
+      // AudioBuffer no se puede serializar, la ruta sí (ver
+      // arrangerDraft.ts).
+      audioPath: sample.audioPath,
       originalBpm: sample.bpm,
       sampleType: sample.type,
       startSeconds: Math.max(0, startSeconds),
@@ -998,6 +990,12 @@ export default function ArrangerPage() {
         id: newId(),
         sampleId,
         sampleName: displayName,
+        // Vacía a propósito: estos bytes vinieron del disco del
+        // usuario y nunca estuvieron en Storage, así que no hay de
+        // dónde volver a bajarlos si se recarga la página. El borrador
+        // cuenta estos clips como perdidos y lo avisa, en vez de
+        // restaurar un arreglo mudo.
+        audioPath: "",
         originalBpm: projectTempoBpm,
         sampleType: "Loop",
         startSeconds: Math.max(0, playheadSeconds),
@@ -1657,7 +1655,12 @@ export default function ArrangerPage() {
       // CloudSyncService.uploadProject: users/{uid}/projects/{cloudId}.mystudio.
       // .doc() sin argumento genera el id LOCALMENTE (sin red), mismo
       // truco que reserveCloudId del lado Flutter.
-      const cloudId = doc(collection(db, "users", user.uid, "projects")).id;
+      // Si ya estamos editando un proyecto de la nube, se ACTUALIZA ese
+      // mismo documento. Antes se generaba un id nuevo siempre, así que
+      // abrir un proyecto, editarlo y guardar creaba otro proyecto y
+      // dejaba el original intacto.
+      const cloudId =
+        cloudProjectId ?? doc(collection(db, "users", user.uid, "projects")).id;
       const storagePath = `users/${user.uid}/projects/${cloudId}.mystudio`;
       const uploadTask = uploadBytesResumable(ref(storage, storagePath), zipBytes, {
         contentType: "application/zip",
@@ -1691,6 +1694,11 @@ export default function ArrangerPage() {
         { merge: true },
       );
 
+      setCloudProjectId(cloudId);
+      // El borrador NO se borra al guardar: sigue siendo lo que permite
+      // irse del Arranger y volver sin tener que bajar el proyecto de
+      // nuevo. Lo que cambia es que deja de estar "sin guardar".
+      setIsDirty(false);
       setExportSuccessTitle(manifest.project.title);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
@@ -1786,6 +1794,9 @@ export default function ArrangerPage() {
         id: newId(),
         sampleId: `imported:${clip.audioFileName}`,
         sampleName: clip.audioFileName.replace(/\.wav$/i, ""),
+        // Igual que el audio subido a mano: salió de un ZIP que se
+        // decodificó en memoria, no de Storage.
+        audioPath: "",
         // El manifest no guarda de qué sample del Banco salió este
         // WAV (ni tiene BPM de origen) — sin esa referencia no hay
         // rate sensato que calcular, así que se trata como audio
@@ -1933,7 +1944,14 @@ export default function ArrangerPage() {
 
     (async () => {
       const openId = new URLSearchParams(window.location.search).get("open");
-      if (openId) {
+      // Si volvimos del menú con el arreglo todavía en memoria, bajarlo
+      // otra vez sería descartar lo que el usuario venía editando. Se
+      // saltea SOLO la descarga, no el resto del efecto: los samples
+      // encolados desde /samples siguen teniendo que entrar (y
+      // takeQueuedSamplesForArranger vacía la cola, así que si no se
+      // llama quedan colgados hasta la próxima visita).
+      const alreadyOpen = !!openId && liveDraftRef.current?.cloudProjectId === openId;
+      if (openId && !alreadyOpen) {
         setImportError(null);
         setIsImporting(true);
         setImportProgress(0);
@@ -1948,6 +1966,9 @@ export default function ArrangerPage() {
           if (!response.ok) throw new Error(`No se pudo descargar el archivo (HTTP ${response.status}).`);
           const bytes = await readResponseWithProgress(response, (f) => setImportProgress(f * 0.3));
           await importProjectFromZipBytes(bytes);
+          // A partir de acá, guardar ACTUALIZA este proyecto en vez de
+          // crear uno nuevo al lado.
+          setCloudProjectId(openId);
         } catch (err) {
           setImportError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -1981,6 +2002,180 @@ export default function ArrangerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
+  // ─── Borrador: que irse del Arranger no borre el trabajo ─────────────
+  //
+  // El Arranger no guardaba NADA hasta que se apretaba "Exportar y
+  // Sincronizar": todo el arreglo vivía en useState, y cambiar de
+  // sección en el menú lo desmontaba. Ver arrangerDraft.ts para por qué
+  // el borrador tiene dos capas y qué puede recuperar cada una.
+
+  /// Lo último que se guardó en la NUBE, como firma de contenido. Es
+  /// contra esto que se decide si hay cambios sin guardar — no contra
+  /// "¿pasó algo?", que daría siempre que sí apenas se restaura.
+  const cloudSavedSignatureRef = useRef<string | null>(null);
+
+  function currentDraft(): ArrangerDraft {
+    return {
+      projectTitle,
+      projectTempoBpm,
+      timeSignatureNumerator,
+      timeSignatureDenominator,
+      tracks,
+      masterFx: importedMasterFx,
+      cloudProjectId,
+      isDirty,
+      savedAt: Date.now(),
+    };
+  }
+
+  // 1. Volver del menú: la instantánea viva todavía tiene el arreglo
+  //    ENTERO, con sus AudioBuffer. Se restaura sola y al instante — no
+  //    se le pregunta nada al usuario porque, desde donde él lo ve,
+  //    nunca se fue a ningún lado.
+  useEffect(() => {
+    const live = liveDraftRef.current;
+    if (!live || showNewProjectSetup) return;
+    queueMicrotask(() => {
+      setProjectTitle(live.projectTitle);
+      setProjectTempoBpm(live.projectTempoBpm);
+      setTimeSignatureNumerator(live.timeSignatureNumerator);
+      setTimeSignatureDenominator(live.timeSignatureDenominator);
+      setImportedMasterFx(live.masterFx);
+      setCloudProjectId(live.cloudProjectId);
+      setTracks(live.tracks);
+      setIsDirty(live.isDirty);
+      if (!live.isDirty) {
+        cloudSavedSignatureRef.current = arrangementSignature(live);
+      }
+    });
+    // Solo al montar: es una restauración, no una sincronización continua.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 2. Sesión anterior (recargaste o cerraste el navegador): la
+  //    instantánea viva murió, pero queda la copia de localStorage. Esa
+  //    NO se aplica sola — restaurarla puede tardar (hay que volver a
+  //    bajar el audio) y puede perder clips, así que se ofrece.
+  useEffect(() => {
+    if (!user || liveDraftRef.current || showNewProjectSetup) return;
+    const stored = readStoredArrangerDraft(user.uid);
+    if (!stored) return;
+    queueMicrotask(() => setRecoverableDraft(stored));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // 3. Guardado continuo, con debounce. La capa viva es una asignación;
+  //    la de localStorage serializa el arreglo, así que no conviene
+  //    hacerlo en cada pixel de un arrastre.
+  useEffect(() => {
+    if (!user || showNewProjectSetup || isImporting) return;
+    // Un arreglo vacío no se guarda: si se guardara, el primer render
+    // (antes de restaurar) pisaría el borrador bueno con la nada.
+    if (tracks.length === 0) return;
+
+    const handle = setTimeout(() => {
+      const draft = currentDraft();
+      const dirty = arrangementSignature(draft) !== cloudSavedSignatureRef.current;
+      rememberArrangerDraft(user.uid, { ...draft, isDirty: dirty });
+      setIsDirty(dirty);
+    }, 700);
+    return () => clearTimeout(handle);
+    // currentDraft se rearma en cada render; las dependencias reales son
+    // sus partes, que sí están listadas.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    user,
+    showNewProjectSetup,
+    isImporting,
+    tracks,
+    projectTitle,
+    projectTempoBpm,
+    timeSignatureNumerator,
+    timeSignatureDenominator,
+    importedMasterFx,
+    cloudProjectId,
+  ]);
+
+  // 4. Aviso antes de CERRAR o RECARGAR la pestaña, que es lo único que
+  //    todavía puede perder trabajo: ahí muere la instantánea viva y,
+  //    con ella, el audio que no vino del Banco de Sonidos (subido a
+  //    mano o abierto desde un .mystudio). Navegar por el menú ya no
+  //    avisa nada, y no es un olvido: no se pierde nada, así que un
+  //    cartel de confirmación sería puro ruido.
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
+  /// Rehidrata un borrador de localStorage: vuelve a conseguir el audio
+  /// de cada clip y recalcula sus picos.
+  ///
+  /// El orden importa. Primero se mira la caché global —que sobrevive a
+  /// la navegación dentro de la pestaña—, y recién si no está se baja de
+  /// Storage. Un clip sin `audioPath` (subido desde la computadora, o
+  /// venido de un .mystudio) no tiene de dónde bajarse: se cuenta como
+  /// perdido y se avisa, en vez de dejar un bloque mudo en la grilla.
+  async function restoreStoredDraft(stored: StoredArrangerDraft) {
+    setIsRestoringDraft(true);
+    setDraftNotice(null);
+    let lostClips = 0;
+
+    const restored: ArrangerTrack[] = [];
+    for (const track of stored.tracks) {
+      const clips: ArrangerClip[] = [];
+      for (const clip of track.clips) {
+        let buffer = getCachedBuffer(clip.sampleId);
+        if (!buffer && clip.audioPath) {
+          try {
+            buffer = await loadAndCacheBuffer(clip.sampleId, clip.audioPath);
+          } catch {
+            buffer = undefined;
+          }
+        }
+        if (!buffer) {
+          lostClips++;
+          continue;
+        }
+        clips.push({ ...clip, buffer, peaks: computePeaks(buffer, PEAK_BUCKETS) });
+      }
+      restored.push({ ...track, clips });
+    }
+
+    setProjectTitle(stored.projectTitle);
+    setProjectTempoBpm(stored.projectTempoBpm);
+    setTimeSignatureNumerator(stored.timeSignatureNumerator);
+    setTimeSignatureDenominator(stored.timeSignatureDenominator);
+    setImportedMasterFx(stored.masterFx);
+    setCloudProjectId(stored.cloudProjectId);
+    setTracks(restored);
+    setIsDirty(true);
+    setRecoverableDraft(null);
+    setIsRestoringDraft(false);
+    if (lostClips > 0) {
+      setDraftNotice(
+        `Se recuperó el arreglo, pero ${lostClips === 1 ? "un clip quedó" : `${lostClips} clips quedaron`} afuera: ` +
+          `era audio subido desde tu computadora o traído de un .mystudio, y eso solo vivía en la memoria del navegador. ` +
+          `Volvé a agregarlo.`,
+      );
+    }
+  }
+
+  /// Arranca de cero, tirando el borrador. Lo llama tanto "Descartar"
+  /// del cartel de recuperación como "Crear Proyecto" del gate de
+  /// proyecto nuevo — en los dos casos el usuario dijo explícitamente
+  /// que quiere empezar limpio.
+  function discardDraft() {
+    if (user) clearArrangerDraft(user.uid);
+    liveDraftRef.current = null;
+    cloudSavedSignatureRef.current = null;
+    setRecoverableDraft(null);
+    setDraftNotice(null);
+    setCloudProjectId(null);
+    setIsDirty(false);
+  }
+
   // ─── Render ──────────────────────────────────────────────────────────
 
   if (loading) return null;
@@ -2009,8 +2204,12 @@ export default function ArrangerPage() {
   // Paso 1 (dashboard) — gate de "Nuevo Proyecto": pide Título/BPM/
   // Compás ANTES de revelar la grilla. Edita DIRECTAMENTE el mismo
   // estado que la barra superior (projectTitle/projectTempoBpm/
-  // timeSignature...) — no hay un borrador separado, "Crear Proyecto"
-  // simplemente cierra el gate, los valores ya quedaron aplicados.
+  // timeSignature...) — los valores ya quedaron aplicados cuando se
+  // cierra el gate.
+  //
+  // "Crear Proyecto" además TIRA el borrador: pedir un proyecto nuevo es
+  // decir explícitamente que se quiere empezar de cero, y arrancar con
+  // las pistas del arreglo anterior adentro sería peor que perderlas.
   if (showNewProjectSetup) {
     return (
       <div className="flex min-h-full flex-col items-center justify-center gap-6 bg-onyx-black px-6 text-center">
@@ -2063,7 +2262,11 @@ export default function ArrangerPage() {
           </div>
           <button
             type="button"
-            onClick={() => setShowNewProjectSetup(false)}
+            onClick={() => {
+              discardDraft();
+              setTracks([]);
+              setShowNewProjectSetup(false);
+            }}
             className="mt-2 rounded-full bg-neon-cyan px-6 py-2.5 font-display text-sm font-semibold text-onyx-black transition-all duration-200 hover:shadow-[0_0_20px_rgba(102,252,241,0.5)] active:scale-95"
           >
             Crear Proyecto
@@ -2371,11 +2574,34 @@ export default function ArrangerPage() {
           <button
             type="button"
             onClick={handleExport}
-            disabled={isExporting || pendingDrops.length > 0 || tracks.every((t) => t.clips.length === 0)}
+            // Antes pedía que ALGUNA pista tuviera audio, y eso dejaba
+            // sin ninguna forma de guardar al caso más común de todos:
+            // proyecto nuevo, unas pistas armadas, todavía sin clips.
+            // Alcanza con que haya una pista.
+            disabled={isExporting || pendingDrops.length > 0 || tracks.length === 0}
             className="rounded-full border border-neon-cyan/40 bg-onyx-black px-5 py-2 font-display text-xs font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)] disabled:opacity-40"
           >
-            {isExporting ? `Exportando... ${Math.round(exportProgress * 100)}%` : "Exportar y Sincronizar"}
+            {isExporting
+              ? `Exportando... ${Math.round(exportProgress * 100)}%`
+              : cloudProjectId
+                ? "Guardar cambios"
+                : "Exportar y Sincronizar"}
           </button>
+          {/* Estado del borrador. "Guardado" acá significa EN LA NUBE:
+              el borrador local es automático y no hace falta contarlo
+              como una acción del usuario. */}
+          {tracks.length > 0 && !isExporting && (
+            <span
+              className={`text-[11px] ${isDirty ? "text-amber-300/80" : "text-white/30"}`}
+              title={
+                isDirty
+                  ? "Se guarda solo en este navegador. Sincronizá para tenerlo en la app y en otros dispositivos."
+                  : undefined
+              }
+            >
+              {isDirty ? "Sin sincronizar" : "Sincronizado"}
+            </span>
+          )}
         </div>
       </div>
 
@@ -2407,6 +2633,33 @@ export default function ArrangerPage() {
       )}
       {addSampleError && (
         <p className="bg-red-900/30 px-4 py-1.5 text-xs text-red-300">{addSampleError}</p>
+      )}
+      {recoverableDraft && (
+        <div className="flex flex-wrap items-center gap-3 bg-amber-900/25 px-4 py-2 text-xs text-amber-100">
+          <span>
+            Tenés un arreglo sin sincronizar de {describeDraftAge(recoverableDraft.savedAt)}
+            {recoverableDraft.projectTitle ? ` — «${recoverableDraft.projectTitle}»` : ""}.
+          </span>
+          <button
+            type="button"
+            onClick={() => void restoreStoredDraft(recoverableDraft)}
+            disabled={isRestoringDraft}
+            className="rounded-full border border-amber-300/50 px-3 py-1 font-semibold transition-colors duration-200 hover:border-amber-200 disabled:opacity-50"
+          >
+            {isRestoringDraft ? "Recuperando..." : "Recuperar"}
+          </button>
+          <button
+            type="button"
+            onClick={discardDraft}
+            disabled={isRestoringDraft}
+            className="rounded-full border border-white/20 px-3 py-1 text-white/60 transition-colors duration-200 hover:border-white/40 hover:text-white disabled:opacity-50"
+          >
+            Descartar
+          </button>
+        </div>
+      )}
+      {draftNotice && (
+        <p className="bg-amber-900/25 px-4 py-1.5 text-xs text-amber-100">{draftNotice}</p>
       )}
       {exportError && (
         <p className="bg-red-900/30 px-4 py-1.5 text-xs text-red-300">
