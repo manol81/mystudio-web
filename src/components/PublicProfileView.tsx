@@ -9,9 +9,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Handshake, Heart, MessageCircle, Music, UserPlus, UserCheck } from "lucide-react";
+import {
+  Handshake,
+  Heart,
+  MessageCircle,
+  Music,
+  Send,
+  UserPlus,
+  UserCheck,
+} from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
+import { MessageComposerModal } from "@/components/MessageComposerModal";
 import {
   fetchProfileActivity,
   fetchProfilePosts,
@@ -51,7 +60,7 @@ interface CollabPostInfo {
 }
 
 export function PublicProfileView({ uid }: { uid: string }) {
-  const { user } = useAuth();
+  const { user, profile: myProfile } = useAuth();
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [posts, setPosts] = useState<ProfilePost[]>([]);
   const [activity, setActivity] = useState<ProfileActivity[]>([]);
@@ -66,6 +75,12 @@ export function PublicProfileView({ uid }: { uid: string }) {
   const [following, setFollowing] = useState(false);
   const [isFollowBusy, setIsFollowBusy] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
+  // Escribirle a esta persona sin salir de su perfil. Es un modal y no
+  // una navegación a /mensajes porque el momento en que te dan ganas de
+  // escribirle a alguien es justo mientras estás mirando lo que hizo;
+  // mandarte a otra pantalla con el hilo vacío es la forma más segura de
+  // que no lo escribas.
+  const [isComposerOpen, setIsComposerOpen] = useState(false);
 
   const isOwnProfile = user?.uid === uid;
 
@@ -219,19 +234,29 @@ export function PublicProfileView({ uid }: { uid: string }) {
             Tu perfil
           </span>
         ) : (
-          <button
-            type="button"
-            onClick={() => void handleFollow()}
-            disabled={isFollowBusy}
-            className={`flex shrink-0 items-center gap-2 rounded-full px-4 py-2 font-display text-xs font-semibold transition-all duration-300 disabled:opacity-50 ${
-              following
-                ? "border border-white/20 text-white/70 hover:border-white/40"
-                : "border border-neon-cyan/40 bg-onyx-black text-neon-cyan hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)]"
-            }`}
-          >
-            {following ? <UserCheck size={14} /> : <UserPlus size={14} />}
-            {following ? "Siguiendo" : "Seguir"}
-          </button>
+          <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              onClick={() => void handleFollow()}
+              disabled={isFollowBusy}
+              className={`flex items-center justify-center gap-2 rounded-full px-4 py-2 font-display text-xs font-semibold transition-all duration-300 disabled:opacity-50 ${
+                following
+                  ? "border border-white/20 text-white/70 hover:border-white/40"
+                  : "border border-neon-cyan/40 bg-onyx-black text-neon-cyan hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)]"
+              }`}
+            >
+              {following ? <UserCheck size={14} /> : <UserPlus size={14} />}
+              {following ? "Siguiendo" : "Seguir"}
+            </button>
+            <button
+              type="button"
+              onClick={() => (user ? setIsComposerOpen(true) : setIsLoginOpen(true))}
+              className="flex items-center justify-center gap-2 rounded-full border border-white/20 px-4 py-2 font-display text-xs font-semibold text-white/70 transition-colors duration-300 hover:border-white/40 hover:text-white"
+            >
+              <Send size={14} />
+              Enviar mensaje
+            </button>
+          </div>
         )}
       </header>
 
@@ -381,6 +406,16 @@ export function PublicProfileView({ uid }: { uid: string }) {
       )}
 
       {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
+
+      {isComposerOpen && user && (
+        <MessageComposerModal
+          myUid={user.uid}
+          myName={myProfile?.username ?? "Usuario"}
+          recipientUid={uid}
+          recipientName={profile?.username ?? "esta persona"}
+          onClose={() => setIsComposerOpen(false)}
+        />
+      )}
     </div>
   );
 }

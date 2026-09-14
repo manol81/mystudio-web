@@ -17,10 +17,12 @@ import {
   Heart,
   MessageCircle,
   MessageSquare,
+  Send,
   X,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
+import { MessageComposerModal } from "@/components/MessageComposerModal";
 import {
   fetchNotifications,
   markNotificationsSeen,
@@ -69,6 +71,11 @@ export default function InboxPage() {
   // volver a cada publicación.
   const [sent, setSent] = useState<CollabRequest[]>([]);
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
+  // A quién le estoy por escribir en privado. La Bandeja de Entrada era
+  // de solo lectura: te enterabas de que alguien comentó tu tema y ahí
+  // se terminaba. Contestarle en el propio comentario es público y sirve
+  // para otra cosa; esto es para cuando querés hablar con esa persona.
+  const [composeTo, setComposeTo] = useState<{ uid: string; name: string } | null>(null);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -451,9 +458,34 @@ export default function InboxPage() {
                   <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-neon-cyan" aria-label="Sin leer" />
                 )}
               </Link>
+
+              {/* Fuera del Link a propósito: un botón adentro de un
+                  enlace es HTML inválido y en la práctica se roba el
+                  click o navega igual. Solo para comentarios — a un
+                  "me gusta" no hay nada que contestarle. */}
+              {n.kind === "comment" && n.actorId && n.actorId !== user.uid && (
+                <button
+                  type="button"
+                  onClick={() => setComposeTo({ uid: n.actorId, name: n.actorName })}
+                  className="ml-11 mt-1 flex items-center gap-1.5 text-[11px] text-white/35 transition-colors duration-200 hover:text-neon-cyan"
+                >
+                  <Send size={11} />
+                  Responder en privado a {n.actorName}
+                </button>
+              )}
             </li>
           ))}
         </ul>
+      )}
+
+      {composeTo && (
+        <MessageComposerModal
+          myUid={user.uid}
+          myName={profile?.username ?? "Usuario"}
+          recipientUid={composeTo.uid}
+          recipientName={composeTo.name}
+          onClose={() => setComposeTo(null)}
+        />
       )}
     </div>
   );

@@ -20,6 +20,7 @@ import {
   FolderOpen,
   Piano,
   MessageSquare,
+  Send,
   Handshake,
   Search,
   Shield,
@@ -32,6 +33,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 import { ProfileModal } from "@/components/ProfileModal";
 import { countUnreadNotifications } from "@/lib/NotificationsService";
+import { countUnreadConversations } from "@/lib/DirectMessageService";
 import { Tooltip } from "@/components/Tooltip";
 
 const NAV_ITEMS = [
@@ -60,6 +62,12 @@ const NAV_ITEMS = [
     hint: "Los comentarios y me gusta que recibieron tus publicaciones",
   },
   {
+    href: "/mensajes",
+    label: "Mensajes",
+    icon: Send,
+    hint: "Conversaciones privadas con otros músicos, y las solicitudes que te llegaron",
+  },
+  {
     href: "/colaboraciones",
     label: "Colaboraciones",
     icon: Handshake,
@@ -79,6 +87,25 @@ function isActiveInbox(pathname: string): boolean {
   return pathname.startsWith("/inbox");
 }
 
+/// Cuántos avisos le corresponden a cada sección del menú. Son dos
+/// contadores separados a propósito: la Bandeja de Entrada cuenta
+/// comentarios y me gusta sobre tus publicaciones, y Mensajes cuenta
+/// conversaciones con algo sin leer. Sumarlos en un solo número haría
+/// que el usuario abra una sección y el contador no baje, que es la
+/// forma más rápida de que un aviso deje de significar algo.
+function badgeFor(
+  href: string,
+  pathname: string,
+  unreadNotifications: number,
+  unreadMessages: number,
+): number {
+  if (href === "/inbox") return isActiveInbox(pathname) ? 0 : unreadNotifications;
+  // Mensajes NO se apaga por estar adentro: acá se marca leída cada
+  // conversación al abrirla, una por una, no la pantalla entera.
+  if (href === "/mensajes") return unreadMessages;
+  return 0;
+}
+
 function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
   const { user, profile } = useAuth();
   // forceRefresh=false a propósito acá — este hook monta en TODAS las
@@ -92,11 +119,15 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
   // de página: alcanza para que aparezca al rato de recibir algo, y
   // evita un listener en vivo corriendo en TODAS las pantallas.
   const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadMessages, setUnreadMessages] = useState(0);
   const seenAt = profile?.notificationsSeenAt ?? null;
   useEffect(() => {
     if (!user) {
       // Microtask por el linter de React, igual que en AuthContext.
-      queueMicrotask(() => setUnreadCount(0));
+      queueMicrotask(() => {
+        setUnreadCount(0);
+        setUnreadMessages(0);
+      });
       return;
     }
     let cancelled = false;
@@ -108,6 +139,11 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
         // Un fallo acá no puede romper la navegación entera: sin
         // número, el menú se ve como siempre.
       });
+    countUnreadConversations(user.uid)
+      .then((count) => {
+        if (!cancelled) setUnreadMessages(count);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -123,9 +159,7 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
 
       <nav className="flex flex-1 flex-col gap-1 px-3">
         {NAV_ITEMS.map(({ href, label, icon: Icon, hint }) => {
-          // El contador solo aplica a la Bandeja de Entrada; se oculta
-          // al entrar, porque abrirla marca todo como leído.
-          const badge = href === "/inbox" && !isActiveInbox(pathname) ? unreadCount : 0;
+          const badge = badgeFor(href, pathname, unreadCount, unreadMessages);
           // "/" necesita coincidencia EXACTA (si no, siempre estaría
           // "activo" para cualquier ruta, ya que todas empiezan con
           // "/") — el resto sí puede matchear sub-rutas futuras

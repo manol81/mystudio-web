@@ -46,6 +46,10 @@ import {
 } from "firebase/firestore";
 import { deleteObject, listAll, ref, type StorageReference } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
+import {
+  deleteConversation,
+  fetchAllConversationIds,
+} from "@/lib/DirectMessageService";
 import { deletePublicProfile } from "@/lib/PublicProfileService";
 
 export type AccountDeletionStep =
@@ -95,6 +99,7 @@ export async function deleteAccount(
 
   onProgress?.("deletingCommunity");
   await deleteCommunityFootprint(uid);
+  await deleteConversations(uid);
 
   onProgress?.("deletingProjects");
   await deleteStorageFolder(ref(storage, `users/${uid}/projects`));
@@ -110,6 +115,25 @@ export async function deleteAccount(
 
   onProgress?.("deletingAuthUser");
   await deleteUser(user);
+}
+
+/// Conversaciones privadas de esta persona, con sus mensajes adentro.
+///
+/// Se borran ENTERAS, no solo los mensajes propios: una conversación es
+/// de a dos y la otra punta ya no va a tener con quién seguirla. Los
+/// mensajes van PRIMERO — Firestore no borra subcolecciones en cascada,
+/// así que al revés quedarían colgando de un padre inexistente, y las
+/// reglas de `messages` resuelven el permiso partiendo el id de la
+/// conversación justamente para que un hilo huérfano todavía se pueda
+/// vaciar.
+///
+/// Se lleva también lo rechazado, que no aparece en ninguna pantalla: si
+/// no, quedarían lápidas de una cuenta que ya no existe.
+async function deleteConversations(uid: string): Promise<void> {
+  const ids = await fetchAllConversationIds(uid);
+  for (const id of ids) {
+    await deleteConversation(id);
+  }
 }
 
 /// Publicaciones propias (con sus likes/comentarios y su preview en
