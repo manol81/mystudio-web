@@ -68,7 +68,13 @@ function readTaxonomy() {
   const arrayOf = (name) => {
     const m = src.match(new RegExp(`${name}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`));
     if (!m) throw new Error(`No pude leer ${name} de sampleTaxonomy.ts`);
-    return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    // Los comentarios se sacan ANTES de juntar las comillas. Ese archivo
+    // está escrito para que lo lea una persona, y un comentario que cite
+    // un valor ("va pegado a \"Guitar\"") metía ese valor duplicado en la
+    // lista sin que nada fallara — el peor modo de error posible para
+    // algo que solo se nota cuando un filtro no encuentra un sample.
+    const cuerpo = m[1].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    return [...cuerpo.matchAll(/"([^"]+)"/g)].map((x) => x[1]);
   };
 
   const roots = arrayOf("KEY_ROOTS");

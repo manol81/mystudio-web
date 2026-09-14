@@ -17,6 +17,11 @@ export const SAMPLE_INSTRUMENTS = [
   "Synth",
   "Vocals",
   "Guitar",
+  // Cuerdas frotadas o pulsadas que no son la guitarra: violín, viola,
+  // chelo, una sección entera, un arpa. Va pegado a la guitarra porque
+  // el orden de esta lista es el orden de los chips del filtro, y quien
+  // busca cuerdas mira ahí.
+  "Strings",
   "FX",
   // Para samples donde suenan VARIOS instrumentos a la vez (una banda
   // entera, un loop de acompañamiento completo): no encaja en ninguna
