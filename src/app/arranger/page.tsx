@@ -43,7 +43,6 @@ import {
   NO_TRACK_FX,
   parseMasterFx,
   parseTrackFx,
-  type MasterFx,
 } from "@/lib/trackEffects";
 import JSZip from "jszip";
 import Link from "next/link";
@@ -54,9 +53,23 @@ import { scheduleGainEnvelope } from "@/lib/clipEnvelope";
 import { getOrProcessBuffer } from "@/lib/audioDsp";
 import { getCachedBuffer, loadAndCacheBuffer, setCachedBuffer } from "@/lib/sampleBufferCache";
 import type { ArrangerClip, ArrangerTrack } from "@/lib/arrangerTypes";
-import { nextBarContextTime, secondsPerBar, secondsPerBeat } from "@/lib/barClock";
+import {
+  nextBarContextTime,
+  secondsPerBar,
+  secondsPerBeat,
+  secondsPerQuarterNote,
+} from "@/lib/barClock";
 import { transposeSemitonesFor } from "@/lib/sampleAffinity";
 import { computePeaks } from "@/lib/samplePeaks";
+import { computeSnappedStart, type SnapNeighbour } from "@/lib/arrangerSnap";
+import {
+  RESET,
+  SILENT,
+  push,
+  useArrangementHistory,
+  type ArrangementState,
+  type CommitMode,
+} from "@/lib/arrangerHistory";
 import {
   arrangementSignature,
   clearArrangerDraft,
@@ -112,6 +125,27 @@ const PLACEHOLDER_DURATION_SECONDS = 2;
 const TIME_SIGNATURE_PRESETS = ["4/4", "3/4", "2/4", "6/8", "9/8", "12/8", "5/4", "7/8"];
 
 /**
+ * A qué se pega un clip al arrastrarlo. Las fracciones son valores de
+ * nota (1/4 = negra), no fracciones del compás: es la convención de
+ * cualquier DAW y es lo que hace que en 6/8 sigan significando lo
+ * mismo.
+ *
+ * "Libre" deja el imán clip-contra-clip, que es otra cosa y siempre
+ * está activo: encadenar loops uno atrás del otro no necesita grilla.
+ */
+const SNAP_DIVISIONS = ["off", "bar", "1/2", "1/4", "1/8", "1/16"] as const;
+type SnapDivision = (typeof SNAP_DIVISIONS)[number];
+
+const SNAP_LABELS: Record<SnapDivision, string> = {
+  off: "Libre",
+  bar: "Compás",
+  "1/2": "1/2",
+  "1/4": "1/4",
+  "1/8": "1/8",
+  "1/16": "1/16",
+};
+
+/**
  * Paso 4 (rendimiento) — un drop "en vuelo": el usuario ya soltó el
  * sample en la pista, pero el AudioBuffer real todavía no está listo
  * (cache miss — fetch/decode en curso). Se renderiza como un bloque
@@ -132,6 +166,33 @@ interface PendingDrop {
 function newId(): string {
   return crypto.randomUUID();
 }
+
+// El arreglo vacío del que parte todo. A nivel de MÓDULO y no adentro
+// del componente: si se construyera en cada render, el hook del
+// historial recibiría un objeto nuevo cada vez.
+//
+// El tipo de compás, junto con el BPM, define la grilla musical de la
+// regla (ver rulerTicks) y viaja en el manifest.json exportado. El
+// motor de reproducción/exportación NO lo usa para nada: el
+// posicionamiento real de los clips sigue siendo siempre en segundos
+// (ver la REGLA CRÍTICA en handleExport).
+const INITIAL_ARRANGEMENT: ArrangementState = {
+  projectTitle: "Nuevo Arreglo",
+  projectTempoBpm: 120,
+  // Tonalidad del proyecto ("" = sin declarar). Habilita dos cosas del
+  // Banco de Sonidos: filtrar por compatibilidad armónica y transponer
+  // los samples al soltarlos. Vive SOLO en la web (borrador + documento
+  // de Firestore), nunca en el manifiesto del .mystudio — así el lado
+  // Flutter no necesita enterarse de nada.
+  projectKey: "",
+  timeSignatureNumerator: 4,
+  timeSignatureDenominator: 4,
+  // Efectos del máster del proyecto importado — el Arranger no los
+  // edita ni los reproduce, los devuelve al exportar para no perderlos
+  // (igual que ArrangerTrack.fx).
+  masterFx: DEFAULT_MASTER_FX,
+  tracks: [],
+};
 
 // ─── Importar .mystudio (edición bidireccional) ──────────────────────────
 //
@@ -283,31 +344,67 @@ export default function ArrangerPage() {
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("new") === "1",
   );
 
-  const [projectTitle, setProjectTitle] = useState("Nuevo Arreglo");
-  const [projectTempoBpm, setProjectTempoBpm] = useState(120);
-  // Tonalidad del proyecto ("" = sin declarar). Habilita dos cosas del
-  // Banco de Sonidos: filtrar por compatibilidad armónica y transponer
-  // los samples al soltarlos. Vive SOLO en la web (borrador + documento
-  // de Firestore), nunca en el manifiesto del .mystudio — así el lado
-  // Flutter no necesita enterarse de nada.
-  const [projectKey, setProjectKey] = useState("");
+  // ─── El arreglo en sí, con deshacer/rehacer ────────────────────────
+  //
+  // Título, tempo, tonalidad, compás, efectos del máster y pistas eran
+  // siete useState sueltos, y cada edición los pisaba sin dejar rastro.
+  // Ahora viven juntos en un reducer con historial (arrangerHistory.ts)
+  // — juntos porque son lo que el usuario entiende como "el arreglo", y
+  // deshacer tiene que devolverlo entero y coherente.
+  //
+  // Los setters de abajo son shims con la MISMA firma que tenían los
+  // useState, así el resto del archivo no cambió: lo único que se suma
+  // es un segundo argumento opcional para decir qué clase de commit es
+  // (ver CommitMode).
+  const arrangement = useArrangementHistory(INITIAL_ARRANGEMENT);
+  const {
+    projectTitle,
+    projectTempoBpm,
+    projectKey,
+    timeSignatureNumerator,
+    timeSignatureDenominator,
+    masterFx: importedMasterFx,
+    tracks,
+  } = arrangement.state;
+  const { commit } = arrangement;
+
+  type Updater<T> = T | ((prev: T) => T);
+  function resolve<T>(updater: Updater<T>, prev: T): T {
+    return typeof updater === "function" ? (updater as (p: T) => T)(prev) : updater;
+  }
+
+  const setTracks = (updater: Updater<ArrangerTrack[]>, mode?: CommitMode) =>
+    commit((prev) => ({ ...prev, tracks: resolve(updater, prev.tracks) }), mode ?? push("Editar pistas"));
+  const setProjectTitle = (updater: Updater<string>) =>
+    commit((prev) => ({ ...prev, projectTitle: resolve(updater, prev.projectTitle) }),
+      push("Cambiar el título", "titulo"));
+  const setProjectTempoBpm = (updater: Updater<number>) =>
+    commit((prev) => ({ ...prev, projectTempoBpm: resolve(updater, prev.projectTempoBpm) }),
+      push("Cambiar el tempo", "tempo"));
+  const setProjectKey = (updater: Updater<string>) =>
+    commit((prev) => ({ ...prev, projectKey: resolve(updater, prev.projectKey) }),
+      push("Cambiar la tonalidad"));
+  const setTimeSignatureNumerator = (updater: Updater<number>) =>
+    commit((prev) => ({ ...prev, timeSignatureNumerator: resolve(updater, prev.timeSignatureNumerator) }),
+      push("Cambiar el compás", "compas"));
+  const setTimeSignatureDenominator = (updater: Updater<number>) =>
+    commit((prev) => ({ ...prev, timeSignatureDenominator: resolve(updater, prev.timeSignatureDenominator) }),
+      push("Cambiar el compás", "compas"));
+  /** Carga un arreglo COMPLETO de una (abrir, recuperar, empezar de cero): el historial arranca de nuevo desde acá. */
+  function loadArrangement(next: Partial<ArrangementState>) {
+    commit((prev) => ({ ...prev, ...next }), RESET);
+  }
   // Pre-escuchar (y soltar) los samples ya adaptados al tempo y la
   // tonalidad del proyecto. Encendido por defecto: es lo que hace que
   // lo que se escucha en el panel sea lo que después suena en la pista.
   const [matchProject, setMatchProject] = useState(true);
-  // Efectos del máster del proyecto importado — el Arranger no los toca,
-  // los devuelve al exportar para no perderlos (igual que ArrangerTrack.fx).
-  const [importedMasterFx, setImportedMasterFx] = useState<MasterFx>(DEFAULT_MASTER_FX);
-  // Tipo de compás del proyecto — junto con el BPM, define la grilla
-  // musical de la regla (ver rulerTicks) y viaja en el manifest.json
-  // exportado (ver handleExport). El motor de reproducción/export en
-  // sí NO usa esto para nada más: el posicionamiento real de los
-  // clips sigue siendo siempre en segundos (ver REGLA CRÍTICA en
-  // handleExport).
-  const [timeSignatureNumerator, setTimeSignatureNumerator] = useState(4);
-  const [timeSignatureDenominator, setTimeSignatureDenominator] = useState(4);
   const [rulerMode, setRulerMode] = useState<"seconds" | "bars">("seconds");
-  const [tracks, setTracks] = useState<ArrangerTrack[]>([]);
+  // Arranca en 1/4 (la negra en 4/4): lo bastante fino para colocar un
+  // golpe suelto y lo bastante musical para que un loop caiga en su
+  // lugar. Poner un clip "en el compás 5" era literalmente imposible
+  // antes de esto — el imán solo conocía los bordes de OTROS clips, así
+  // que quedaba en 4,97 y el arreglo se desfasaba solo.
+  const [snapDivision, setSnapDivision] = useState<SnapDivision>("1/4");
   const [pixelsPerSecond, setPixelsPerSecond] = useState(50);
 
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
@@ -578,6 +675,17 @@ export default function ArrangerPage() {
     () => secondsPerBar(projectTempoBpm, timeSignatureNumerator, timeSignatureDenominator),
     [projectTempoBpm, timeSignatureNumerator, timeSignatureDenominator],
   );
+
+  /** Paso de la grilla en segundos. 0 = sin imán a la grilla. */
+  const gridSeconds = useMemo(() => {
+    if (snapDivision === "off") return 0;
+    if (snapDivision === "bar") return barLengthSeconds;
+    const noteValue = Number(snapDivision.split("/")[1]);
+    if (!Number.isFinite(noteValue) || noteValue <= 0) return 0;
+    // 4 / noteValue porque el BPM son NEGRAS por minuto: una redonda
+    // son cuatro negras, una corchea media.
+    return secondsPerQuarterNote(projectTempoBpm) * (4 / noteValue);
+  }, [snapDivision, barLengthSeconds, projectTempoBpm]);
 
   const rulerTicks = useMemo(() => {
     if (rulerMode === "seconds") {
@@ -890,7 +998,13 @@ export default function ArrangerPage() {
   }
 
   function updateTrack(trackId: string, patch: Partial<ArrangerTrack>) {
-    setTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, ...patch } : t)));
+    // Clave de fusión por PISTA: mover un fader dispara un cambio por
+    // píxel, y sin esto deshacer retrocedería de a un píxel. Todo el
+    // arrastre queda como una sola acción — que es como se vivió.
+    setTracks(
+      (prev) => prev.map((t) => (t.id === trackId ? { ...t, ...patch } : t)),
+      push("Ajustar la pista", `pista:${trackId}`),
+    );
   }
 
   function deleteTrack(trackId: string) {
@@ -932,7 +1046,10 @@ export default function ArrangerPage() {
   }
 
   function addClipToTrack(trackId: string, clip: ArrangerClip) {
-    setTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t)));
+    setTracks(
+      (prev) => prev.map((t) => (t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t)),
+      push(`Agregar ${clip.sampleName}`),
+    );
     setSelectedClipId(clip.id);
   }
 
@@ -1124,8 +1241,9 @@ export default function ArrangerPage() {
 
   function deleteSelectedClip() {
     if (!selectedClipId) return;
-    setTracks((prev) =>
-      prev.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== selectedClipId) })),
+    setTracks(
+      (prev) => prev.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== selectedClipId) })),
+      push("Eliminar clip"),
     );
     setSelectedClipId(null);
   }
@@ -1238,6 +1356,15 @@ export default function ArrangerPage() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
         e.preventDefault();
         pasteClipboard();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        // Ctrl+Z deshace; Ctrl+Shift+Z y Ctrl+Y rehacen (las dos
+        // convenciones conviven según de qué editor venga cada uno).
+        e.preventDefault();
+        if (e.shiftKey) arrangement.redo();
+        else arrangement.undo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        arrangement.redo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
         e.preventDefault();
         duplicateSelectedClip();
@@ -1250,7 +1377,7 @@ export default function ArrangerPage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClipId, clipboardClip, tracks, projectTempoBpm, playheadSeconds, isPlaying]);
+  }, [selectedClipId, clipboardClip, tracks, projectTempoBpm, playheadSeconds, isPlaying, arrangement]);
 
   // ─── Arrastrar un clip existente (mover horizontalmente) ────────────
 
@@ -1293,7 +1420,11 @@ export default function ArrangerPage() {
     // pantalla; document.elementFromPoint + data-track-id (puesto en
     // cada carril) dicen sobre qué pista está ahora.
     const handleWindowMove = (ev: PointerEvent) => {
-      updateClipDragPreview(ev.clientX, ev.clientY);
+      // Alt suelta el imán mientras se arrastra, sin tener que ir hasta
+      // el selector y volver. Es el gesto de Ableton y Logic, y hace
+      // falta porque a veces uno quiere justamente lo que la grilla no
+      // permite (un golpe adelantado, un efecto a contratiempo).
+      updateClipDragPreview(ev.clientX, ev.clientY, ev.altKey);
     };
     const handleWindowUp = () => {
       window.removeEventListener("pointermove", handleWindowMove);
@@ -1305,7 +1436,7 @@ export default function ArrangerPage() {
   }
 
   /** Actualiza la posición/imán/pista-destino del clip en arrastre — llamado desde el listener de window, ver handleClipPointerDown. */
-  function updateClipDragPreview(clientX: number, clientY: number) {
+  function updateClipDragPreview(clientX: number, clientY: number, bypassSnap = false) {
     const moveDrag = dragRef.current;
     if (!moveDrag) return;
     moveDrag.lastClientX = clientX;
@@ -1313,7 +1444,12 @@ export default function ArrangerPage() {
 
     const deltaSeconds = (clientX - moveDrag.startClientX) / effectivePixelsPerSecond;
     const rawStart = Math.max(0, moveDrag.originalStartSeconds + deltaSeconds);
-    const snapped = computeSnappedStart(moveDrag.clipId, rawStart, moveDrag.displayDuration);
+    const snapped = snapDraggedClip(
+      moveDrag.clipId,
+      rawStart,
+      moveDrag.displayDuration,
+      bypassSnap,
+    );
     moveDrag.previewStartSeconds = snapped.startSeconds;
     setDragPreviewStartSeconds(snapped.startSeconds);
     setSnapGuideSeconds(snapped.guideSeconds);
@@ -1332,44 +1468,40 @@ export default function ArrangerPage() {
   // siempre contra la posición CRUDA del mouse (no contra el último
   // valor ya pegado), seguir arrastrando más allá del radio lo suelta
   // solo — no hace falta ningún estado extra de "se soltó el imán".
-  function computeSnappedStart(
+  /**
+   * Los candidatos del imán salen de arrangerSnap.ts (puro y probado);
+   * acá solo se arma la entrada: cuánto vale un píxel con el zoom
+   * actual, qué paso tiene la grilla, y qué otros clips hay — con el
+   * que se está arrastrando excluido, porque pegarse a uno mismo no
+   * significa nada.
+   */
+  function snapDraggedClip(
     clipId: string,
     rawStartSeconds: number,
     displayDuration: number,
+    bypassSnap = false,
   ): { startSeconds: number; guideSeconds: number | null } {
-    const rawStartPx = rawStartSeconds * effectivePixelsPerSecond;
-    const durationPx = displayDuration * effectivePixelsPerSecond;
+    if (bypassSnap) return { startSeconds: rawStartSeconds, guideSeconds: null };
 
-    const candidates: { startPx: number; guidePx: number }[] = [{ startPx: 0, guidePx: 0 }];
+    const neighbours: SnapNeighbour[] = [];
     for (const track of tracks) {
       for (const other of track.clips) {
         if (other.id === clipId) continue;
-        const otherStartPx = other.startSeconds * effectivePixelsPerSecond;
-        const otherEndPx =
-          otherStartPx + displayDurationFor(other, projectTempoBpm) * effectivePixelsPerSecond;
-        candidates.push({ startPx: otherEndPx, guidePx: otherEndPx }); // mi inicio, pegado al final del otro
-        candidates.push({ startPx: otherStartPx - durationPx, guidePx: otherStartPx }); // mi final, pegado al inicio del otro
-        candidates.push({ startPx: otherStartPx, guidePx: otherStartPx }); // alinear inicios
-        candidates.push({ startPx: otherEndPx - durationPx, guidePx: otherEndPx }); // alinear finales
+        neighbours.push({
+          startSeconds: other.startSeconds,
+          displayDuration: displayDurationFor(other, projectTempoBpm),
+        });
       }
     }
 
-    let bestStartPx = rawStartPx;
-    let bestGuidePx: number | null = null;
-    let bestDistancePx = SNAP_THRESHOLD_PX;
-    for (const candidate of candidates) {
-      if (candidate.startPx < 0) continue;
-      const distancePx = Math.abs(candidate.startPx - rawStartPx);
-      if (distancePx <= bestDistancePx) {
-        bestDistancePx = distancePx;
-        bestStartPx = candidate.startPx;
-        bestGuidePx = candidate.guidePx;
-      }
-    }
-    return {
-      startSeconds: Math.max(0, bestStartPx / effectivePixelsPerSecond),
-      guideSeconds: bestGuidePx == null ? null : bestGuidePx / effectivePixelsPerSecond,
-    };
+    return computeSnappedStart({
+      rawStartSeconds,
+      displayDuration,
+      pixelsPerSecond: effectivePixelsPerSecond,
+      gridSeconds,
+      neighbours,
+      thresholdPx: SNAP_THRESHOLD_PX,
+    });
   }
 
   function handleClipPointerUp() {
@@ -1902,14 +2034,19 @@ export default function ArrangerPage() {
     setSelectedClipId(null);
     setClipboardClip(null);
     setPendingDrops([]);
-    setProjectTitle(manifest.project.title || "Proyecto importado");
-    setProjectTempoBpm(manifest.project.tempoBpm > 0 ? manifest.project.tempoBpm : 120);
-    setTimeSignatureNumerator(manifest.project.timeSignatureNumerator ?? 4);
-    setTimeSignatureDenominator(manifest.project.timeSignatureDenominator ?? 4);
-    setImportedMasterFx(
-      manifest.project.masterFx ? parseMasterFx(manifest.project.masterFx) : DEFAULT_MASTER_FX,
-    );
-    setTracks([]);
+    // Un arreglo NUEVO entero: el historial arranca de cero acá.
+    // Deshacer más atrás devolvería al proyecto anterior, que ya no
+    // está abierto.
+    loadArrangement({
+      projectTitle: manifest.project.title || "Proyecto importado",
+      projectTempoBpm: manifest.project.tempoBpm > 0 ? manifest.project.tempoBpm : 120,
+      timeSignatureNumerator: manifest.project.timeSignatureNumerator ?? 4,
+      timeSignatureDenominator: manifest.project.timeSignatureDenominator ?? 4,
+      masterFx: manifest.project.masterFx
+        ? parseMasterFx(manifest.project.masterFx)
+        : DEFAULT_MASTER_FX,
+      tracks: [],
+    });
 
     // Fase 1: una pista por vez, con una pausa de un tick entre cada
     // una — así se REVELAN gradualmente en la grilla en vez de aparecer
@@ -1937,7 +2074,10 @@ export default function ArrangerPage() {
         // los reproduce, solo evita que un round-trip los borre.
         fx: parseTrackFx(track.fx),
       };
-      setTracks((prev) => [...prev, newTrack]);
+      // SILENT: las pistas se revelan de a una para que se vean
+      // aparecer, pero eso es UNA importación, no N acciones del
+      // usuario — si no, deshacer caminaría hacia atrás pista por pista.
+      setTracks((prev) => [...prev, newTrack], SILENT);
       setImportStage(`Agregando pistas... (${ti + 1}/${manifest.tracks.length})`);
       setImportProgress(0.7 + ((ti + 1) / Math.max(1, manifest.tracks.length)) * 0.3);
       // Cede el hilo un tick entre pista y pista para que React
@@ -1953,6 +2093,8 @@ export default function ArrangerPage() {
     // pase a false; el usuario ya puede tocar Play mientras esto termina.
     for (const clipId of allNewClipIds) {
       setTimeout(() => {
+        // SILENT: dibujar la forma de onda no es una edición. Es lo
+        // mismo que el usuario ya tenía, solo que ahora se ve.
         setTracks((prev) => {
           for (const t of prev) {
             const clip = t.clips.find((c) => c.id === clipId);
@@ -1966,7 +2108,7 @@ export default function ArrangerPage() {
             }
           }
           return prev;
-        });
+        }, SILENT);
       }, 0);
     }
   }
@@ -2113,15 +2255,17 @@ export default function ArrangerPage() {
     const live = liveDraftRef.current;
     if (!live || showNewProjectSetup) return;
     queueMicrotask(() => {
-      setProjectTitle(live.projectTitle);
-      setProjectTempoBpm(live.projectTempoBpm);
-      setTimeSignatureNumerator(live.timeSignatureNumerator);
-      setTimeSignatureDenominator(live.timeSignatureDenominator);
-      setImportedMasterFx(live.masterFx);
+      loadArrangement({
+        projectTitle: live.projectTitle,
+        projectTempoBpm: live.projectTempoBpm,
+        projectKey: live.projectKey ?? "",
+        timeSignatureNumerator: live.timeSignatureNumerator,
+        timeSignatureDenominator: live.timeSignatureDenominator,
+        masterFx: live.masterFx,
+        tracks: live.tracks,
+      });
       setCloudProjectId(live.cloudProjectId);
       setCloudBaseVersion(live.cloudBaseVersion);
-      setProjectKey(live.projectKey ?? "");
-      setTracks(live.tracks);
       setIsDirty(live.isDirty);
       if (!live.isDirty) {
         cloudSavedSignatureRef.current = arrangementSignature(live);
@@ -2224,18 +2368,20 @@ export default function ArrangerPage() {
       restored.push({ ...track, clips });
     }
 
-    setProjectTitle(stored.projectTitle);
-    setProjectTempoBpm(stored.projectTempoBpm);
-    setTimeSignatureNumerator(stored.timeSignatureNumerator);
-    setTimeSignatureDenominator(stored.timeSignatureDenominator);
-    setImportedMasterFx(stored.masterFx);
+    loadArrangement({
+      projectTitle: stored.projectTitle,
+      projectTempoBpm: stored.projectTempoBpm,
+      // ?? "" porque puede venir de un borrador anterior a este campo.
+      projectKey: stored.projectKey ?? "",
+      timeSignatureNumerator: stored.timeSignatureNumerator,
+      timeSignatureDenominator: stored.timeSignatureDenominator,
+      masterFx: stored.masterFx,
+      tracks: restored,
+    });
     setCloudProjectId(stored.cloudProjectId);
-    // ?? "" porque puede venir de un borrador anterior a este campo.
-    setProjectKey(stored.projectKey ?? "");
     // Puede venir de un borrador anterior a este campo: null significa
     // "no sé qué versión es", y guardar va a preguntar antes de pisar.
     setCloudBaseVersion(stored.cloudBaseVersion ?? null);
-    setTracks(restored);
     setIsDirty(true);
     setRecoverableDraft(null);
     setIsRestoringDraft(false);
@@ -2352,7 +2498,9 @@ export default function ArrangerPage() {
             type="button"
             onClick={() => {
               discardDraft();
-              setTracks([]);
+              // Empezar de cero también vacía el historial: no hay
+              // ningún arreglo anterior al que volver.
+              loadArrangement({ tracks: [] });
               setShowNewProjectSetup(false);
             }}
             className="mt-2 rounded-full bg-neon-cyan px-6 py-2.5 font-display text-sm font-semibold text-onyx-black transition-all duration-200 hover:shadow-[0_0_20px_rgba(102,252,241,0.5)] active:scale-95"
@@ -2470,6 +2618,27 @@ export default function ArrangerPage() {
           </select>
         </div>
 
+        {/* Imán a la grilla. Convive con el imán clip-contra-clip, que
+            no se apaga nunca: son dos cosas distintas (pegarse a la
+            grilla del tema, o pegarse al clip de al lado). Alt mientras
+            arrastrás los suelta a los dos. */}
+        <div className="flex items-center gap-1.5 text-xs text-white/50">
+          <span title="A qué se pega un clip al arrastrarlo. Mantené Alt para soltarlo momentáneamente.">
+            Imán
+          </span>
+          <select
+            value={snapDivision}
+            onChange={(e) => setSnapDivision(e.target.value as SnapDivision)}
+            className="rounded-lg border border-white/15 bg-onyx-black px-2 py-1.5 text-xs text-white outline-none focus:border-neon-cyan"
+          >
+            {SNAP_DIVISIONS.map((division) => (
+              <option key={division} value={division}>
+                {SNAP_LABELS[division]}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Paso 2 — alternar la regla de tiempo entre Segundos y Compases. */}
         <div className="flex items-center overflow-hidden rounded-full border border-white/15 text-[10px]">
           <button
@@ -2489,6 +2658,31 @@ export default function ArrangerPage() {
             }`}
           >
             Compases
+          </button>
+        </div>
+
+        {/* Deshacer/rehacer. El tooltip dice QUÉ se va a deshacer: un
+            botón que solo dice "deshacer" obliga a probar para saber. */}
+        <div className="flex items-center overflow-hidden rounded-full border border-white/15">
+          <button
+            type="button"
+            onClick={arrangement.undo}
+            disabled={!arrangement.canUndo}
+            title={arrangement.undoLabel ? `Deshacer: ${arrangement.undoLabel} (Ctrl+Z)` : "Nada que deshacer"}
+            aria-label="Deshacer"
+            className="px-2.5 py-1 text-sm text-white/60 transition-colors duration-200 hover:text-white disabled:opacity-25"
+          >
+            ↶
+          </button>
+          <button
+            type="button"
+            onClick={arrangement.redo}
+            disabled={!arrangement.canRedo}
+            title={arrangement.redoLabel ? `Rehacer: ${arrangement.redoLabel} (Ctrl+Shift+Z)` : "Nada que rehacer"}
+            aria-label="Rehacer"
+            className="px-2.5 py-1 text-sm text-white/60 transition-colors duration-200 hover:text-white disabled:opacity-25"
+          >
+            ↷
           </button>
         </div>
 
