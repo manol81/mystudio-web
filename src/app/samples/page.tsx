@@ -23,13 +23,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { collection, getDocs, onSnapshot, orderBy, query, type Timestamp } from "firebase/firestore";
-import { ref, getDownloadURL } from "firebase/storage";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { db, storage } from "@/lib/firebase";
+import { db } from "@/lib/firebase";
 import { LoginModal } from "@/components/LoginModal";
-import { SamplePlayer } from "@/components/SamplePlayer";
+import { SamplePreviewControl } from "@/components/SamplePreviewControl";
 import {
   SAMPLE_TYPES,
   SAMPLE_INSTRUMENTS,
@@ -37,6 +37,12 @@ import {
   SAMPLE_KEYS,
 } from "@/lib/sampleTaxonomy";
 import { queueSamplesForArranger } from "@/lib/pendingArrangerSamples";
+import {
+  EMPTY_SAMPLE_FILTERS,
+  applySampleFilters,
+  hasActiveFilters as filtersAreActive,
+  type SampleFilterState,
+} from "@/lib/sampleFilters";
 import type { ArrangerSample } from "@/components/SampleBrowserPanel";
 
 interface Sample {
@@ -51,8 +57,6 @@ interface Sample {
   sizeBytes: number;
   createdAtMillis: number;
 }
-
-type SortOption = "recent" | "bpmAsc" | "bpmDesc";
 
 function formatSize(bytes: number): string {
   if (!bytes) return "0 KB";
@@ -110,31 +114,24 @@ function SampleCard({
   sample,
   isActive,
   onRequestPlay,
+  onStopped,
   isSelected,
   onToggleSelect,
+  referenceBpm,
+  referenceKey,
+  matchReference,
 }: {
   sample: Sample;
   isActive: boolean;
   onRequestPlay: () => void;
+  onStopped: () => void;
   isSelected: boolean;
   onToggleSelect: () => void;
+  /** Tempo contra el que se compara y al que se adapta la pre-escucha. */
+  referenceBpm: number | null;
+  referenceKey: string | null;
+  matchReference: boolean;
 }) {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getDownloadURL(ref(storage, sample.audioPath))
-      .then((resolved) => {
-        if (!cancelled) setUrl(resolved);
-      })
-      .catch(() => {
-        if (!cancelled) setUrl(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sample.audioPath]);
-
   return (
     <div
       className={`relative flex flex-col gap-3 rounded-2xl border p-5 text-left transition-colors duration-200 ${
@@ -175,11 +172,23 @@ function SampleCard({
         </p>
       </div>
 
-      {url ? (
-        <SamplePlayer src={url} isActive={isActive} onRequestPlay={onRequestPlay} />
-      ) : (
-        <div className="h-8 animate-pulse rounded-full bg-white/5" />
-      )}
+      <SamplePreviewControl
+        sample={{
+          sampleId: sample.id,
+          name: sample.name,
+          audioPath: sample.audioPath,
+          sampleType: sample.type,
+          originalBpm: sample.bpm,
+          sampleKey: sample.key,
+        }}
+        projectBpm={referenceBpm}
+        projectKey={referenceKey}
+        matchProject={matchReference}
+        isPlaying={isActive}
+        onRequestPlay={onRequestPlay}
+        onStopped={onStopped}
+        waveformHeight={34}
+      />
     </div>
   );
 }
@@ -200,14 +209,25 @@ export default function SamplesPage() {
   const [projectOptions, setProjectOptions] = useState<{ cloudId: string; title: string }[] | null>(null);
   const [loadingProjectOptions, setLoadingProjectOptions] = useState(false);
 
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [selectedInstrument, setSelectedInstrument] = useState<string | null>(null);
-  const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
-  const [selectedKey, setSelectedKey] = useState("");
-  const [bpmMin, setBpmMin] = useState("");
-  const [bpmMax, setBpmMax] = useState("");
-  const [sortBy, setSortBy] = useState<SortOption>("recent");
+  const [filters, setFilters] = useState<SampleFilterState>(EMPTY_SAMPLE_FILTERS);
+
+  function patchFilters(next: Partial<SampleFilterState>) {
+    setFilters((prev) => ({ ...prev, ...next }));
+  }
+
+  // El catálogo no vive adentro de ningún proyecto, así que la
+  // referencia contra la que comparar la pone el usuario acá. Es lo que
+  // convierte una lista de archivos en algo que contesta "¿esto me
+  // sirve para lo que estoy haciendo?" — y la pre-escucha suena
+  // directamente adaptada a eso, igual que en el Arranger.
+  const [referenceBpmText, setReferenceBpmText] = useState("");
+  const [referenceKey, setReferenceKey] = useState("");
+  const [matchReference, setMatchReference] = useState(true);
+
+  const referenceBpm = (() => {
+    const value = Number(referenceBpmText.trim());
+    return referenceBpmText.trim() && Number.isFinite(value) && value > 0 ? value : null;
+  })();
 
   // Catálogo PÚBLICO (2026-09): las reglas de Firestore ya permiten
   // leer /samples sin sesión, igual que en la app — es una vidriera,
@@ -244,23 +264,12 @@ export default function SamplesPage() {
     return unsubscribe;
   }, []);
 
-  const hasActiveFilters =
-    searchQuery.trim() !== "" ||
-    selectedType !== null ||
-    selectedInstrument !== null ||
-    selectedGenre !== null ||
-    selectedKey !== "" ||
-    bpmMin !== "" ||
-    bpmMax !== "";
+  const hasActiveFilters = filtersAreActive(filters);
 
   function clearFilters() {
-    setSearchQuery("");
-    setSelectedType(null);
-    setSelectedInstrument(null);
-    setSelectedGenre(null);
-    setSelectedKey("");
-    setBpmMin("");
-    setBpmMax("");
+    // Conserva el orden elegido: limpiar QUÉ se ve no es lo mismo que
+    // volver a ordenar la lista.
+    setFilters({ ...EMPTY_SAMPLE_FILTERS, sort: filters.sort });
   }
 
   function toggleSelected(id: string) {
@@ -335,49 +344,10 @@ export default function SamplesPage() {
     }
   }
 
-  const filteredSamples = useMemo(() => {
-    let result = samples;
-
-    const q = searchQuery.trim().toLowerCase();
-    if (q) {
-      result = result.filter((s) => s.name.toLowerCase().includes(q));
-    }
-    if (selectedType) result = result.filter((s) => s.type === selectedType);
-    if (selectedInstrument) {
-      result = result.filter((s) => s.instrument === selectedInstrument);
-    }
-    if (selectedGenre) result = result.filter((s) => s.genre === selectedGenre);
-    if (selectedKey) result = result.filter((s) => s.key === selectedKey);
-
-    const min = bpmMin.trim() ? Number(bpmMin) : null;
-    if (min !== null && !Number.isNaN(min)) {
-      result = result.filter((s) => s.bpm >= min);
-    }
-    const max = bpmMax.trim() ? Number(bpmMax) : null;
-    if (max !== null && !Number.isNaN(max)) {
-      result = result.filter((s) => s.bpm <= max);
-    }
-
-    const sorted = [...result];
-    if (sortBy === "bpmAsc") {
-      sorted.sort((a, b) => a.bpm - b.bpm);
-    } else if (sortBy === "bpmDesc") {
-      sorted.sort((a, b) => b.bpm - a.bpm);
-    } else {
-      sorted.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
-    }
-    return sorted;
-  }, [
-    samples,
-    searchQuery,
-    selectedType,
-    selectedInstrument,
-    selectedGenre,
-    selectedKey,
-    bpmMin,
-    bpmMax,
-    sortBy,
-  ]);
+  const filteredSamples = useMemo(
+    () => applySampleFilters(samples, filters, { bpm: referenceBpm, key: referenceKey || null }),
+    [samples, filters, referenceBpm, referenceKey],
+  );
 
   return (
     <div className="flex min-h-full flex-col items-center gap-8 px-6 py-16 text-center">
@@ -409,40 +379,109 @@ export default function SamplesPage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <input
                 type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar por nombre..."
+                value={filters.search}
+                onChange={(e) => patchFilters({ search: e.target.value })}
+                placeholder="Buscar por nombre, instrumento o género..."
                 className="flex-1 rounded-lg border border-white/15 bg-onyx-black px-4 py-2.5 text-sm text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan"
               />
               <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as SortOption)}
+                value={filters.sort}
+                onChange={(e) => patchFilters({ sort: e.target.value as SampleFilterState["sort"] })}
                 className={selectClasses}
               >
                 <option value="recent">Más recientes</option>
+                <option value="affinity">Afinidad con mi tema</option>
+                <option value="name">Nombre</option>
                 <option value="bpmAsc">BPM ascendente</option>
                 <option value="bpmDesc">BPM descendente</option>
               </select>
+            </div>
+
+            {/* Contra qué comparar. Sin esto, "afinidad" y
+                "compatibles" no tienen contra qué medirse, y la
+                pre-escucha solo puede sonar como el original. */}
+            <div className="flex flex-wrap items-end gap-4 rounded-xl border border-white/10 bg-onyx-black/40 p-3">
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
+                  Tempo de mi tema
+                </label>
+                <input
+                  type="number"
+                  min={20}
+                  max={300}
+                  value={referenceBpmText}
+                  onChange={(e) => setReferenceBpmText(e.target.value)}
+                  placeholder="120"
+                  className="w-24 rounded-lg border border-white/15 bg-onyx-black px-3 py-2 text-xs text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
+                  Tonalidad de mi tema
+                </label>
+                <select
+                  value={referenceKey}
+                  onChange={(e) => setReferenceKey(e.target.value)}
+                  className={selectClasses}
+                >
+                  <option value="">—</option>
+                  {SAMPLE_KEYS.filter((k) => k !== "N/A").map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={() => patchFilters({ compatibleOnly: !filters.compatibleOnly })}
+                disabled={!referenceKey}
+                title={
+                  referenceKey
+                    ? `Solo lo que entra en ${referenceKey}: la relativa, las quintas vecinas y todo lo que no tiene tonalidad.`
+                    : "Elegí la tonalidad de tu tema para poder filtrar por compatibilidad."
+                }
+                className={`self-end rounded-full border px-4 py-2 text-xs transition-colors duration-200 disabled:opacity-30 ${
+                  filters.compatibleOnly
+                    ? "border-neon-cyan bg-neon-cyan/15 text-neon-cyan"
+                    : "border-white/15 text-white/60 hover:border-white/40"
+                }`}
+              >
+                Solo compatibles
+              </button>
+              <button
+                type="button"
+                onClick={() => setMatchReference(!matchReference)}
+                disabled={referenceBpm === null && !referenceKey}
+                title="Escuchar los samples ya adaptados al tempo y la tonalidad de tu tema, en vez de como se subieron."
+                className={`self-end rounded-full border px-4 py-2 text-xs transition-colors duration-200 disabled:opacity-30 ${
+                  matchReference
+                    ? "border-neon-cyan bg-neon-cyan/15 text-neon-cyan"
+                    : "border-white/15 text-white/60 hover:border-white/40"
+                }`}
+              >
+                {matchReference ? "Escuchar adaptado" : "Escuchar original"}
+              </button>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <FilterChipGroup
                 label="Tipo"
                 options={SAMPLE_TYPES}
-                selected={selectedType}
-                onSelect={setSelectedType}
+                selected={filters.type}
+                onSelect={(value) => patchFilters({ type: value })}
               />
               <FilterChipGroup
                 label="Instrumento"
                 options={SAMPLE_INSTRUMENTS}
-                selected={selectedInstrument}
-                onSelect={setSelectedInstrument}
+                selected={filters.instrument}
+                onSelect={(value) => patchFilters({ instrument: value })}
               />
               <FilterChipGroup
                 label="Género"
                 options={SAMPLE_GENRES}
-                selected={selectedGenre}
-                onSelect={setSelectedGenre}
+                selected={filters.genre}
+                onSelect={(value) => patchFilters({ genre: value })}
               />
             </div>
 
@@ -452,8 +491,8 @@ export default function SamplesPage() {
                   Tonalidad
                 </label>
                 <select
-                  value={selectedKey}
-                  onChange={(e) => setSelectedKey(e.target.value)}
+                  value={filters.key}
+                  onChange={(e) => patchFilters({ key: e.target.value })}
                   className={selectClasses}
                 >
                   <option value="">Todas</option>
@@ -473,8 +512,8 @@ export default function SamplesPage() {
                   <input
                     type="number"
                     min={1}
-                    value={bpmMin}
-                    onChange={(e) => setBpmMin(e.target.value)}
+                    value={filters.bpmMin}
+                    onChange={(e) => patchFilters({ bpmMin: e.target.value })}
                     placeholder="Min"
                     className="w-20 rounded-lg border border-white/15 bg-onyx-black px-3 py-2 text-xs text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan"
                   />
@@ -482,8 +521,8 @@ export default function SamplesPage() {
                   <input
                     type="number"
                     min={1}
-                    value={bpmMax}
-                    onChange={(e) => setBpmMax(e.target.value)}
+                    value={filters.bpmMax}
+                    onChange={(e) => patchFilters({ bpmMax: e.target.value })}
                     placeholder="Max"
                     className="w-20 rounded-lg border border-white/15 bg-onyx-black px-3 py-2 text-xs text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan"
                   />
@@ -515,6 +554,12 @@ export default function SamplesPage() {
                   sample={sample}
                   isActive={nowPlayingId === sample.id}
                   onRequestPlay={() => setNowPlayingId(sample.id)}
+                  onStopped={() =>
+                    setNowPlayingId((cur) => (cur === sample.id ? null : cur))
+                  }
+                  referenceBpm={referenceBpm}
+                  referenceKey={referenceKey || null}
+                  matchReference={matchReference}
                   isSelected={selectedIds.has(sample.id)}
                   onToggleSelect={() => toggleSelected(sample.id)}
                 />

@@ -86,6 +86,7 @@ function draft(overrides: Partial<ArrangerDraft> = {}): ArrangerDraft {
     timeSignatureDenominator: 4,
     tracks: [track()],
     masterFx: DEFAULT_MASTER_FX,
+    projectKey: "",
     cloudProjectId: null,
     cloudBaseVersion: null,
     isDirty: true,

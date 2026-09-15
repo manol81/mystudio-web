@@ -43,6 +43,12 @@ import type { ArrangerTrack } from "@/lib/arrangerTypes";
 export interface ArrangerDraft {
   projectTitle: string;
   projectTempoBpm: number;
+  /// Tonalidad del proyecto ("" = sin declarar). Solo la usa la web:
+  /// filtrar el Banco por compatibilidad y transponer los samples al
+  /// soltarlos. NO va en el manifiesto del .mystudio — se guarda en el
+  /// documento de Firestore, que la app lee campo por campo e ignora
+  /// lo que no conoce.
+  projectKey: string;
   timeSignatureNumerator: number;
   timeSignatureDenominator: number;
   tracks: ArrangerTrack[];
@@ -131,6 +137,9 @@ export function arrangementSignature(draft: ArrangerDraft): string {
   return JSON.stringify({
     projectTitle: draft.projectTitle,
     projectTempoBpm: draft.projectTempoBpm,
+    // Sí entra en la firma: se persiste en la nube, así que cambiarla
+    // deja al proyecto con algo sin guardar.
+    projectKey: draft.projectKey,
     timeSignatureNumerator: draft.timeSignatureNumerator,
     timeSignatureDenominator: draft.timeSignatureDenominator,
     cloudProjectId: draft.cloudProjectId,

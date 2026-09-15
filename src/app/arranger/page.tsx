@@ -54,6 +54,9 @@ import { scheduleGainEnvelope } from "@/lib/clipEnvelope";
 import { getOrProcessBuffer } from "@/lib/audioDsp";
 import { getCachedBuffer, loadAndCacheBuffer, setCachedBuffer } from "@/lib/sampleBufferCache";
 import type { ArrangerClip, ArrangerTrack } from "@/lib/arrangerTypes";
+import { nextBarContextTime, secondsPerBar, secondsPerBeat } from "@/lib/barClock";
+import { transposeSemitonesFor } from "@/lib/sampleAffinity";
+import { computePeaks } from "@/lib/samplePeaks";
 import {
   arrangementSignature,
   clearArrangerDraft,
@@ -70,6 +73,7 @@ import {
   SampleBrowserPanel,
   type ArrangerSample,
 } from "@/components/SampleBrowserPanel";
+import { SAMPLE_KEYS } from "@/lib/sampleTaxonomy";
 
 const SAMPLE_DRAG_MIME = "application/x-mystudio-sample";
 
@@ -172,25 +176,8 @@ interface ImportManifest {
   tracks: ImportManifestTrack[];
 }
 
-function computePeaks(buffer: AudioBuffer, numBuckets: number): Float32Array {
-  const data = buffer.getChannelData(0);
-  const samplesPerBucket = Math.max(1, Math.floor(data.length / numBuckets));
-  const peaks = new Float32Array(numBuckets * 2);
-  for (let i = 0; i < numBuckets; i++) {
-    const start = i * samplesPerBucket;
-    const end = Math.min(data.length, start + samplesPerBucket);
-    let min = 0;
-    let max = 0;
-    for (let j = start; j < end; j++) {
-      const v = data[j];
-      if (v < min) min = v;
-      if (v > max) max = v;
-    }
-    peaks[i * 2] = min;
-    peaks[i * 2 + 1] = max;
-  }
-  return peaks;
-}
+// computePeaks vive en samplePeaks.ts: lo comparten los clips de la
+// línea de tiempo y las formas de onda de las tarjetas del Banco.
 
 /** Recorta el array de picos (calculado sobre el buffer COMPLETO) a la ventana [offset, offset+duration) para dibujar solo esa porción. */
 function slicePeaksForWindow(
@@ -298,6 +285,16 @@ export default function ArrangerPage() {
 
   const [projectTitle, setProjectTitle] = useState("Nuevo Arreglo");
   const [projectTempoBpm, setProjectTempoBpm] = useState(120);
+  // Tonalidad del proyecto ("" = sin declarar). Habilita dos cosas del
+  // Banco de Sonidos: filtrar por compatibilidad armónica y transponer
+  // los samples al soltarlos. Vive SOLO en la web (borrador + documento
+  // de Firestore), nunca en el manifiesto del .mystudio — así el lado
+  // Flutter no necesita enterarse de nada.
+  const [projectKey, setProjectKey] = useState("");
+  // Pre-escuchar (y soltar) los samples ya adaptados al tempo y la
+  // tonalidad del proyecto. Encendido por defecto: es lo que hace que
+  // lo que se escucha en el panel sea lo que después suena en la pista.
+  const [matchProject, setMatchProject] = useState(true);
   // Efectos del máster del proyecto importado — el Arranger no los toca,
   // los devuelve al exportar para no perderlos (igual que ArrangerTrack.fx).
   const [importedMasterFx, setImportedMasterFx] = useState<MasterFx>(DEFAULT_MASTER_FX);
@@ -573,6 +570,15 @@ export default function ArrangerPage() {
   //     ("1.1", "2.1"...); las de cada beat intermedio son solo una
   //     rayita, y se ocultan si quedarían demasiado juntas al alejar
   //     el zoom (ver MIN_BEAT_TICK_PX).
+  // Un compás, en segundos. Lo necesitan la regla de tiempo y la
+  // pre-escucha sincronizada — y lo va a necesitar el imán a la grilla
+  // musical. La cuenta en sí vive en barClock.ts para que la regla y
+  // todo lo que se enganche a ella no puedan divergir.
+  const barLengthSeconds = useMemo(
+    () => secondsPerBar(projectTempoBpm, timeSignatureNumerator, timeSignatureDenominator),
+    [projectTempoBpm, timeSignatureNumerator, timeSignatureDenominator],
+  );
+
   const rulerTicks = useMemo(() => {
     if (rulerMode === "seconds") {
       const count = Math.floor(totalDurationSeconds / 5) + 1;
@@ -583,18 +589,16 @@ export default function ArrangerPage() {
       }));
     }
 
-    const secondsPerQuarterNote = 60 / Math.max(1, projectTempoBpm);
-    const secondsPerDenomNote = secondsPerQuarterNote * (4 / Math.max(1, timeSignatureDenominator));
-    const secondsPerBar = secondsPerDenomNote * Math.max(1, timeSignatureNumerator);
-    if (!(secondsPerBar > 0)) return [];
+    const secondsPerDenomNote = secondsPerBeat(projectTempoBpm, timeSignatureDenominator);
+    if (!(barLengthSeconds > 0)) return [];
 
     const MIN_BEAT_TICK_PX = 4;
     const showBeatTicks = secondsPerDenomNote * effectivePixelsPerSecond >= MIN_BEAT_TICK_PX;
-    const totalBars = Math.ceil(totalDurationSeconds / secondsPerBar) + 1;
+    const totalBars = Math.ceil(totalDurationSeconds / barLengthSeconds) + 1;
 
     const ticks: { seconds: number; label: string | null; major: boolean }[] = [];
     for (let bar = 0; bar < totalBars; bar++) {
-      const barStartSeconds = bar * secondsPerBar;
+      const barStartSeconds = bar * barLengthSeconds;
       ticks.push({ seconds: barStartSeconds, label: `${bar + 1}.1`, major: true });
       if (showBeatTicks) {
         for (let beat = 1; beat < timeSignatureNumerator; beat++) {
@@ -614,6 +618,7 @@ export default function ArrangerPage() {
     timeSignatureNumerator,
     timeSignatureDenominator,
     effectivePixelsPerSecond,
+    barLengthSeconds,
   ]);
 
   // ─── Problema 1: Gain/Pan/Mute/Solo por pista, en vivo ───────────────
@@ -844,6 +849,27 @@ export default function ArrangerPage() {
     }
   }
 
+  /**
+   * Dónde cae el próximo comienzo de compás de lo que está sonando, en
+   * el reloj del AudioContext — para que la pre-escucha del Banco entre
+   * EN TIEMPO sobre el arreglo en vez de pisar el pulso.
+   *
+   * Devuelve null con la reproducción parada, y ahí la pre-escucha
+   * arranca ya: esperar un compás entero sin nada sonando se sentiría
+   * como un botón que no responde.
+   */
+  function syncContextTime(): number | null {
+    const ctx = audioContextRef.current;
+    if (!ctx) return null;
+    return nextBarContextTime({
+      isPlaying,
+      playStartContextTime: playStartContextTimeRef.current,
+      playheadAtStart: playheadAtStartRef.current,
+      contextTime: ctx.currentTime,
+      secondsPerBar: barLengthSeconds,
+    });
+  }
+
   // ─── Pistas ──────────────────────────────────────────────────────────
 
   function addTrack() {
@@ -895,7 +921,11 @@ export default function ArrangerPage() {
       gain: 1,
       fadeInSeconds: 0,
       fadeOutSeconds: 0,
-      pitchShift: 0,
+      // Si el panel está adaptando al proyecto, el clip nace con la
+      // MISMA transposición que se pre-escuchó. Sin esto el sample
+      // sonaba en tono mientras lo escuchabas y desafinado apenas lo
+      // soltabas, que es peor que no transponer nada.
+      pitchShift: matchProject ? transposeSemitonesFor(projectKey || null, sample.key) : 0,
       buffer,
       peaks: computePeaks(buffer, PEAK_BUCKETS),
     };
@@ -1721,6 +1751,12 @@ export default function ArrangerPage() {
           // cliente no sabe en qué versión quedó, y sin saberlo no puede
           // detectar el próximo cambio ajeno.
           cloudVersion: remoteVersion + 1,
+          // Campo exclusivo de la web. La app parsea el documento campo
+          // por campo (CloudProjectMetadata.fromFirestore) e ignora lo
+          // que no conoce, así que agregarlo acá no la afecta — y
+          // guardarlo en el documento y no en el manifiesto del
+          // .mystudio es lo que evita tocar el formato que lee Flutter.
+          projectKey,
           storagePath,
           sizeBytes: zipBytes.length,
           checksum,
@@ -1996,6 +2032,7 @@ export default function ArrangerPage() {
           if (!snap.exists()) throw new Error("No se encontró el proyecto.");
           const storagePath = snap.data().storagePath as string | undefined;
           const openedVersion = (snap.data().cloudVersion as number | undefined) ?? null;
+          const openedKey = (snap.data().projectKey as string | undefined) ?? "";
           if (!storagePath) throw new Error("El proyecto no tiene un archivo asociado.");
           const downloadUrl = await getDownloadURL(ref(storage, storagePath));
           const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`);
@@ -2006,6 +2043,7 @@ export default function ArrangerPage() {
           // crear uno nuevo al lado, y sabemos de qué versión partimos.
           setCloudProjectId(openId);
           setCloudBaseVersion(openedVersion);
+          setProjectKey(openedKey);
         } catch (err) {
           setImportError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -2059,6 +2097,7 @@ export default function ArrangerPage() {
       timeSignatureDenominator,
       tracks,
       masterFx: importedMasterFx,
+      projectKey,
       cloudProjectId,
       cloudBaseVersion,
       isDirty,
@@ -2081,6 +2120,7 @@ export default function ArrangerPage() {
       setImportedMasterFx(live.masterFx);
       setCloudProjectId(live.cloudProjectId);
       setCloudBaseVersion(live.cloudBaseVersion);
+      setProjectKey(live.projectKey ?? "");
       setTracks(live.tracks);
       setIsDirty(live.isDirty);
       if (!live.isDirty) {
@@ -2134,6 +2174,7 @@ export default function ArrangerPage() {
     importedMasterFx,
     cloudProjectId,
     cloudBaseVersion,
+    projectKey,
   ]);
 
   // 4. Aviso antes de CERRAR o RECARGAR la pestaña, que es lo único que
@@ -2189,6 +2230,8 @@ export default function ArrangerPage() {
     setTimeSignatureDenominator(stored.timeSignatureDenominator);
     setImportedMasterFx(stored.masterFx);
     setCloudProjectId(stored.cloudProjectId);
+    // ?? "" porque puede venir de un borrador anterior a este campo.
+    setProjectKey(stored.projectKey ?? "");
     // Puede venir de un borrador anterior a este campo: null significa
     // "no sé qué versión es", y guardar va a preguntar antes de pisar.
     setCloudBaseVersion(stored.cloudBaseVersion ?? null);
@@ -2217,6 +2260,7 @@ export default function ArrangerPage() {
     setDraftNotice(null);
     setCloudProjectId(null);
     setCloudBaseVersion(null);
+    setProjectKey("");
     setIsDirty(false);
   }
 
@@ -2382,6 +2426,28 @@ export default function ArrangerPage() {
             onChange={(e) => setProjectTempoBpm(Number(e.target.value) || 120)}
             className="w-16 rounded-lg border border-white/15 bg-onyx-black px-2 py-1.5 text-xs text-white outline-none focus:border-neon-cyan"
           />
+        </div>
+
+        {/* Tonalidad del proyecto — opcional, y por eso arranca en
+            "—": declararla habilita el filtro de compatibilidad del
+            Banco de Sonidos y la transposición automática al soltar,
+            pero un arreglo de percusión no tiene por qué inventarse
+            una. */}
+        <div className="flex items-center gap-1.5 text-xs text-white/50">
+          <span>Tono</span>
+          <select
+            value={projectKey}
+            onChange={(e) => setProjectKey(e.target.value)}
+            title="Tonalidad del proyecto: filtra el Banco de Sonidos por compatibilidad y transpone los samples al soltarlos"
+            className="rounded-lg border border-white/15 bg-onyx-black px-2 py-1.5 text-xs text-white outline-none focus:border-neon-cyan"
+          >
+            <option value="">—</option>
+            {SAMPLE_KEYS.filter((k) => k !== "N/A").map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Paso 1 — Tipo de compás del proyecto. */}
@@ -2724,7 +2790,15 @@ export default function ArrangerPage() {
       {/* ─── Cuerpo: sidebar + timeline ─── */}
       <div className="flex flex-1 overflow-hidden">
         <div className="w-72 shrink-0 border-r border-white/10 bg-graphite p-4">
-          <SampleBrowserPanel onAddSample={handleQuickAddSample} />
+          <SampleBrowserPanel
+            onAddSample={handleQuickAddSample}
+            projectTempoBpm={projectTempoBpm}
+            projectKey={projectKey}
+            matchProject={matchProject}
+            onMatchProjectChange={setMatchProject}
+            getAudioContext={() => audioContextRef.current}
+            getSyncContextTime={syncContextTime}
+          />
         </div>
 
         <div className="flex flex-1 flex-col overflow-hidden">
