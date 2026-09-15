@@ -87,6 +87,7 @@ function draft(overrides: Partial<ArrangerDraft> = {}): ArrangerDraft {
     tracks: [track()],
     masterFx: DEFAULT_MASTER_FX,
     cloudProjectId: null,
+    cloudBaseVersion: null,
     isDirty: true,
     savedAt: 1_700_000_000_000,
     ...overrides,
@@ -126,6 +127,15 @@ describe("firma de contenido", () => {
     expect(after).not.toBe(before);
   });
 
+  it("NO cambia porque la nube avance de versión", () => {
+    // cloudBaseVersion describe qué sabemos de la nube, no lo que el
+    // usuario escribió. Si contara, guardar en la nube marcaría el
+    // arreglo como modificado justo después de dejarlo a salvo.
+    const a = arrangementSignature(draft({ cloudBaseVersion: 1 }));
+    const b = arrangementSignature(draft({ cloudBaseVersion: 9 }));
+    expect(a).toBe(b);
+  });
+
   it("cambia si se renombra el proyecto o se mueve el tempo", () => {
     const base = arrangementSignature(draft());
     expect(arrangementSignature(draft({ projectTitle: "Otro" }))).not.toBe(base);
@@ -163,11 +173,17 @@ describe("capa de localStorage", () => {
     expect(stored!.tracks[0].clips).toHaveLength(0);
   });
 
-  it("recuerda qué proyecto de la nube se estaba editando", () => {
-    // Sin esto, guardar después de recargar crea un duplicado en vez de
-    // actualizar el proyecto abierto.
-    rememberArrangerDraft("u1", draft({ cloudProjectId: "proj-abc" }));
-    expect(readStoredArrangerDraft("u1")!.cloudProjectId).toBe("proj-abc");
+  it("recuerda qué proyecto de la nube se estaba editando, y en qué versión", () => {
+    // El id evita crear un duplicado al guardar; la versión es lo que
+    // permite darse cuenta de que la app cambió el proyecto mientras
+    // tanto, en vez de pisarlo sin avisar.
+    rememberArrangerDraft(
+      "u1",
+      draft({ cloudProjectId: "proj-abc", cloudBaseVersion: 7 }),
+    );
+    const stored = readStoredArrangerDraft("u1")!;
+    expect(stored.cloudProjectId).toBe("proj-abc");
+    expect(stored.cloudBaseVersion).toBe(7);
   });
 
   it("no ofrece un borrador sin pistas", () => {

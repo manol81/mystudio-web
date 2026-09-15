@@ -51,6 +51,14 @@ export interface ArrangerDraft {
   /// (`?open=<cloudId>`). Viaja en el borrador para que recargar la
   /// página no convierta el próximo guardado en un duplicado.
   cloudProjectId: string | null;
+  /// Qué `cloudVersion` tenía ese proyecto cuando lo abrimos (o cuando
+  /// lo guardamos por última vez). Es contra esto que se detecta si
+  /// alguien —la app, otro navegador— lo cambió mientras tanto.
+  ///
+  /// `null` = no lo sabemos. Se trata como "puede haber cambiado" y se
+  /// pregunta antes de pisar: es el mismo criterio que usa la app
+  /// (CloudIsNewerException con `known == null`).
+  cloudBaseVersion: number | null;
   /// Si hay cambios posteriores al último guardado en la nube. Es lo
   /// que decide si avisar antes de cerrar la pestaña.
   isDirty: boolean;
@@ -126,6 +134,10 @@ export function arrangementSignature(draft: ArrangerDraft): string {
     timeSignatureNumerator: draft.timeSignatureNumerator,
     timeSignatureDenominator: draft.timeSignatureDenominator,
     cloudProjectId: draft.cloudProjectId,
+    // cloudBaseVersion NO entra en la firma: describe qué sabemos de la
+    // nube, no qué escribió el usuario. Si entrara, guardar en la nube
+    // (que la mueve) marcaría el arreglo como modificado justo después
+    // de dejarlo a salvo.
     masterFx: draft.masterFx,
     tracks: stripAudio(draft.tracks),
   });

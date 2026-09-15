@@ -34,7 +34,6 @@ import {
   collection,
   doc,
   getDoc,
-  increment,
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
@@ -329,6 +328,13 @@ export default function ArrangerPage() {
   // el proyecto original se quedaba como estaba y parecía que no se
   // había guardado nada.
   const [cloudProjectId, setCloudProjectId] = useState<string | null>(null);
+
+  // Qué `cloudVersion` tenía el proyecto cuando lo abrimos (o cuando lo
+  // guardamos por última vez). Es lo único que permite darse cuenta de
+  // que la app lo cambió mientras tanto — sin esto, "Guardar cambios"
+  // pisaba lo del teléfono sin decir nada. `null` = no lo sabemos, y
+  // ante la duda se pregunta.
+  const [cloudBaseVersion, setCloudBaseVersion] = useState<number | null>(null);
 
   // ¿Hay cambios que todavía no están en la nube? Decide el cartelito
   // de la barra y el aviso antes de cerrar la pestaña.
@@ -1661,6 +1667,31 @@ export default function ArrangerPage() {
       // dejaba el original intacto.
       const cloudId =
         cloudProjectId ?? doc(collection(db, "users", user.uid, "projects")).id;
+
+      // ¿Cambió en la app (o en otra pestaña) desde que lo abrimos? Una
+      // sola lectura de un documento chico, y es lo que separa
+      // "sincronizar" de "pisar". El espejo exacto de esto vive en
+      // CloudSyncService.uploadProject del lado Flutter.
+      const remoteSnap = await getDoc(doc(db, "users", user.uid, "projects", cloudId));
+      const remoteVersion = remoteSnap.exists()
+        ? ((remoteSnap.data().cloudVersion as number | undefined) ?? 0)
+        : 0;
+      if (
+        remoteSnap.exists() &&
+        (cloudBaseVersion === null || remoteVersion > cloudBaseVersion)
+      ) {
+        const proceed = window.confirm(
+          `«${manifest.project.title}» se editó desde la app (o en otro dispositivo) ` +
+            `después de que lo abriste acá.\n\n` +
+            `Si guardás ahora, esos cambios se pierden. ` +
+            `Para conservarlos, cancelá y volvé a abrir el proyecto desde Mis Proyectos.`,
+        );
+        if (!proceed) {
+          setIsExporting(false);
+          setExportProgress(0);
+          return;
+        }
+      }
       const storagePath = `users/${user.uid}/projects/${cloudId}.mystudio`;
       const uploadTask = uploadBytesResumable(ref(storage, storagePath), zipBytes, {
         contentType: "application/zip",
@@ -1686,7 +1717,10 @@ export default function ArrangerPage() {
           title: manifest.project.title,
           tempoBpm: projectTempoBpm,
           updatedAt: serverTimestamp(),
-          cloudVersion: increment(1),
+          // Número EXPLÍCITO, igual que en la app: con increment(1) el
+          // cliente no sabe en qué versión quedó, y sin saberlo no puede
+          // detectar el próximo cambio ajeno.
+          cloudVersion: remoteVersion + 1,
           storagePath,
           sizeBytes: zipBytes.length,
           checksum,
@@ -1695,6 +1729,7 @@ export default function ArrangerPage() {
       );
 
       setCloudProjectId(cloudId);
+      setCloudBaseVersion(remoteVersion + 1);
       // El borrador NO se borra al guardar: sigue siendo lo que permite
       // irse del Arranger y volver sin tener que bajar el proyecto de
       // nuevo. Lo que cambia es que deja de estar "sin guardar".
@@ -1960,6 +1995,7 @@ export default function ArrangerPage() {
           const snap = await getDoc(doc(db, "users", user.uid, "projects", openId));
           if (!snap.exists()) throw new Error("No se encontró el proyecto.");
           const storagePath = snap.data().storagePath as string | undefined;
+          const openedVersion = (snap.data().cloudVersion as number | undefined) ?? null;
           if (!storagePath) throw new Error("El proyecto no tiene un archivo asociado.");
           const downloadUrl = await getDownloadURL(ref(storage, storagePath));
           const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`);
@@ -1967,8 +2003,9 @@ export default function ArrangerPage() {
           const bytes = await readResponseWithProgress(response, (f) => setImportProgress(f * 0.3));
           await importProjectFromZipBytes(bytes);
           // A partir de acá, guardar ACTUALIZA este proyecto en vez de
-          // crear uno nuevo al lado.
+          // crear uno nuevo al lado, y sabemos de qué versión partimos.
           setCloudProjectId(openId);
+          setCloudBaseVersion(openedVersion);
         } catch (err) {
           setImportError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -2023,6 +2060,7 @@ export default function ArrangerPage() {
       tracks,
       masterFx: importedMasterFx,
       cloudProjectId,
+      cloudBaseVersion,
       isDirty,
       savedAt: Date.now(),
     };
@@ -2042,6 +2080,7 @@ export default function ArrangerPage() {
       setTimeSignatureDenominator(live.timeSignatureDenominator);
       setImportedMasterFx(live.masterFx);
       setCloudProjectId(live.cloudProjectId);
+      setCloudBaseVersion(live.cloudBaseVersion);
       setTracks(live.tracks);
       setIsDirty(live.isDirty);
       if (!live.isDirty) {
@@ -2094,6 +2133,7 @@ export default function ArrangerPage() {
     timeSignatureDenominator,
     importedMasterFx,
     cloudProjectId,
+    cloudBaseVersion,
   ]);
 
   // 4. Aviso antes de CERRAR o RECARGAR la pestaña, que es lo único que
@@ -2149,6 +2189,9 @@ export default function ArrangerPage() {
     setTimeSignatureDenominator(stored.timeSignatureDenominator);
     setImportedMasterFx(stored.masterFx);
     setCloudProjectId(stored.cloudProjectId);
+    // Puede venir de un borrador anterior a este campo: null significa
+    // "no sé qué versión es", y guardar va a preguntar antes de pisar.
+    setCloudBaseVersion(stored.cloudBaseVersion ?? null);
     setTracks(restored);
     setIsDirty(true);
     setRecoverableDraft(null);
@@ -2173,6 +2216,7 @@ export default function ArrangerPage() {
     setRecoverableDraft(null);
     setDraftNotice(null);
     setCloudProjectId(null);
+    setCloudBaseVersion(null);
     setIsDirty(false);
   }
 
