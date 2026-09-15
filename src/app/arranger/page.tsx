@@ -381,9 +381,9 @@ export default function ArrangerPage() {
   const setProjectTempoBpm = (updater: Updater<number>) =>
     commit((prev) => ({ ...prev, projectTempoBpm: resolve(updater, prev.projectTempoBpm) }),
       push("Cambiar el tempo", "tempo"));
-  const setProjectKey = (updater: Updater<string>) =>
+  const setProjectKey = (updater: Updater<string>, mode?: CommitMode) =>
     commit((prev) => ({ ...prev, projectKey: resolve(updater, prev.projectKey) }),
-      push("Cambiar la tonalidad"));
+      mode ?? push("Cambiar la tonalidad"));
   const setTimeSignatureNumerator = (updater: Updater<number>) =>
     commit((prev) => ({ ...prev, timeSignatureNumerator: resolve(updater, prev.timeSignatureNumerator) }),
       push("Cambiar el compás", "compas"));
@@ -994,7 +994,7 @@ export default function ArrangerPage() {
         color: TRACK_COLORS[prev.length % TRACK_COLORS.length],
         fx: NO_TRACK_FX,
       },
-    ]);
+    ], push("Agregar pista"));
   }
 
   function updateTrack(trackId: string, patch: Partial<ArrangerTrack>) {
@@ -1008,7 +1008,7 @@ export default function ArrangerPage() {
   }
 
   function deleteTrack(trackId: string) {
-    setTracks((prev) => prev.filter((t) => t.id !== trackId));
+    setTracks((prev) => prev.filter((t) => t.id !== trackId), push("Eliminar pista"));
     setSelectedClipId((prev) => {
       const track = tracks.find((t) => t.id === trackId);
       if (track?.clips.some((c) => c.id === prev)) return null;
@@ -1192,6 +1192,11 @@ export default function ArrangerPage() {
     let targetTrackId = tracks[0]?.id;
     if (!targetTrackId) {
       targetTrackId = newId();
+      // SILENT: para el usuario esto fue UN click en un sample, no dos
+      // acciones. El paso deshacible es el del clip, que llega
+      // enseguida con su propio nombre; si esta pista contara aparte,
+      // habría que apretar deshacer dos veces para volver atrás un
+      // solo click.
       setTracks([
         {
           id: targetTrackId,
@@ -1204,7 +1209,7 @@ export default function ArrangerPage() {
           color: TRACK_COLORS[0],
           fx: NO_TRACK_FX,
         },
-      ]);
+      ], SILENT);
     }
     await addSampleToTrack(sample, targetTrackId, playheadSeconds);
   }
@@ -2185,7 +2190,12 @@ export default function ArrangerPage() {
           // crear uno nuevo al lado, y sabemos de qué versión partimos.
           setCloudProjectId(openId);
           setCloudBaseVersion(openedVersion);
-          setProjectKey(openedKey);
+          // SILENT: la tonalidad venía guardada en el documento, no la
+          // acaba de elegir nadie. Con un commit normal, abrir un
+          // proyecto dejaba un "Deshacer: Cambiar la tonalidad" que no
+          // correspondía a ninguna acción del usuario — y deshacerlo
+          // borraba la tonalidad del proyecto que se acababa de abrir.
+          setProjectKey(openedKey, SILENT);
         } catch (err) {
           setImportError(err instanceof Error ? err.message : String(err));
         } finally {
