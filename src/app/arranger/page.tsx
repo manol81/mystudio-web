@@ -63,6 +63,25 @@ import { transposeSemitonesFor } from "@/lib/sampleAffinity";
 import { computePeaks } from "@/lib/samplePeaks";
 import { computeSnappedStart, type SnapNeighbour } from "@/lib/arrangerSnap";
 import {
+  buildClipboard,
+  clipsInRect,
+  placeClipboard,
+  selectionSpan,
+  toggleSelection,
+  type ClipboardEntry,
+} from "@/lib/arrangerSelection";
+import {
+  cycleEndFor,
+  normalizeLoopRegion,
+  playbackStartFor,
+  type LoopRegion,
+} from "@/lib/loopRegion";
+import {
+  beatIndicesInWindow,
+  isDownbeat,
+  scheduleClick,
+} from "@/lib/metronome";
+import {
   RESET,
   SILENT,
   push,
@@ -115,6 +134,39 @@ const SNAP_THRESHOLD_PX = 10;
 // en vez de un arrastre real — un tap de mouse/dedo casi nunca es
 // perfectamente estático, así que se tolera este margen chico.
 const CLICK_MOVE_THRESHOLD_PX = 4;
+
+/**
+ * Con cuánta anticipación se agenda el ciclo SIGUIENTE del loop.
+ *
+ * Lo que hace que un loop suene continuo es que el audio de la vuelta
+ * que viene ya esté agendado en el reloj del AudioContext ANTES de que
+ * termine la actual: así el empalme lo resuelve el motor de audio, que
+ * es exacto, y no el hilo de JavaScript, que no lo es.
+ *
+ * ⚠️ 1,5 s y no 0,3 como parecería suficiente. El valor tiene que ser
+ * MAYOR que el peor intervalo posible entre dos pasadas del agendador,
+ * y los navegadores estrangulan los timers a UNA POR SEGUNDO cuando la
+ * pestaña pasa a segundo plano. Con un margen chico, cambiar de pestaña
+ * mientras algo cicla mete un silencio en cada vuelta — y es una
+ * situación de todos los días: se deja el loop sonando y se va a buscar
+ * algo a otro lado.
+ */
+const CYCLE_LOOKAHEAD_SECONDS = 1.5;
+
+/**
+ * Cada cuánto corre el agendador del transporte.
+ *
+ * Va por setInterval y NO por requestAnimationFrame, aunque ya haya un
+ * rAF andando para mover el cursor. Medido en el navegador: con el
+ * panel sin pintar, el rAF baja a ~1 pasada por segundo. Para el cursor
+ * eso es cosmético; para el audio sería un silencio en cada vuelta del
+ * loop y un clic de metrónomo perdido de cada dos. Lo que se oye no
+ * puede depender de que algo se esté dibujando.
+ */
+const SCHEDULER_INTERVAL_MS = 250;
+
+/** Cuántos compases dura el loop que se crea solo al tocar el botón sin haber marcado ninguno. */
+const DEFAULT_LOOP_BARS = 4;
 // Paso 4 (rendimiento) — ancho del bloque "esqueleto" que se muestra
 // mientras se resuelve el audio real de un clip recién soltado (ver
 // PendingDrop). Un valor fijo en segundos de duración ESTIMADA (no en
@@ -407,11 +459,91 @@ export default function ArrangerPage() {
   const [snapDivision, setSnapDivision] = useState<SnapDivision>("1/4");
   const [pixelsPerSecond, setPixelsPerSecond] = useState(50);
 
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const [clipboardClip, setClipboardClip] = useState<ArrangerClip | null>(null);
+  // Selección MÚLTIPLE. El trabajo con loops es repetitivo por
+  // naturaleza —se arma un estribillo de cuatro compases y se repite—
+  // y hasta acá todo era de a uno: repetir ocho clips eran ocho
+  // gestos, cada uno con su propio riesgo de desalinearse.
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  // Los editores POR CLIP (volumen, pitch, tiradores de recorte y de
+  // fade) solo tienen sentido con UNO seleccionado: no existe "el
+  // pitch" de cinco clips distintos. Con varios, esos controles
+  // desaparecen en vez de mostrar el valor de uno cualquiera.
+  const selectedClipId = selectedClipIds.length === 1 ? selectedClipIds[0] : null;
+  function selectOnlyClip(clipId: string | null) {
+    setSelectedClipIds(clipId ? [clipId] : []);
+  }
+  const [clipboard, setClipboard] = useState<ClipboardEntry<ArrangerClip>[] | null>(null);
+  /** Aviso corto cuando pegar no pudo colocar todo (ver placeClipboard). */
+  const [clipNotice, setClipNotice] = useState<string | null>(null);
+  /**
+   * En qué pista cae lo próximo que se pegue, cuando no hay ningún clip
+   * seleccionado que sirva de ancla.
+   *
+   * Sin esto, pegar SIEMPRE caía en la primera pista, así que copiar la
+   * batería a una pista nueva y vacía era imposible: no había forma de
+   * decir "acá". Se fija al tocar el fondo de un carril, que es el
+   * gesto que uno hace igual antes de pegar.
+   */
+  const [pasteTrackIndex, setPasteTrackIndex] = useState(0);
   // Paso 4 (rendimiento) — drops en vuelo, ver PendingDrop.
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
   const [addSampleError, setAddSampleError] = useState<string | null>(null);
+
+  // ─── Loop y metrónomo ───────────────────────────────────────────
+  //
+  // La región de loop NO entra en el historial ni en la firma de
+  // contenido del borrador: describe cómo se está TRABAJANDO, no lo
+  // que se escribió. Deshacer no debería mover el tramo que se está
+  // repitiendo, y marcar un loop no debería dejar el proyecto como
+  // "sin guardar". Es el mismo corte que ya hacían cloudProjectId y
+  // cloudBaseVersion.
+  const [loopRegion, setLoopRegion] = useState<LoopRegion | null>(null);
+  const [loopEnabled, setLoopEnabled] = useState(false);
+  const [metronomeEnabled, setMetronomeEnabled] = useState(false);
+
+  // playFrom lee el loop de ACÁ y no del estado: encender el loop tiene
+  // que re-encolar la reproducción en el mismo gesto, y en ese momento
+  // el useState todavía no se actualizó.
+  const loopRef = useRef<{ enabled: boolean; region: LoopRegion | null }>({
+    enabled: false,
+    region: null,
+  });
+  const metronomeRef = useRef(false);
+  /** Compás y tempo vigentes para el clic, leídos por el tick de cada frame. */
+  const metronomeGridRef = useRef({ beatSeconds: 0.5, beatsPerBar: 4 });
+  /** Hasta qué punto de la línea de tiempo ya se agendó clic (ver beatIndicesInWindow). */
+  const metronomeCursorRef = useRef(0);
+  /**
+   * Los clics ya agendados. Se guardan para poder CALLARLOS al parar:
+   * con 1,5 s de anticipación, pausar dejaría sonando hasta tres clics
+   * después de que el arreglo ya se detuvo.
+   */
+  const metronomeVoicesRef = useRef<OscillatorNode[]>([]);
+  const schedulerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /**
+   * El ciclo que está sonando ahora. Con el loop apagado hay uno solo,
+   * abierto hasta el final del arreglo; con el loop encendido, cada
+   * vuelta es un ciclo y el siguiente se agenda ANTES de que termine
+   * el actual (ver CYCLE_LOOKAHEAD_SECONDS).
+   */
+  const cycleRef = useRef<{
+    requestId: number;
+    fromSeconds: number;
+    startContextTime: number;
+    /** Dónde termina el ciclo en la línea de tiempo, o null si no cicla. */
+    endSeconds: number | null;
+    endContextTime: number | null;
+    /** A dónde vuelve cada vuelta. */
+    loopStartSeconds: number;
+    nextScheduled: boolean;
+    /**
+     * Hasta qué punto de la vuelta QUE VIENE ya se agendaron clics, o
+     * null si todavía no se tocó. Ver la nota en runScheduler: los
+     * clics del ciclo siguiente se agendan junto con su audio.
+     */
+    nextMetronomeCursor: number | null;
+  } | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [playheadSeconds, setPlayheadSeconds] = useState(0);
@@ -505,6 +637,11 @@ export default function ArrangerPage() {
   const dragRef = useRef<{
     trackId: string;
     clipId: string;
+    // TODOS los clips que se mueven con este arrastre. Con uno solo es
+    // [clipId] y todo sigue como siempre; con varios seleccionados, el
+    // imán se calcula contra el clip AGARRADO y los demás se corren el
+    // mismo delta, que es lo que mantiene el bloque armado.
+    movingClipIds: string[];
     startClientX: number;
     startClientY: number;
     // Última posición conocida del puntero — junto con startClientX/Y,
@@ -533,6 +670,37 @@ export default function ArrangerPage() {
     // donde se tocó dentro del clip.
     clickSeekSeconds: number;
   } | null>(null);
+  // Rectángulo de goma (marquee) para seleccionar varios clips de una
+  // pasada. Es el gesto de cualquier DAW y es la razón por la que el
+  // fondo de los carriles pasó a tener su propio pointerdown.
+  const marqueeRef = useRef<{
+    trackIndexA: number;
+    trackIndexB: number;
+    secondsA: number;
+    secondsB: number;
+    baseSelection: string[];
+    additive: boolean;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
+  const [marquee, setMarquee] = useState<{
+    trackFrom: number;
+    trackTo: number;
+    fromSeconds: number;
+    toSeconds: number;
+  } | null>(null);
+
+  // Marcar el tramo de loop arrastrando sobre la regla de tiempo. Un
+  // click simple sigue moviendo el cursor, como siempre.
+  const loopDragRef = useRef<{
+    startSeconds: number;
+    lastSeconds: number;
+    startClientX: number;
+    moved: boolean;
+  } | null>(null);
+  const [loopDraft, setLoopDraft] = useState<{ fromSeconds: number; toSeconds: number } | null>(null);
+
   const [dragPreviewStartSeconds, setDragPreviewStartSeconds] = useState<number | null>(null);
   const [snapGuideSeconds, setSnapGuideSeconds] = useState<number | null>(null);
   // Puramente visuales (resaltar el carril destino) — la fuente de
@@ -615,6 +783,9 @@ export default function ArrangerPage() {
     // esto, un Play seguido rápido de un Stop/Pause podría terminar
     // agendando audio de todos modos una vez que el await resuelve.
     playRequestIdRef.current++;
+    // Sin esto, el ciclo viejo seguiría agendando la vuelta siguiente
+    // desde el tick aunque ya no suene nada.
+    cycleRef.current = null;
     for (const source of activeSourcesRef.current) {
       try {
         source.stop();
@@ -631,6 +802,18 @@ export default function ArrangerPage() {
       clearTimeout(autoStopTimeoutRef.current);
       autoStopTimeoutRef.current = null;
     }
+    if (schedulerRef.current !== null) {
+      clearInterval(schedulerRef.current);
+      schedulerRef.current = null;
+    }
+    for (const voice of metronomeVoicesRef.current) {
+      try {
+        voice.stop();
+      } catch {
+        // ya había sonado y terminado solo
+      }
+    }
+    metronomeVoicesRef.current = [];
   }
 
   const totalDurationSeconds = useMemo(() => {
@@ -686,6 +869,16 @@ export default function ArrangerPage() {
     // son cuatro negras, una corchea media.
     return secondsPerQuarterNote(projectTempoBpm) * (4 / noteValue);
   }, [snapDivision, barLengthSeconds, projectTempoBpm]);
+
+  // El clic sigue al tempo y al compás vigentes. Va por un ref porque
+  // lo lee el tick de cada frame, que es una función suelta y no se
+  // rearma cuando cambia el estado.
+  useEffect(() => {
+    metronomeGridRef.current = {
+      beatSeconds: secondsPerBeat(projectTempoBpm, timeSignatureDenominator),
+      beatsPerBar: timeSignatureNumerator,
+    };
+  }, [projectTempoBpm, timeSignatureDenominator, timeSignatureNumerator]);
 
   const rulerTicks = useMemo(() => {
     if (rulerMode === "seconds") {
@@ -808,18 +1001,28 @@ export default function ArrangerPage() {
 
   // ─── Transporte ──────────────────────────────────────────────────────
 
-  async function playFrom(fromSeconds: number) {
-    const ctx = audioContextRef.current;
-    if (!ctx || tracks.length === 0) return;
-    if (ctx.state === "suspended") ctx.resume();
-    stopAllSources();
-    // Se captura DESPUÉS de stopAllSources (que ya incrementó el
-    // contador al parar lo anterior) — este es el id "vigente" de ESTA
-    // llamada a playFrom.
-    const requestId = ++playRequestIdRef.current;
-
-    const clamped = Math.max(0, Math.min(totalDurationSeconds, fromSeconds));
-    playheadAtStartRef.current = clamped;
+  /**
+   * Agenda UN ciclo: todos los clips que suenan desde `fromSeconds`,
+   * arrancando en `atContextTime` (o "ni bien resuelva el DSP", si es
+   * null), recortados para no pasarse de `untilSeconds`.
+   *
+   * Es la pieza que hace posible el loop: la vuelta siguiente se agenda
+   * con anticipación en un instante EXACTO del reloj del AudioContext,
+   * así el empalme lo resuelve el motor de audio y no el hilo de
+   * JavaScript, que puede llegar tarde por un re-render pesado o por
+   * tener la pestaña en segundo plano.
+   *
+   * Devuelve null si la llamada quedó invalidada mientras esperaba el
+   * DSP (alguien tocó Stop, o arrancó otra reproducción).
+   */
+  async function scheduleCycle(
+    ctx: AudioContext,
+    fromSeconds: number,
+    atContextTime: number | null,
+    untilSeconds: number | null,
+    requestId: number,
+  ): Promise<{ startContextTime: number; sources: AudioBufferSourceNode[] } | null> {
+    const clamped = fromSeconds;
 
     // Se programan las fuentes de TODAS las pistas, muteadas o no — el
     // silencio/audibilidad ya lo resuelve el GainNode persistente de
@@ -833,6 +1036,10 @@ export default function ArrangerPage() {
         const rate = playbackRateFor(clip, projectTempoBpm);
         const displayDuration = clip.sourceDurationSeconds / rate;
         if (clip.startSeconds + displayDuration <= clamped) continue;
+        // Con loop, lo que empieza DESPUÉS del final del tramo no entra
+        // en esta vuelta. Sin este filtro, el audio de más adelante
+        // sonaría encimado con el principio del ciclo siguiente.
+        if (untilSeconds != null && clip.startSeconds >= untilSeconds) continue;
         clipsToPlay.push({ track, clip, rate, displayDuration });
       }
     }
@@ -849,13 +1056,14 @@ export default function ArrangerPage() {
 
     // Alguien arrancó OTRA reproducción, o la paró, mientras
     // esperábamos el DSP — esta llamada quedó vieja, no agendar nada.
-    if (playRequestIdRef.current !== requestId) return;
+    if (playRequestIdRef.current !== requestId) return null;
 
-    // Se captura DESPUÉS del await (no antes) — así todos los clips
-    // quedan perfectamente sincronizados entre sí sin importar cuánto
-    // tardó el Worker, en vez de arrastrar un "ahora" que ya quedó viejo.
-    const startContextTime = ctx.currentTime;
-    playStartContextTimeRef.current = startContextTime;
+    // Con un instante dado (el ciclo siguiente de un loop) se respeta
+    // ese instante. Sin él se captura DESPUÉS del await, no antes —
+    // así todos los clips quedan perfectamente sincronizados entre sí
+    // sin importar cuánto tardó el Worker, en vez de arrastrar un
+    // "ahora" que ya quedó viejo.
+    const startContextTime = atContextTime ?? ctx.currentTime;
 
     const sources: AudioBufferSourceNode[] = [];
     for (let i = 0; i < clipsToPlay.length; i++) {
@@ -873,7 +1081,16 @@ export default function ArrangerPage() {
       // dividiendo por `rate`, misma relación que ya usaba
       // displayDuration más arriba.
       const bufferStart = clip.sourceOffsetSeconds / rate + displayOffset;
-      const remainingDuration = displayDuration - displayOffset;
+      let remainingDuration = displayDuration - displayOffset;
+      // Con loop, el clip se corta en el final del tramo. Se recorta
+      // acá, en la duración de la propia fuente, en vez de llamar
+      // source.stop() más tarde: así el corte queda resuelto de una
+      // vez en el reloj del audio y no depende de que ningún timer
+      // llegue a tiempo.
+      if (untilSeconds != null) {
+        const available = untilSeconds - Math.max(clamped, clip.startSeconds);
+        remainingDuration = Math.min(remainingDuration, available);
+      }
       if (remainingDuration <= 0) continue;
       const when = startContextTime + Math.max(0, clip.startSeconds - clamped);
 
@@ -899,37 +1116,267 @@ export default function ArrangerPage() {
       source.connect(clipGain);
       clipGain.connect(trackNodes.panner);
       source.start(when, bufferStart, remainingDuration);
+      // Las fuentes de los ciclos ya terminados no tienen por qué
+      // quedar acumuladas en la lista de "lo que está sonando".
+      source.onended = () => {
+        activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source);
+      };
       sources.push(source);
     }
 
-    activeSourcesRef.current = sources;
-    setIsPlaying(true);
+    return { startContextTime, sources };
+  }
 
-    const tick = () => {
-      const c = audioContextRef.current;
-      if (!c) return;
-      const elapsed = c.currentTime - playStartContextTimeRef.current;
-      setPlayheadSeconds(Math.min(totalDurationSeconds, playheadAtStartRef.current + elapsed));
-      rafRef.current = requestAnimationFrame(tick);
+  async function playFrom(fromSeconds: number) {
+    const ctx = audioContextRef.current;
+    if (!ctx || tracks.length === 0) return;
+    if (ctx.state === "suspended") ctx.resume();
+    stopAllSources();
+    // Se captura DESPUÉS de stopAllSources (que ya incrementó el
+    // contador al parar lo anterior) — este es el id "vigente" de ESTA
+    // llamada a playFrom.
+    const requestId = ++playRequestIdRef.current;
+
+    const { enabled: loopOn, region } = loopRef.current;
+    const start = playbackStartFor(fromSeconds, region, loopOn);
+    const clamped = Math.max(0, Math.min(totalDurationSeconds, start));
+    const cycleEndSeconds = cycleEndFor(clamped, region, loopOn);
+    playheadAtStartRef.current = clamped;
+    metronomeCursorRef.current = clamped;
+
+    const scheduled = await scheduleCycle(ctx, clamped, null, cycleEndSeconds, requestId);
+    if (!scheduled) return;
+
+    playStartContextTimeRef.current = scheduled.startContextTime;
+    activeSourcesRef.current = scheduled.sources;
+    cycleRef.current = {
+      requestId,
+      fromSeconds: clamped,
+      startContextTime: scheduled.startContextTime,
+      endSeconds: cycleEndSeconds,
+      endContextTime:
+        cycleEndSeconds == null
+          ? null
+          : scheduled.startContextTime + (cycleEndSeconds - clamped),
+      loopStartSeconds: region?.startSeconds ?? 0,
+      nextScheduled: false,
+      nextMetronomeCursor: null,
     };
-    rafRef.current = requestAnimationFrame(tick);
+    setIsPlaying(true);
+    rafRef.current = requestAnimationFrame(drawPlayhead);
+    schedulerRef.current = setInterval(runScheduler, SCHEDULER_INTERVAL_MS);
 
-    const remaining = Math.max(0, totalDurationSeconds - clamped);
-    autoStopTimeoutRef.current = setTimeout(() => {
-      stopAllSources();
-      setPlayheadSeconds(totalDurationSeconds);
-      setIsPlaying(false);
-    }, remaining * 1000 + 150);
+    // Con loop no hay parada automática: para eso está el loop.
+    if (cycleEndSeconds == null) {
+      const remaining = Math.max(0, totalDurationSeconds - clamped);
+      autoStopTimeoutRef.current = setTimeout(() => {
+        stopAllSources();
+        setPlayheadSeconds(totalDurationSeconds);
+        setIsPlaying(false);
+      }, remaining * 1000 + 150);
+    }
+  }
+
+  /** Dónde está el cursor según el reloj del audio, sin tocar nada. */
+  function livePosition(ctx: AudioContext, cycle: NonNullable<typeof cycleRef.current>): number {
+    const limit = cycle.endSeconds ?? totalDurationSeconds;
+    return Math.min(limit, playheadAtStartRef.current + (ctx.currentTime - playStartContextTimeRef.current));
+  }
+
+  /**
+   * Solo mueve el cursor en pantalla. Nada de lo que se OYE depende de
+   * esta función — ver SCHEDULER_INTERVAL_MS.
+   */
+  function drawPlayhead() {
+    const ctx = audioContextRef.current;
+    const cycle = cycleRef.current;
+    if (!ctx || !cycle) return;
+    setPlayheadSeconds(livePosition(ctx, cycle));
+    rafRef.current = requestAnimationFrame(drawPlayhead);
+  }
+
+  /**
+   * Agenda los clics que caen en [fromSeconds, toSeconds) de la línea
+   * de tiempo, convertidos al reloj del audio con la base de un ciclo
+   * (`baseContextTime` es cuándo arranca, `baseSeconds` desde dónde).
+   *
+   * La base va por parámetro y no se lee de los refs porque hay que
+   * poder agendar contra el ciclo SIGUIENTE, que todavía no empezó.
+   */
+  function scheduleClicks(
+    ctx: AudioContext,
+    baseContextTime: number,
+    baseSeconds: number,
+    fromSeconds: number,
+    toSeconds: number,
+  ) {
+    const { beatSeconds, beatsPerBar } = metronomeGridRef.current;
+    for (const index of beatIndicesInWindow(fromSeconds, toSeconds, beatSeconds)) {
+      const when = baseContextTime + (index * beatSeconds - baseSeconds);
+      // Un beat que ya pasó no se agenda: en el AudioContext, un start()
+      // con un instante pasado suena INMEDIATAMENTE, o sea fuera de
+      // tiempo, que es peor que no sonar.
+      if (when < ctx.currentTime) continue;
+      metronomeVoicesRef.current.push(
+        scheduleClick(ctx, ctx.destination, when, isDownbeat(index, beatsPerBar), 1),
+      );
+    }
+  }
+
+  /**
+   * El agendador: cierra el ciclo que terminó, prepara el siguiente con
+   * anticipación, y agenda los clics de metrónomo de la ventana que
+   * viene. Corre por setInterval, no por rAF.
+   */
+  function runScheduler() {
+    const ctx = audioContextRef.current;
+    const cycle = cycleRef.current;
+    if (!ctx || !cycle) return;
+
+    // ¿Dio la vuelta? El audio del ciclo nuevo ya viene sonando desde
+    // que se agendó; acá solo se corre la base contra la que se mide
+    // todo lo demás. Es un while y no un if: con la pestaña en segundo
+    // plano esta función puede tardar más que un ciclo entero en
+    // volver a correr, y ahí hay que recuperar varias vueltas de una.
+    while (
+      cycle.endContextTime != null &&
+      cycle.endSeconds != null &&
+      ctx.currentTime >= cycle.endContextTime
+    ) {
+      cycle.fromSeconds = cycle.loopStartSeconds;
+      cycle.startContextTime = cycle.endContextTime;
+      cycle.endContextTime =
+        cycle.startContextTime + (cycle.endSeconds - cycle.loopStartSeconds);
+      cycle.nextScheduled = false;
+      playheadAtStartRef.current = cycle.fromSeconds;
+      playStartContextTimeRef.current = cycle.startContextTime;
+      // Los clics del arranque de esta vuelta YA se agendaron junto con
+      // su audio; el cursor sigue desde ahí para no repetirlos.
+      metronomeCursorRef.current = cycle.nextMetronomeCursor ?? cycle.fromSeconds;
+      cycle.nextMetronomeCursor = null;
+    }
+
+    // Agendar la vuelta siguiente ANTES de que termine esta.
+    if (
+      cycle.endContextTime != null &&
+      cycle.endSeconds != null &&
+      !cycle.nextScheduled &&
+      ctx.currentTime > cycle.endContextTime - CYCLE_LOOKAHEAD_SECONDS
+    ) {
+      cycle.nextScheduled = true;
+      const at = cycle.endContextTime;
+      const from = cycle.loopStartSeconds;
+      const until = cycle.endSeconds;
+      void scheduleCycle(ctx, from, at, until, cycle.requestId).then((scheduled) => {
+        if (!scheduled || playRequestIdRef.current !== cycle.requestId) return;
+        activeSourcesRef.current = [...activeSourcesRef.current, ...scheduled.sources];
+      });
+
+      // ⚠️ Los clics de la vuelta que viene se agendan ACÁ, junto con su
+      // audio, y no cuando el ciclo efectivamente cambie.
+      //
+      // Encontrado probándolo: esperar al cambio de ciclo PIERDE el
+      // primer clic de cada vuelta, que es justo el del compás, el que
+      // sirve para contar. El cambio se detecta recién cuando el reloj
+      // del audio YA pasó el punto de loop, así que ese beat quedaba en
+      // el pasado y se descartaba por la guarda de más arriba. El
+      // síntoma era una separación de un segundo entre clics una vez
+      // por vuelta, en vez de medio.
+      if (metronomeRef.current) {
+        const nextFrom = cycle.nextMetronomeCursor ?? from;
+        const nextTo = Math.min(from + CYCLE_LOOKAHEAD_SECONDS, until);
+        if (nextTo > nextFrom) {
+          scheduleClicks(ctx, at, from, nextFrom, nextTo);
+          cycle.nextMetronomeCursor = nextTo;
+        }
+      }
+    }
+
+    if (!metronomeRef.current) return;
+    const limit = cycle.endSeconds ?? totalDurationSeconds;
+    const windowEnd = Math.min(livePosition(ctx, cycle) + CYCLE_LOOKAHEAD_SECONDS, limit);
+    const windowStart = metronomeCursorRef.current;
+    if (windowEnd <= windowStart) return;
+    scheduleClicks(
+      ctx,
+      playStartContextTimeRef.current,
+      playheadAtStartRef.current,
+      windowStart,
+      windowEnd,
+    );
+    metronomeCursorRef.current = windowEnd;
+  }
+
+  /**
+   * Dónde está el cursor AHORA, leído del reloj del audio y no del
+   * estado de React, que va un frame atrás. Lo necesitan pausar y
+   * cualquier cosa que re-encole la reproducción en el lugar donde
+   * está sonando (encender el loop, marcar un tramo nuevo).
+   */
+  function currentPlayheadSeconds(): number {
+    const ctx = audioContextRef.current;
+    const cycle = cycleRef.current;
+    if (!ctx || !cycle || !isPlaying) return playheadSeconds;
+    return livePosition(ctx, cycle);
   }
 
   function pausePlayback() {
     const ctx = audioContextRef.current;
     if (!ctx) return;
-    const elapsed = ctx.currentTime - playStartContextTimeRef.current;
-    const pos = Math.min(totalDurationSeconds, playheadAtStartRef.current + elapsed);
+    const pos = currentPlayheadSeconds();
     stopAllSources();
     setPlayheadSeconds(pos);
     setIsPlaying(false);
+  }
+
+  /**
+   * Enciende/apaga el loop o cambia el tramo, en un solo lugar porque
+   * las tres cosas tienen la misma consecuencia: las fuentes que están
+   * sonando se agendaron contra el tramo VIEJO.
+   *
+   * Por eso se re-encola desde donde está el cursor. Es un corte de un
+   * instante y es deliberado: la alternativa —seguir con lo agendado y
+   * aplicar el cambio recién en la vuelta siguiente— deja el botón
+   * prendido sin que pase nada audible por varios segundos, y eso se
+   * lee como que no funcionó.
+   */
+  function applyLoop(enabled: boolean, region: LoopRegion | null) {
+    loopRef.current = { enabled, region };
+    setLoopEnabled(enabled);
+    setLoopRegion(region);
+    if (isPlaying) void playFrom(currentPlayheadSeconds());
+  }
+
+  function handleLoopButton() {
+    if (loopEnabled) {
+      applyLoop(false, loopRegion);
+      return;
+    }
+    let region = loopRegion;
+    if (!region) {
+      // Sin tramo marcado, se arma uno de cuatro compases desde el
+      // compás donde está el cursor. El botón tiene que hacer algo
+      // audible la primera vez que se toca: quedar prendido sin efecto
+      // y esperar a que además se marque un tramo en la regla es
+      // pedirle a la persona que adivine el segundo paso.
+      const barIndex = barLengthSeconds > 0 ? Math.floor(playheadSeconds / barLengthSeconds) : 0;
+      const start = barIndex * barLengthSeconds;
+      region = {
+        startSeconds: start,
+        endSeconds: start + DEFAULT_LOOP_BARS * barLengthSeconds,
+      };
+    }
+    applyLoop(true, region);
+  }
+
+  function handleMetronomeButton() {
+    const next = !metronomeEnabled;
+    metronomeRef.current = next;
+    setMetronomeEnabled(next);
+    // Al encenderlo a mitad de la reproducción hay que decirle desde
+    // dónde contar: si no, trataría de agendar todos los beats desde
+    // el arranque del ciclo, que ya pasaron.
+    if (next) metronomeCursorRef.current = currentPlayheadSeconds();
   }
 
   function handlePlayButton() {
@@ -1009,11 +1456,8 @@ export default function ArrangerPage() {
 
   function deleteTrack(trackId: string) {
     setTracks((prev) => prev.filter((t) => t.id !== trackId), push("Eliminar pista"));
-    setSelectedClipId((prev) => {
-      const track = tracks.find((t) => t.id === trackId);
-      if (track?.clips.some((c) => c.id === prev)) return null;
-      return prev;
-    });
+    const removed = new Set(tracks.find((t) => t.id === trackId)?.clips.map((c) => c.id) ?? []);
+    setSelectedClipIds((prev) => prev.filter((id) => !removed.has(id)));
   }
 
   // ─── Agregar samples ─────────────────────────────────────────────────
@@ -1050,7 +1494,7 @@ export default function ArrangerPage() {
       (prev) => prev.map((t) => (t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t)),
       push(`Agregar ${clip.sampleName}`),
     );
-    setSelectedClipId(clip.id);
+    selectOnlyClip(clip.id);
   }
 
   async function addSampleToTrack(sample: ArrangerSample, trackId: string, startSeconds: number) {
@@ -1175,7 +1619,7 @@ export default function ArrangerPage() {
           fx: NO_TRACK_FX,
         },
       ]);
-      setSelectedClipId(clip.id);
+      selectOnlyClip(clip.id);
     } catch (err) {
       setAddSampleError(
         err instanceof Error
@@ -1244,51 +1688,123 @@ export default function ArrangerPage() {
     );
   }
 
-  function deleteSelectedClip() {
-    if (!selectedClipId) return;
-    setTracks(
-      (prev) => prev.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== selectedClipId) })),
-      push("Eliminar clip"),
-    );
-    setSelectedClipId(null);
+  /** Los clips seleccionados, con su pista, en el orden del arreglo. */
+  function selectedPlacements(): { clip: ArrangerClip; trackIndex: number; startSeconds: number }[] {
+    const ids = new Set(selectedClipIds);
+    const placements: { clip: ArrangerClip; trackIndex: number; startSeconds: number }[] = [];
+    tracks.forEach((track, trackIndex) => {
+      for (const clip of track.clips) {
+        if (ids.has(clip.id)) placements.push({ clip, trackIndex, startSeconds: clip.startSeconds });
+      }
+    });
+    return placements;
   }
 
-  function copySelectedClip() {
-    const found = selectedClipId ? findClip(selectedClipId) : null;
-    if (found) setClipboardClip(found.clip);
+  function deleteSelectedClips() {
+    if (selectedClipIds.length === 0) return;
+    const ids = new Set(selectedClipIds);
+    setTracks(
+      (prev) => prev.map((t) => ({ ...t, clips: t.clips.filter((c) => !ids.has(c.id)) })),
+      // La etiqueta dice CUÁNTOS: deshacer tiene que anunciar el tamaño
+      // real de lo que va a devolver, no "un clip" cuando fueron doce.
+      push(ids.size === 1 ? "Eliminar clip" : "Eliminar " + ids.size + " clips"),
+    );
+    setSelectedClipIds([]);
+  }
+
+  function copySelectedClips() {
+    const placements = selectedPlacements();
+    if (placements.length === 0) return;
+    setClipboard(buildClipboard(placements));
+    setClipNotice(null);
   }
 
   function pasteClipboard() {
-    if (!clipboardClip) return;
-    const targetTrackId = (selectedClipId && findClip(selectedClipId)?.track.id) ?? tracks[0]?.id;
-    if (!targetTrackId) return;
-    const newClip: ArrangerClip = { ...clipboardClip, id: newId(), startSeconds: playheadSeconds };
-    setTracks((prev) =>
-      prev.map((t) => (t.id === targetTrackId ? { ...t, clips: [...t.clips, newClip] } : t)),
+    if (!clipboard || clipboard.length === 0 || tracks.length === 0) return;
+    // El ancla es el PRIMER clip que se seleccionó (arrangerSelection
+    // conserva ese orden a propósito), no el que esté más arriba.
+    const anchorId = selectedClipIds[0];
+    const anchorIndex = anchorId ? tracks.findIndex((t) => t.clips.some((c) => c.id === anchorId)) : -1;
+    const { placed, droppedCount } = placeClipboard(
+      clipboard,
+      anchorIndex >= 0 ? anchorIndex : Math.min(pasteTrackIndex, tracks.length - 1),
+      playheadSeconds,
+      tracks.length,
     );
-    setSelectedClipId(newClip.id);
-    // Flujo rápido de edición: el cursor salta al FINAL del clip recién
-    // pegado — así, pegar el mismo clip varias veces seguidas (Ctrl/Cmd+V
-    // repetido) lo encadena en secuencia ininterrumpida, sin tener que
-    // reubicar el cursor a mano entre pegada y pegada.
-    seekTo(newClip.startSeconds + displayDurationFor(newClip, projectTempoBpm));
+    if (placed.length === 0) {
+      setClipNotice("No hay pistas donde pegar ese bloque.");
+      return;
+    }
+
+    const byTrackIndex = new Map<number, ArrangerClip[]>();
+    const newIds: string[] = [];
+    let blockEnd = 0;
+    for (const placement of placed) {
+      const clip: ArrangerClip = { ...placement.clip, id: newId(), startSeconds: placement.startSeconds };
+      newIds.push(clip.id);
+      blockEnd = Math.max(blockEnd, clip.startSeconds + displayDurationFor(clip, projectTempoBpm));
+      byTrackIndex.set(placement.trackIndex, [...(byTrackIndex.get(placement.trackIndex) ?? []), clip]);
+    }
+
+    setTracks(
+      (prev) =>
+        prev.map((t, i) => {
+          const added = byTrackIndex.get(i);
+          return added ? { ...t, clips: [...t.clips, ...added] } : t;
+        }),
+      push(placed.length === 1 ? "Pegar clip" : "Pegar " + placed.length + " clips"),
+    );
+    setSelectedClipIds(newIds);
+    setClipNotice(
+      droppedCount > 0
+        ? "Se pegaron " + placed.length + ": faltan pistas para " + droppedCount + " clip" +
+          (droppedCount === 1 ? "" : "s") + " más."
+        : null,
+    );
+    // Flujo rápido de edición: el cursor salta al FINAL de lo pegado —
+    // así, pegar varias veces seguidas (Ctrl/Cmd+V repetido) encadena el
+    // bloque en secuencia ininterrumpida, sin reubicar el cursor a mano.
+    seekTo(blockEnd);
   }
 
-  function duplicateSelectedClip() {
-    const found = selectedClipId ? findClip(selectedClipId) : null;
-    if (!found) return;
-    const duration = displayDurationFor(found.clip, projectTempoBpm);
-    const newClip: ArrangerClip = {
-      ...found.clip,
-      id: newId(),
-      startSeconds: found.clip.startSeconds + duration,
-    };
-    setTracks((prev) =>
-      prev.map((t) =>
-        t.id === found.track.id ? { ...t, clips: [...t.clips, newClip] } : t,
-      ),
+  function duplicateSelectedClips() {
+    const placements = selectedPlacements();
+    if (placements.length === 0) return;
+    // El corrimiento es el LARGO DEL BLOQUE ENTERO, no la duración de
+    // cada clip por separado: duplicar cuatro compases tiene que dejar
+    // la copia justo después de los cuatro compases. Con un solo clip
+    // el tramo ES su duración, así que sigue haciendo lo de siempre.
+    const span = selectionSpan(
+      placements.map((p) => ({
+        id: p.clip.id,
+        startSeconds: p.startSeconds,
+        displayDuration: displayDurationFor(p.clip, projectTempoBpm),
+      })),
     );
-    setSelectedClipId(newClip.id);
+    if (!span) return;
+    const offset = span.endSeconds - span.startSeconds;
+
+    const byTrackIndex = new Map<number, ArrangerClip[]>();
+    const newIds: string[] = [];
+    for (const placement of placements) {
+      const clip: ArrangerClip = {
+        ...placement.clip,
+        id: newId(),
+        startSeconds: placement.startSeconds + offset,
+      };
+      newIds.push(clip.id);
+      byTrackIndex.set(placement.trackIndex, [...(byTrackIndex.get(placement.trackIndex) ?? []), clip]);
+    }
+
+    setTracks(
+      (prev) =>
+        prev.map((t, i) => {
+          const added = byTrackIndex.get(i);
+          return added ? { ...t, clips: [...t.clips, ...added] } : t;
+        }),
+      push(placements.length === 1 ? "Duplicar clip" : "Duplicar " + placements.length + " clips"),
+    );
+    setSelectedClipIds(newIds);
   }
 
   // Problema 3 — divide el clip seleccionado exactamente en la
@@ -1334,7 +1850,7 @@ export default function ArrangerPage() {
           : t,
       ),
     );
-    setSelectedClipId(rightClip.id);
+    selectOnlyClip(rightClip.id);
   }
 
   useEffect(() => {
@@ -1354,10 +1870,16 @@ export default function ArrangerPage() {
         }
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
-        deleteSelectedClip();
+        deleteSelectedClips();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        // Ctrl/Cmd+A selecciona TODOS los clips del arreglo. Va antes
+        // que la rama de la "c" y la "v" por prolijidad, no por
+        // precedencia: son teclas distintas.
+        e.preventDefault();
+        setSelectedClipIds(tracks.flatMap((t) => t.clips.map((c) => c.id)));
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
         e.preventDefault();
-        copySelectedClip();
+        copySelectedClips();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
         e.preventDefault();
         pasteClipboard();
@@ -1372,7 +1894,7 @@ export default function ArrangerPage() {
         arrangement.redo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
         e.preventDefault();
-        duplicateSelectedClip();
+        duplicateSelectedClips();
       } else if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "s") {
         // Problema 3 — 'S' corta el clip seleccionado en el cursor.
         e.preventDefault();
@@ -1382,7 +1904,7 @@ export default function ArrangerPage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClipId, clipboardClip, tracks, projectTempoBpm, playheadSeconds, isPlaying, arrangement]);
+  }, [selectedClipIds, clipboard, tracks, projectTempoBpm, playheadSeconds, isPlaying, arrangement]);
 
   // ─── Arrastrar un clip existente (mover horizontalmente) ────────────
 
@@ -1392,7 +1914,24 @@ export default function ArrangerPage() {
     clip: ArrangerClip,
   ) {
     e.stopPropagation();
-    setSelectedClipId(clip.id);
+
+    // Ctrl/Cmd/Shift+click SUMA o SACA de la selección, y no arrastra
+    // nada. Los dos gestos tienen que estar separados: si armar una
+    // selección de seis clips además los moviera un par de píxeles,
+    // seleccionar sería una forma de desalinear el arreglo sin querer.
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      setSelectedClipIds((prev) => toggleSelection(prev, clip.id));
+      return;
+    }
+
+    // Agarrar un clip que YA está en una selección múltiple arrastra
+    // todo el bloque. Agarrar uno de afuera reemplaza la selección:
+    // si no, mover un clip suelto después de haber seleccionado otros
+    // se llevaría puestos a esos otros.
+    const alreadySelected = selectedClipIds.includes(clip.id);
+    const movingClipIds = alreadySelected && selectedClipIds.length > 1 ? selectedClipIds : [clip.id];
+    if (!alreadySelected) selectOnlyClip(clip.id);
+
     // Posición exacta (en segundos) del punto donde se tocó DENTRO del
     // clip — currentTarget (no target) para que dé lo mismo clickear
     // el fondo del clip o el <canvas> de la forma de onda de adentro.
@@ -1401,6 +1940,7 @@ export default function ArrangerPage() {
     dragRef.current = {
       trackId,
       clipId: clip.id,
+      movingClipIds,
       startClientX: e.clientX,
       startClientY: e.clientY,
       lastClientX: e.clientX,
@@ -1531,6 +2071,33 @@ export default function ArrangerPage() {
 
     const newStart = drag.previewStartSeconds; // del ref, no del estado — ver la nota en dragRef
 
+    // Bloque de varios clips: se corren TODOS el mismo delta y cada uno
+    // se queda en SU pista.
+    //
+    // ⚠️ El arrastre entre pistas queda deliberadamente afuera del
+    // caso múltiple. Trasladar un bloque que ocupa tres pistas hacia
+    // abajo obliga a recortar contra la última, y ahí dos clips que
+    // estaban en pistas distintas terminarían apilados sonando a la
+    // vez — el mismo motivo por el que placeClipboard descarta en vez
+    // de apilar. Con UN clip seleccionado, mover entre pistas sigue
+    // funcionando igual que siempre.
+    if (drag.movingClipIds.length > 1) {
+      const delta = newStart - drag.originalStartSeconds;
+      if (delta === 0) return;
+      const movingIds = new Set(drag.movingClipIds);
+      setTracks(
+        (prev) =>
+          prev.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              movingIds.has(c.id) ? { ...c, startSeconds: Math.max(0, c.startSeconds + delta) } : c,
+            ),
+          })),
+        push(`Mover ${drag.movingClipIds.length} clips`),
+      );
+      return;
+    }
+
     const targetTrackId = drag.hoveredTrackId;
     const movedToOtherTrack = targetTrackId !== drag.trackId;
     if (!movedToOtherTrack && newStart === drag.originalStartSeconds) return; // sin cambios reales
@@ -1556,7 +2123,157 @@ export default function ArrangerPage() {
       });
       if (!movedClip) return prev; // no debería pasar — el clip desapareció bajo el mouse
       return withoutClip.map((t) => (t.id === targetTrackId ? { ...t, clips: [...t.clips, movedClip!] } : t));
+    }, push("Mover clip"));
+  }
+
+  // ─── Marcar el tramo de loop en la regla ────────────────────────────
+
+  function handleRulerPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const secondsAt = (clientX: number) => Math.max(0, (clientX - rect.left) / effectivePixelsPerSecond);
+    const seconds = secondsAt(e.clientX);
+    loopDragRef.current = {
+      startSeconds: seconds,
+      lastSeconds: seconds,
+      startClientX: e.clientX,
+      moved: false,
+    };
+    setLoopDraft({ fromSeconds: seconds, toSeconds: seconds });
+
+    const handleWindowMove = (ev: PointerEvent) => {
+      const drag = loopDragRef.current;
+      if (!drag) return;
+      if (Math.abs(ev.clientX - drag.startClientX) >= CLICK_MOVE_THRESHOLD_PX) drag.moved = true;
+      drag.lastSeconds = secondsAt(ev.clientX);
+      setLoopDraft({
+        fromSeconds: Math.min(drag.startSeconds, drag.lastSeconds),
+        toSeconds: Math.max(drag.startSeconds, drag.lastSeconds),
+      });
+    };
+    const handleWindowUp = () => {
+      window.removeEventListener("pointermove", handleWindowMove);
+      window.removeEventListener("pointerup", handleWindowUp);
+      const drag = loopDragRef.current;
+      loopDragRef.current = null;
+      setLoopDraft(null);
+      if (!drag) return;
+      if (!drag.moved) {
+        // Un click en la regla sigue siendo mover el cursor: es el
+        // gesto que ya existía y el que más se usa.
+        seekTo(drag.startSeconds);
+        return;
+      }
+      const region = normalizeLoopRegion(drag.startSeconds, drag.lastSeconds, gridSeconds);
+      // Marcar un tramo lo ENCIENDE. Dejarlo dibujado pero apagado
+      // obligaría a un segundo gesto para que suene, y nadie marca un
+      // loop para no escucharlo.
+      if (region) applyLoop(true, region);
+    };
+    window.addEventListener("pointermove", handleWindowMove);
+    window.addEventListener("pointerup", handleWindowUp);
+  }
+
+  // ─── Rectángulo de goma (seleccionar varios clips) ──────────────────
+
+  /** Los clips del arreglo con su duración EN PANTALLA, que es contra lo que se mide el rectángulo. */
+  function selectableTracks() {
+    return tracks.map((track) => ({
+      id: track.id,
+      clips: track.clips.map((clip) => ({
+        id: clip.id,
+        startSeconds: clip.startSeconds,
+        displayDuration: displayDurationFor(clip, projectTempoBpm),
+      })),
+    }));
+  }
+
+  function handleLanePointerDown(e: React.PointerEvent<HTMLDivElement>, trackIndex: number) {
+    // Solo el FONDO del carril arranca un rectángulo. Un pointerdown
+    // sobre un clip llega hasta acá por bubbling, y si no se filtrara,
+    // agarrar un clip empezaría también una selección por detrás.
+    if (e.target !== e.currentTarget) return;
+
+    // Tocar un carril lo vuelve el destino de lo próximo que se pegue.
+    setPasteTrackIndex(trackIndex);
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const seconds = Math.max(0, (e.clientX - rect.left) / effectivePixelsPerSecond);
+    marqueeRef.current = {
+      trackIndexA: trackIndex,
+      trackIndexB: trackIndex,
+      secondsA: seconds,
+      secondsB: seconds,
+      baseSelection: selectedClipIds,
+      additive: e.shiftKey || e.ctrlKey || e.metaKey,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      moved: false,
+    };
+    setMarquee({ trackFrom: trackIndex, trackTo: trackIndex, fromSeconds: seconds, toSeconds: seconds });
+
+    // Mismo motivo que en el arrastre de clips: escuchar en window es
+    // lo único que se entera de que el mouse pasó a OTRA fila.
+    const handleWindowMove = (ev: PointerEvent) => updateMarquee(ev.clientX, ev.clientY);
+    const handleWindowUp = () => {
+      window.removeEventListener("pointermove", handleWindowMove);
+      window.removeEventListener("pointerup", handleWindowUp);
+      finishMarquee();
+    };
+    window.addEventListener("pointermove", handleWindowMove);
+    window.addEventListener("pointerup", handleWindowUp);
+  }
+
+  function updateMarquee(clientX: number, clientY: number) {
+    const state = marqueeRef.current;
+    if (!state) return;
+    if (Math.hypot(clientX - state.startClientX, clientY - state.startClientY) >= CLICK_MOVE_THRESHOLD_PX) {
+      state.moved = true;
+    }
+
+    const hovered = document.elementFromPoint(clientX, clientY);
+    const lane = hovered instanceof Element ? hovered.closest("[data-track-index]") : null;
+    if (lane) {
+      const index = Number(lane.getAttribute("data-track-index"));
+      if (Number.isFinite(index)) state.trackIndexB = index;
+      // Los segundos se miden contra el carril que está DEBAJO del
+      // mouse, no contra el de origen: los dos empiezan en la misma x,
+      // pero el de origen puede haber quedado fuera de pantalla.
+      const rect = lane.getBoundingClientRect();
+      state.secondsB = Math.max(0, (clientX - rect.left) / effectivePixelsPerSecond);
+    }
+
+    setMarquee({
+      trackFrom: Math.min(state.trackIndexA, state.trackIndexB),
+      trackTo: Math.max(state.trackIndexA, state.trackIndexB),
+      fromSeconds: Math.min(state.secondsA, state.secondsB),
+      toSeconds: Math.max(state.secondsA, state.secondsB),
     });
+  }
+
+  function finishMarquee() {
+    const state = marqueeRef.current;
+    marqueeRef.current = null;
+    setMarquee(null);
+    if (!state) return;
+
+    if (!state.moved) {
+      // Click en el vacío: deseleccionar. Es la salida natural de una
+      // selección múltiple — sin esto había que ir a tocar otro clip,
+      // que además lo selecciona.
+      if (!state.additive) setSelectedClipIds([]);
+      return;
+    }
+
+    const hit = clipsInRect(
+      selectableTracks(),
+      state.trackIndexA,
+      state.trackIndexB,
+      state.secondsA,
+      state.secondsB,
+    );
+    setSelectedClipIds(
+      state.additive ? Array.from(new Set([...state.baseSelection, ...hit])) : hit,
+    );
   }
 
   // ─── Problema 3: tiradores de recorte (bordes del clip seleccionado) ─
@@ -2036,8 +2753,13 @@ export default function ArrangerPage() {
     stopAllSources();
     setIsPlaying(false);
     setPlayheadSeconds(0);
-    setSelectedClipId(null);
-    setClipboardClip(null);
+    setSelectedClipIds([]);
+    setClipboard(null);
+    // El tramo de loop es del arreglo que estaba abierto: los compases
+    // 9 a 17 de otra canción no significan nada acá.
+    loopRef.current = { enabled: false, region: null };
+    setLoopEnabled(false);
+    setLoopRegion(null);
     setPendingDrops([]);
     // Un arreglo NUEVO entero: el historial arranca de cero acá.
     // Deshacer más atrás devolvería al proyecto anterior, que ya no
@@ -2719,6 +3441,43 @@ export default function ArrangerPage() {
           >
             <span className="block h-2.5 w-2.5 bg-current" />
           </button>
+          <button
+            type="button"
+            onClick={handleLoopButton}
+            title={
+              loopRegion
+                ? `Repetir ${formatTime(loopRegion.startSeconds)} → ${formatTime(loopRegion.endSeconds)} · arrastrá sobre la regla para marcar otro tramo`
+                : `Repetir ${DEFAULT_LOOP_BARS} compases desde el cursor · arrastrá sobre la regla para marcar un tramo`
+            }
+            aria-pressed={loopEnabled}
+            className={`flex h-8 items-center gap-1 rounded-full border px-2.5 text-sm transition-all duration-200 ${
+              loopEnabled
+                ? "border-amber-400 bg-amber-400/15 text-amber-300"
+                : "border-white/20 text-white/60 hover:border-white/50 hover:text-white"
+            }`}
+            aria-label="Loop"
+          >
+            ⟳
+            {loopEnabled && loopRegion && (
+              <span className="text-[10px] tabular-nums">
+                {formatTime(loopRegion.startSeconds)}–{formatTime(loopRegion.endSeconds)}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={handleMetronomeButton}
+            title="Clic del metrónomo. No entra en la mezcla ni en lo que se exporta: es para comprobar que el arreglo esté a tiempo."
+            aria-pressed={metronomeEnabled}
+            className={`flex h-8 w-8 items-center justify-center rounded-full border text-sm transition-all duration-200 ${
+              metronomeEnabled
+                ? "border-neon-cyan bg-neon-cyan/15 text-neon-cyan"
+                : "border-white/20 text-white/60 hover:border-white/50 hover:text-white"
+            }`}
+            aria-label="Metrónomo"
+          >
+            ♩
+          </button>
           <span className="w-20 font-display text-xs tabular-nums text-white/50">
             {formatTime(playheadSeconds)} / {formatTime(totalDurationSeconds)}
           </span>
@@ -2747,10 +3506,10 @@ export default function ArrangerPage() {
         </div>
 
         <div className="ml-auto flex items-center gap-3">
-          {selectedClipId && (
+          {selectedClipIds.length > 0 && (
             <div className="flex items-center gap-1.5">
               {(() => {
-                const found = findClip(selectedClipId);
+                const found = selectedClipId ? findClip(selectedClipId) : null;
                 if (!found) return null;
                 return (
                   <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
@@ -2771,7 +3530,7 @@ export default function ArrangerPage() {
                 );
               })()}
               {(() => {
-                const found = findClip(selectedClipId);
+                const found = selectedClipId ? findClip(selectedClipId) : null;
                 if (!found) return null;
                 return (
                   <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
@@ -2826,7 +3585,7 @@ export default function ArrangerPage() {
                   handleUploadAudioFile) con el MISMO motor que ya
                   usaban los loops del Banco de Sonidos. */}
               {(() => {
-                const found = findClip(selectedClipId);
+                const found = selectedClipId ? findClip(selectedClipId) : null;
                 if (!found || found.clip.sampleType !== "Loop") return null;
                 return (
                   <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
@@ -2846,17 +3605,23 @@ export default function ArrangerPage() {
                   </div>
                 );
               })()}
+              {/* Cortar es por definición de UN clip: partir seis en
+                  el cursor a la vez es otra función, y bastante más
+                  dudosa (la mitad quedaría con piezas de duración casi
+                  cero). */}
+              {selectedClipId && (
+                <button
+                  type="button"
+                  onClick={splitSelectedClipAtPlayhead}
+                  title="Cortar en el cursor (tecla S)"
+                  className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 hover:border-white/40"
+                >
+                  Cortar
+                </button>
+              )}
               <button
                 type="button"
-                onClick={splitSelectedClipAtPlayhead}
-                title="Cortar en el cursor (tecla S)"
-                className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 hover:border-white/40"
-              >
-                Cortar
-              </button>
-              <button
-                type="button"
-                onClick={copySelectedClip}
+                onClick={copySelectedClips}
                 className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 hover:border-white/40"
               >
                 Copiar
@@ -2864,21 +3629,21 @@ export default function ArrangerPage() {
               <button
                 type="button"
                 onClick={pasteClipboard}
-                disabled={!clipboardClip}
+                disabled={!clipboard || clipboard.length === 0}
                 className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 hover:border-white/40 disabled:opacity-30"
               >
                 Pegar
               </button>
               <button
                 type="button"
-                onClick={duplicateSelectedClip}
+                onClick={duplicateSelectedClips}
                 className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 hover:border-white/40"
               >
                 Duplicar
               </button>
               <button
                 type="button"
-                onClick={deleteSelectedClip}
+                onClick={deleteSelectedClips}
                 className="rounded-full border border-red-400/30 px-3 py-1.5 text-xs text-red-300 hover:border-red-400"
               >
                 Eliminar
@@ -3014,11 +3779,17 @@ export default function ArrangerPage() {
             >
               + Agregar pista
             </button>
-            {selectedClipId && (
-              <span className="text-[10px] text-white/30">
-                Tecla S: cortar en el cursor · Delete: borrar · arrastrá las esquinas superiores para hacer fade
+            {clipNotice ? (
+              <span className="text-[10px] text-amber-300/80">{clipNotice}</span>
+            ) : selectedClipIds.length > 1 ? (
+              <span className="text-[10px] text-white/40">
+                {selectedClipIds.length} clips seleccionados · Ctrl+D duplica el bloque · Delete borra todo
               </span>
-            )}
+            ) : selectedClipId ? (
+              <span className="text-[10px] text-white/30">
+                Tecla S: cortar en el cursor · Delete: borrar · Ctrl+click o arrastrá sobre el fondo para elegir varios
+              </span>
+            ) : null}
           </div>
 
           <div ref={timelineViewportRef} className="flex-1 overflow-auto">
@@ -3038,11 +3809,49 @@ export default function ArrangerPage() {
                   />
                   <div
                     className="relative flex-1 cursor-pointer border-b border-white/10"
-                    onClick={(e) => {
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      seekTo((e.clientX - rect.left) / effectivePixelsPerSecond);
-                    }}
+                    onPointerDown={handleRulerPointerDown}
+                    title="Click para mover el cursor · arrastrá para marcar el tramo a repetir"
                   >
+                    {/* Tramo de loop, dibujado por TODA la altura de las
+                        pistas (mismo truco de bottom negativo que usan el
+                        cursor y la grilla). Atenuado cuando el loop está
+                        apagado: el tramo sigue marcado y se puede volver
+                        a encender sin tener que dibujarlo de nuevo. */}
+                    {loopRegion && (
+                      <div
+                        className={`pointer-events-none absolute top-0 z-0 ${
+                          loopEnabled ? "bg-amber-400/10" : "bg-white/[0.03]"
+                        }`}
+                        style={{
+                          left: loopRegion.startSeconds * effectivePixelsPerSecond,
+                          width: Math.max(
+                            1,
+                            (loopRegion.endSeconds - loopRegion.startSeconds) * effectivePixelsPerSecond,
+                          ),
+                          bottom: -4000,
+                          borderLeft: `1px solid ${loopEnabled ? "rgb(251 191 36 / 0.8)" : "rgb(255 255 255 / 0.15)"}`,
+                          borderRight: `1px solid ${loopEnabled ? "rgb(251 191 36 / 0.8)" : "rgb(255 255 255 / 0.15)"}`,
+                        }}
+                      />
+                    )}
+                    {/* Lo que se está arrastrando ahora mismo. Se dibuja
+                        SIN pegar a la grilla, siguiendo al mouse: el
+                        tramo definitivo se redondea recién al soltar
+                        (ver normalizeLoopRegion) y ver el redondeo en
+                        vivo daría un borde que salta. */}
+                    {loopDraft && (
+                      <div
+                        className="pointer-events-none absolute top-0 z-0 border-x border-amber-300/70 bg-amber-300/15"
+                        style={{
+                          left: loopDraft.fromSeconds * effectivePixelsPerSecond,
+                          width: Math.max(
+                            1,
+                            (loopDraft.toSeconds - loopDraft.fromSeconds) * effectivePixelsPerSecond,
+                          ),
+                          bottom: -4000,
+                        }}
+                      />
+                    )}
                     {rulerTicks.map((tick, i) => (
                       <div
                         key={i}
@@ -3078,7 +3887,7 @@ export default function ArrangerPage() {
                   </div>
                 </div>
 
-                {tracks.map((track) => (
+                {tracks.map((track, trackIndex) => (
                   <div key={track.id} className="flex" style={{ height: ROW_HEIGHT }}>
                     <div
                       className="sticky left-0 z-20 flex shrink-0 flex-col justify-center gap-1 border-b border-r border-white/10 bg-graphite px-3 py-1.5"
@@ -3153,6 +3962,7 @@ export default function ArrangerPage() {
 
                     <div
                       data-track-id={track.id}
+                      data-track-index={trackIndex}
                       className={`relative flex-1 border-b bg-black/20 transition-colors duration-100 ${
                         dragHoverTrackId === track.id && dragOriginTrackId !== null && dragOriginTrackId !== track.id
                           ? "border-white/10 bg-neon-cyan/10 ring-1 ring-inset ring-neon-cyan/40"
@@ -3160,11 +3970,44 @@ export default function ArrangerPage() {
                       }`}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => handleTrackDrop(e, track.id)}
+                      onPointerDown={(e) => handleLanePointerDown(e, trackIndex)}
                       onPointerMove={handleLanePointerMove}
                       onPointerUp={handleLanePointerUp}
                     >
+                      {/* Tramo del rectángulo de goma que le toca a ESTE
+                          carril. Dibujarlo por carril evita tener que
+                          montar una capa que cruce toda la zona de
+                          pistas por encima del scroll.
+                          pointer-events-none es obligatorio: si no,
+                          elementFromPoint devolvería el rectángulo en
+                          vez del carril y dejaría de saber sobre qué
+                          pista está el mouse. */}
+                      {marquee && trackIndex >= marquee.trackFrom && trackIndex <= marquee.trackTo && (
+                        <div
+                          className="pointer-events-none absolute top-0 bottom-0 z-10 border border-neon-cyan/70 bg-neon-cyan/10"
+                          style={{
+                            left: marquee.fromSeconds * effectivePixelsPerSecond,
+                            width: Math.max(
+                              1,
+                              (marquee.toSeconds - marquee.fromSeconds) * effectivePixelsPerSecond,
+                            ),
+                          }}
+                        />
+                      )}
                       {track.clips.map((clip) => {
                         const isDragging = dragRef.current?.clipId === clip.id;
+                        // Los demás clips del bloque se corren el MISMO
+                        // delta que el agarrado: sin esto, el bloque se
+                        // ve romperse durante el arrastre y recomponerse
+                        // al soltar.
+                        const groupDrag =
+                          !isDragging &&
+                          dragPreviewStartSeconds != null &&
+                          dragRef.current != null &&
+                          dragRef.current.movingClipIds.length > 1 &&
+                          dragRef.current.movingClipIds.includes(clip.id)
+                            ? dragPreviewStartSeconds - dragRef.current.originalStartSeconds
+                            : null;
                         const isTrimming = trimDragRef.current?.clipId === clip.id;
                         const isFading = fadeDragRef.current?.clipId === clip.id;
                         let effective = clip;
@@ -3173,12 +4016,14 @@ export default function ArrangerPage() {
                         const startSeconds =
                           isDragging && dragPreviewStartSeconds != null
                             ? dragPreviewStartSeconds
-                            : effective.startSeconds;
+                            : groupDrag != null
+                              ? Math.max(0, effective.startSeconds + groupDrag)
+                              : effective.startSeconds;
                         const widthPx = Math.max(
                           3,
                           displayDurationFor(effective, projectTempoBpm) * effectivePixelsPerSecond,
                         );
-                        const isSelected = selectedClipId === clip.id;
+                        const isSelected = selectedClipIds.includes(clip.id);
                         const visiblePeaks = slicePeaksForWindow(
                           clip.peaks,
                           effective.sourceOffsetSeconds,
@@ -3216,7 +4061,7 @@ export default function ArrangerPage() {
                               backgroundColor: `${track.color}1F`,
                               borderColor: isSelected ? "#FFB74D" : `${track.color}55`,
                               borderWidth: isSelected ? 2 : 1,
-                              opacity: isDragging ? 0.65 : 1,
+                              opacity: isDragging || groupDrag != null ? 0.65 : 1,
                             }}
                           >
                             {clip.peaks.length === 0 ? (
@@ -3304,7 +4149,13 @@ export default function ArrangerPage() {
                                 {clip.pitchShift}
                               </span>
                             )}
-                            {isSelected && (
+                            {/* Los tiradores de recorte y de fade solo
+                                aparecen con UN clip seleccionado: con
+                                varios, la fila se llenaría de tiradores
+                                y cualquiera de ellos editaría uno solo,
+                                que no es lo que la selección múltiple
+                                promete. */}
+                            {isSelected && selectedClipIds.length === 1 && (
                               <>
                                 <div
                                   onPointerDown={(e) =>
