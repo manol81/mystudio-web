@@ -159,8 +159,15 @@ export function SampleBrowserPanel({
   const filtersActive = hasActiveFilters(filters);
 
   return (
-    <div className="flex h-full w-full flex-col gap-2 overflow-hidden">
-      <div>
+    // ⚠️ `overflow-y-auto` y no `overflow-hidden`, y cada control con
+    // `shrink-0`. Con overflow oculto, en una ventana baja los
+    // controles de arriba se comían TODO el alto y la lista de
+    // resultados quedaba en 0 px: había 3916 px de samples que no se
+    // veían nunca, ni con los filtros cerrados, y sin ninguna barra que
+    // avisara que había algo abajo. Ahora, si no entra, el panel entero
+    // scrollea.
+    <div className="flex h-full w-full flex-col gap-2 overflow-y-auto">
+      <div className="shrink-0">
         <h2 className="font-display text-xs font-semibold uppercase tracking-widest text-white/50">
           Banco de Sonidos
         </h2>
@@ -174,10 +181,10 @@ export function SampleBrowserPanel({
         value={filters.search}
         onChange={(e) => patch({ search: e.target.value })}
         placeholder="Buscar por nombre, instrumento o género..."
-        className={`${inputClasses} text-xs`}
+        className={`${inputClasses} shrink-0 text-xs`}
       />
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
         <Toggle
           active={matchProject}
           onClick={() => onMatchProjectChange(!matchProject)}
@@ -201,7 +208,7 @@ export function SampleBrowserPanel({
         </Toggle>
       </div>
 
-      <div className="flex items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1.5">
         <select
           value={filters.sort}
           onChange={(e) => patch({ sort: e.target.value as SampleFilterState["sort"] })}
@@ -218,8 +225,23 @@ export function SampleBrowserPanel({
         </Toggle>
       </div>
 
+      {/* Cuántos quedaron. Es la respuesta a "toqué un filtro, ¿y?" sin
+          tener que llegar hasta la lista — y con el panel de filtros
+          abierto, la lista puede estar bastante más abajo. */}
+      <p className="shrink-0 text-[10px] text-white/35">
+        {loading
+          ? "Cargando..."
+          : filtersActive
+            ? `${filtered.length} de ${samples.length} ${samples.length === 1 ? "sonido" : "sonidos"}`
+            : `${samples.length} ${samples.length === 1 ? "sonido" : "sonidos"}`}
+      </p>
+
       {showFilters && (
-        <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-onyx-black/50 p-2">
+        // Alto acotado: la lista de instrumentos y la de géneros son
+        // largas, y a 288 px de ancho se envuelven en varias filas. Sin
+        // tope, el bloque de filtros solo era más alto que el panel
+        // entero (332 px contra 176) y no quedaba lugar para nada más.
+        <div className="flex max-h-64 shrink-0 flex-col gap-2 overflow-y-auto rounded-lg border border-white/10 bg-onyx-black/50 p-2">
           <div className="flex flex-wrap gap-1.5">
             {SAMPLE_TYPES.map((opt) => (
               <Toggle
@@ -297,7 +319,11 @@ export function SampleBrowserPanel({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto">
+      {/* `min-h-0` para que `flex-1` pueda achicarse de verdad (sin eso
+          un contenedor con scroll se niega a bajar de su contenido), y
+          `min-h-[9rem]` para que NUNCA quede en cero: si no entra, el
+          panel de afuera scrollea y la lista sigue estando. */}
+      <div className="min-h-[9rem] flex-1 overflow-y-auto">
         {loading ? (
           <p className="text-xs text-white/30">Cargando...</p>
         ) : filtered.length === 0 ? (
