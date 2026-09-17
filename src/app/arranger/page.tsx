@@ -48,8 +48,13 @@ import JSZip from "jszip";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
-import { renderClipToWav } from "@/lib/wavExport";
+import { renderClipToWav, renderClipChainToWav, type ChainPart } from "@/lib/wavExport";
 import { scheduleGainEnvelope } from "@/lib/clipEnvelope";
+import {
+  overlapChains,
+  resolveTrackFades,
+  type ResolvedFades,
+} from "@/lib/clipCrossfade";
 import { getOrProcessBuffer } from "@/lib/audioDsp";
 import { getCachedBuffer, loadAndCacheBuffer, setCachedBuffer } from "@/lib/sampleBufferCache";
 import type { ArrangerClip, ArrangerTrack } from "@/lib/arrangerTypes";
@@ -816,6 +821,45 @@ export default function ArrangerPage() {
     metronomeVoicesRef.current = [];
   }
 
+  /**
+   * El fade REAL de cada clip, ya mirando a sus vecinos de la misma
+   * pista: el declick de los bordes duros y el crossfade de los solapes
+   * (ver clipCrossfade.ts). Se calcula en UN solo lugar porque lo
+   * consumen tres caminos que tienen que coincidir o el arreglo suena
+   * distinto según dónde lo escuches: la reproducción en vivo, el
+   * dibujo del clip y la exportación.
+   */
+  const resolvedFades = useMemo(() => {
+    const all = new Map<string, ResolvedFades>();
+    for (const track of tracks) {
+      const resolved = resolveTrackFades(
+        track.clips.map((clip) => ({
+          id: clip.id,
+          startSeconds: clip.startSeconds,
+          displayDuration: displayDurationFor(clip, projectTempoBpm),
+          fadeInSeconds: clip.fadeInSeconds,
+          fadeOutSeconds: clip.fadeOutSeconds,
+        })),
+      );
+      for (const [id, fades] of resolved) all.set(id, fades);
+    }
+    return all;
+  }, [tracks, projectTempoBpm]);
+
+  /** Los fades de un clip, con el propio del clip como red por si todavía no se calcularon. */
+  function fadesFor(clip: ArrangerClip): ResolvedFades {
+    return (
+      resolvedFades.get(clip.id) ?? {
+        fadeInSeconds: clip.fadeInSeconds,
+        fadeOutSeconds: clip.fadeOutSeconds,
+        fadeInShape: "linear",
+        fadeOutShape: "linear",
+        crossfadeIn: false,
+        crossfadeOut: false,
+      }
+    );
+  }
+
   const totalDurationSeconds = useMemo(() => {
     let maxEnd = MIN_TIMELINE_SECONDS;
     for (const track of tracks) {
@@ -1104,14 +1148,17 @@ export default function ArrangerPage() {
       // diferencia del gain/panner de la PISTA que es persistente
       // (ver trackNodesRef más arriba).
       const clipGain = ctx.createGain();
+      const fades = fadesFor(clip);
       scheduleGainEnvelope(
         clipGain.gain,
         when,
         displayOffset,
         displayDuration,
         clip.gain,
-        clip.fadeInSeconds,
-        clip.fadeOutSeconds,
+        fades.fadeInSeconds,
+        fades.fadeOutSeconds,
+        fades.fadeInShape,
+        fades.fadeOutShape,
       );
       source.connect(clipGain);
       clipGain.connect(trackNodes.panner);
@@ -2419,28 +2466,78 @@ export default function ArrangerPage() {
       // project_backup_service.dart — CLAUDE.md ya documenta que el
       // export es siempre el archivo completo), así que acá el corte
       // se resuelve renderizando solo esa porción.
-      const keyFor = (clip: ArrangerClip, rate: number) =>
+      //
+      // ⚠️ Y una UNIDAD de exportación no es siempre un clip. Si dos
+      // clips de una pista se SOLAPAN (o sea, hay un crossfade entre
+      // ellos), viajan aplanados en un solo WAV con el cruce ya
+      // horneado. El motivo está en native_engine.cpp: la mezcla de una
+      // pista toma el PRIMER clip que cubre cada frame y corta, porque
+      // el motor da por sentado que los clips de una pista no se
+      // superponen. Mandar el solape tal cual no sonaría cruzado en el
+      // teléfono, sonaría con un AGUJERO — el que gana en esa zona es
+      // justo el que se está yendo a silencio. Ver overlapChains.
+      const describe = (clip: ArrangerClip, rate: number, fades: ResolvedFades) =>
         `${clip.sampleId}::${clip.sourceOffsetSeconds.toFixed(4)}::` +
         `${clip.sourceDurationSeconds.toFixed(4)}::${rate.toFixed(4)}::` +
-        `${clip.gain.toFixed(4)}::${clip.fadeInSeconds.toFixed(4)}::${clip.fadeOutSeconds.toFixed(4)}::` +
-        `${clip.pitchShift}`;
+        `${clip.gain.toFixed(4)}::${fades.fadeInSeconds.toFixed(4)}::${fades.fadeOutSeconds.toFixed(4)}::` +
+        `${fades.fadeInShape}::${fades.fadeOutShape}::${clip.pitchShift}`;
 
-      const uniqueClips = new Map<string, { clip: ArrangerClip; rate: number }>();
-      for (const track of tracks) {
-        for (const clip of track.clips) {
-          const rate = playbackRateFor(clip, projectTempoBpm);
-          const key = keyFor(clip, rate);
-          if (!uniqueClips.has(key)) uniqueClips.set(key, { clip, rate });
-        }
+      /** Un archivo del .mystudio: un clip suelto, o una cadena solapada aplanada. */
+      interface ExportUnit {
+        key: string;
+        startSeconds: number;
+        pitchShift: number;
+        clips: { clip: ArrangerClip; rate: number; fades: ResolvedFades }[];
+        totalDurationSeconds: number;
+      }
+
+      const unitsByTrack: ExportUnit[][] = tracks.map((track) => {
+        const withGeometry = track.clips.map((clip) => ({
+          id: clip.id,
+          startSeconds: clip.startSeconds,
+          displayDuration: displayDurationFor(clip, projectTempoBpm),
+          fadeInSeconds: clip.fadeInSeconds,
+          fadeOutSeconds: clip.fadeOutSeconds,
+          clip,
+        }));
+        return overlapChains(withGeometry).map((chain) => {
+          const parts = chain.map((entry) => ({
+            clip: entry.clip,
+            rate: playbackRateFor(entry.clip, projectTempoBpm),
+            fades: fadesFor(entry.clip),
+          }));
+          const startSeconds = Math.min(...chain.map((c) => c.startSeconds));
+          const endSeconds = Math.max(...chain.map((c) => c.startSeconds + c.displayDuration));
+          return {
+            // La posición RELATIVA de cada clip dentro de la cadena
+            // entra en la clave: dos cadenas con los mismos clips pero
+            // distinto solape son audios distintos.
+            key: parts
+              .map(
+                (p, i) =>
+                  `${describe(p.clip, p.rate, p.fades)}@${(chain[i].startSeconds - startSeconds).toFixed(4)}`,
+              )
+              .join("|"),
+            startSeconds,
+            pitchShift: parts[0].clip.pitchShift,
+            clips: parts,
+            totalDurationSeconds: endSeconds - startSeconds,
+          };
+        });
+      });
+
+      const uniqueUnits = new Map<string, ExportUnit>();
+      for (const units of unitsByTrack) {
+        for (const unit of units) if (!uniqueUnits.has(unit.key)) uniqueUnits.set(unit.key, unit);
       }
 
       const renderedByKey = new Map<
         string,
         { fileName: string; durationSamples: number; sampleRate: number; bytes: Uint8Array }
       >();
-      const uniqueEntries = [...uniqueClips.entries()];
+      const uniqueEntries = [...uniqueUnits.entries()];
       for (let i = 0; i < uniqueEntries.length; i++) {
-        const [key, { clip, rate }] = uniqueEntries[i];
+        const [key, unit] = uniqueEntries[i];
         // Mismo buffer YA procesado (tempo + pitch) que usa la
         // reproducción en vivo — el offset/duración de recorte están
         // definidos contra el buffer ORIGINAL, así que se convierten a
@@ -2449,15 +2546,36 @@ export default function ArrangerPage() {
         // cambia la duración, así que no afecta esta cuenta). En
         // general ya está en caché (ver el useEffect de pre-calentado),
         // así que este await resuelve casi siempre de inmediato.
-        const stretchedBuffer = await getProcessedBuffer(clip, rate);
-        const rendered = await renderClipToWav(
-          stretchedBuffer,
-          clip.sourceOffsetSeconds / rate,
-          clip.sourceDurationSeconds / rate,
-          clip.gain,
-          clip.fadeInSeconds,
-          clip.fadeOutSeconds,
+        const buffers = await Promise.all(
+          unit.clips.map(({ clip, rate }) => getProcessedBuffer(clip, rate)),
         );
+        let rendered;
+        if (unit.clips.length === 1) {
+          const { clip, rate, fades } = unit.clips[0];
+          rendered = await renderClipToWav(
+            buffers[0],
+            clip.sourceOffsetSeconds / rate,
+            clip.sourceDurationSeconds / rate,
+            clip.gain,
+            fades.fadeInSeconds,
+            fades.fadeOutSeconds,
+            fades.fadeInShape,
+            fades.fadeOutShape,
+          );
+        } else {
+          const parts: ChainPart[] = unit.clips.map(({ clip, rate, fades }, index) => ({
+            buffer: buffers[index],
+            sourceOffsetSeconds: clip.sourceOffsetSeconds / rate,
+            sourceDurationSeconds: clip.sourceDurationSeconds / rate,
+            startOffsetSeconds: clip.startSeconds - unit.startSeconds,
+            gain: clip.gain,
+            fadeInSeconds: fades.fadeInSeconds,
+            fadeOutSeconds: fades.fadeOutSeconds,
+            fadeInShape: fades.fadeInShape,
+            fadeOutShape: fades.fadeOutShape,
+          }));
+          rendered = await renderClipChainToWav(parts, unit.totalDurationSeconds);
+        }
         renderedByKey.set(key, { fileName: `audio_${i}.wav`, ...rendered });
         setExportProgress(((i + 1) / Math.max(1, uniqueEntries.length)) * 0.55);
       }
@@ -2488,16 +2606,17 @@ export default function ArrangerPage() {
           timeSignatureNumerator,
           timeSignatureDenominator,
         },
-        tracks: tracks.map((track) => ({
+        tracks: tracks.map((track, trackIndex) => ({
           name: track.name,
           volume: track.volume,
           pan: track.pan,
           isMuted: track.isMuted,
           isSolo: track.isSolo,
           fx: track.fx,
-          clips: track.clips.map((clip) => {
-            const rate = playbackRateFor(clip, projectTempoBpm);
-            const rendered = renderedByKey.get(keyFor(clip, rate))!;
+          // Una entrada por UNIDAD, no por clip: una cadena solapada ya
+          // viajó aplanada en un solo WAV (ver más arriba).
+          clips: unitsByTrack[trackIndex].map((unit) => {
+            const rendered = renderedByKey.get(unit.key)!;
             return {
               audioFileName: rendered.fileName,
               // REGLA CRÍTICA (Paso 4): `startBeat` es, para
@@ -2509,7 +2628,7 @@ export default function ArrangerPage() {
               // "Compases" es solo una vista/formato de la regla, la
               // posición real de cada clip nunca se guardó en
               // compases. Nada que convertir acá.
-              startBeat: clip.startSeconds,
+              startBeat: unit.startSeconds,
               durationSamples: rendered.durationSamples,
               sampleRate: rendered.sampleRate,
               // Paso 3 (pitch-shifting) — el audio EN SÍ ya viaja
@@ -2518,7 +2637,7 @@ export default function ArrangerPage() {
               // informativo para una futura lectura (Flutter no lo lee
               // todavía, mismo criterio que timeSignatureNumerator/
               // Denominator a nivel de proyecto).
-              pitchShift: clip.pitchShift,
+              pitchShift: unit.pitchShift,
             };
           }),
         })),
@@ -2623,6 +2742,16 @@ export default function ArrangerPage() {
       // El borrador NO se borra al guardar: sigue siendo lo que permite
       // irse del Arranger y volver sin tener que bajar el proyecto de
       // nuevo. Lo que cambia es que deja de estar "sin guardar".
+      //
+      // ⚠️ Anotar la FIRMA de lo que se acaba de subir no es opcional, y
+      // olvidarlo fue un bug real: el `setIsDirty(false)` de acá abajo
+      // duraba 700 ms. El guardado continuo vuelve a correr enseguida,
+      // compara la firma actual contra esta referencia —que seguía en
+      // null— y marca el arreglo como sucio otra vez. O sea que el
+      // cartel decía "Sin sincronizar" para SIEMPRE, incluso recién
+      // sincronizado, que es justo el momento en que más importa que
+      // diga la verdad.
+      cloudSavedSignatureRef.current = arrangementSignature(currentDraft());
       setIsDirty(false);
       setExportSuccessTitle(manifest.project.title);
     } catch (err) {
@@ -4030,8 +4159,23 @@ export default function ArrangerPage() {
                           effective.sourceDurationSeconds,
                           clip.buffer.duration,
                         );
-                        const fadeInPx = effective.fadeInSeconds * effectivePixelsPerSecond;
-                        const fadeOutPx = effective.fadeOutSeconds * effectivePixelsPerSecond;
+                        // Lo que se DIBUJA es el fade resuelto (con el
+                        // crossfade de los solapes ya adentro), no el que
+                        // la persona puso a mano: si no, un cruce se
+                        // escucharía sin verse. Mientras se arrastra un
+                        // tirador se muestra el valor crudo, que es el
+                        // que la mano está moviendo.
+                        const shownFades = isFading && fadePreview ? null : fadesFor(clip);
+                        const fadeInPx =
+                          (shownFades?.fadeInSeconds ?? effective.fadeInSeconds) * effectivePixelsPerSecond;
+                        const fadeOutPx =
+                          (shownFades?.fadeOutSeconds ?? effective.fadeOutSeconds) * effectivePixelsPerSecond;
+                        // El cruce se dibuja en ámbar y el fade propio en
+                        // blanco: uno lo puso el código por vos y el otro
+                        // lo pusiste vos, y conviene poder distinguirlos
+                        // de un vistazo.
+                        const fadeInColor = shownFades?.crossfadeIn ? "#FBBF24" : "#fff";
+                        const fadeOutColor = shownFades?.crossfadeOut ? "#FBBF24" : "#fff";
                         const waveformHeightPx = ROW_HEIGHT - 12;
                         // Los tiradores de fade van en la PUNTA de la rampa (no
                         // fijos en la esquina) para poder ubicar de un vistazo
@@ -4111,7 +4255,7 @@ export default function ArrangerPage() {
                                     y1={waveformHeightPx}
                                     x2={fadeInPx}
                                     y2={0}
-                                    stroke="#fff"
+                                    stroke={fadeInColor}
                                     strokeWidth={1.5}
                                     opacity={0.85}
                                   />
@@ -4122,7 +4266,7 @@ export default function ArrangerPage() {
                                     y1={waveformHeightPx}
                                     x2={Math.max(0, widthPx - fadeOutPx)}
                                     y2={0}
-                                    stroke="#fff"
+                                    stroke={fadeOutColor}
                                     strokeWidth={1.5}
                                     opacity={0.85}
                                   />

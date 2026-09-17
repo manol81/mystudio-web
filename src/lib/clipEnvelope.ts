@@ -26,6 +26,31 @@ export interface FadeBreakpoint {
 }
 
 /**
+ * Forma de la rampa. Ver la nota larga en clipCrossfade.ts: un CRUCE
+ * entre dos audios distintos necesita potencia constante (dos rampas
+ * lineales sumadas dan un pozo de −3 dB justo en la junta), y un fade
+ * que no cruza con nada tiene que ser lineal, que además es lo que
+ * aplica el motor nativo.
+ */
+export type FadeShape = "linear" | "equalPower";
+
+/**
+ * En cuántos tramos se aproxima una curva de potencia constante.
+ *
+ * El AudioParam solo sabe hacer rampas lineales y exponenciales entre
+ * dos puntos; la curva se arma con puntos intermedios. Con 8 tramos el
+ * error máximo contra el seno real queda por debajo de 0,006 (≈0,05 dB),
+ * bastante menos que lo que cualquiera puede oír, y son 8 puntos, no
+ * cientos.
+ */
+const EQUAL_POWER_SEGMENTS = 8;
+
+/** Ganancia de una entrada de potencia constante en el progreso [0,1]. */
+function equalPowerIn(progress: number): number {
+  return Math.sin((progress * Math.PI) / 2);
+}
+
+/**
  * Puntos de quiebre de la envolvente: (0, silencio-o-gain),
  * (fadeIn, gain), (fadeOutStart, gain), (duración, silencio-o-gain).
  * Si fadeIn+fadeOut excede la duración del clip, se escalan
@@ -36,6 +61,8 @@ export function computeFadeBreakpoints(
   gain: number,
   fadeInSeconds: number,
   fadeOutSeconds: number,
+  fadeInShape: FadeShape = "linear",
+  fadeOutShape: FadeShape = "linear",
 ): FadeBreakpoint[] {
   let fadeIn = Math.max(0, Math.min(fadeInSeconds, displayDuration));
   let fadeOut = Math.max(0, Math.min(fadeOutSeconds, displayDuration));
@@ -47,10 +74,29 @@ export function computeFadeBreakpoints(
   }
 
   const points: FadeBreakpoint[] = [{ time: 0, value: fadeIn > 0 ? 0 : gain }];
-  if (fadeIn > 0) points.push({ time: fadeIn, value: gain });
+  if (fadeIn > 0) {
+    if (fadeInShape === "equalPower") {
+      for (let i = 1; i < EQUAL_POWER_SEGMENTS; i++) {
+        const progress = i / EQUAL_POWER_SEGMENTS;
+        points.push({ time: fadeIn * progress, value: gain * equalPowerIn(progress) });
+      }
+    }
+    points.push({ time: fadeIn, value: gain });
+  }
   const fadeOutStart = displayDuration - fadeOut;
   if (fadeOut > 0 && fadeOutStart > points[points.length - 1].time) {
     points.push({ time: fadeOutStart, value: gain });
+    if (fadeOutShape === "equalPower") {
+      for (let i = 1; i < EQUAL_POWER_SEGMENTS; i++) {
+        const progress = i / EQUAL_POWER_SEGMENTS;
+        // La salida es la entrada al revés: cos(x) = sin(1 - x). Así
+        // las dos mitades del cruce suman exactamente 1 en potencia.
+        points.push({
+          time: fadeOutStart + fadeOut * progress,
+          value: gain * equalPowerIn(1 - progress),
+        });
+      }
+    }
   }
   points.push({ time: displayDuration, value: fadeOut > 0 ? 0 : gain });
   return points;
@@ -86,8 +132,17 @@ export function scheduleGainEnvelope(
   gain: number,
   fadeInSeconds: number,
   fadeOutSeconds: number,
+  fadeInShape: FadeShape = "linear",
+  fadeOutShape: FadeShape = "linear",
 ) {
-  const points = computeFadeBreakpoints(displayDuration, gain, fadeInSeconds, fadeOutSeconds);
+  const points = computeFadeBreakpoints(
+    displayDuration,
+    gain,
+    fadeInSeconds,
+    fadeOutSeconds,
+    fadeInShape,
+    fadeOutShape,
+  );
   const startValue = valueAtBreakpoint(points, displayOffset);
   param.cancelScheduledValues(when);
   param.setValueAtTime(startValue, when);

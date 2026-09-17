@@ -27,7 +27,7 @@
 // que se sincroniza al celular ya suena con el fade aplicado, sin que
 // el motor nativo (Flutter/C++) necesite saber que existió.
 
-import { scheduleGainEnvelope } from "./clipEnvelope";
+import { scheduleGainEnvelope, type FadeShape } from "./clipEnvelope";
 
 const TARGET_SAMPLE_RATE = 44100;
 
@@ -55,6 +55,8 @@ export async function renderClipToWav(
   gain = 1,
   fadeInSeconds = 0,
   fadeOutSeconds = 0,
+  fadeInShape: FadeShape = "linear",
+  fadeOutShape: FadeShape = "linear",
 ): Promise<RenderedClipAudio> {
   const outputFrames = Math.max(1, Math.ceil(sourceDurationSeconds * TARGET_SAMPLE_RATE));
 
@@ -73,7 +75,17 @@ export async function renderClipToWav(
   // El export siempre renderiza el clip COMPLETO desde su propio
   // principio (displayOffset = 0) — a diferencia de la reproducción en
   // vivo, acá nunca hace falta "arrancar a mitad" del fade.
-  scheduleGainEnvelope(gainNode.gain, 0, 0, sourceDurationSeconds, gain, fadeInSeconds, fadeOutSeconds);
+  scheduleGainEnvelope(
+    gainNode.gain,
+    0,
+    0,
+    sourceDurationSeconds,
+    gain,
+    fadeInSeconds,
+    fadeOutSeconds,
+    fadeInShape,
+    fadeOutShape,
+  );
   // start(when, offset, duration) — offset/duration en la base de
   // tiempo NATIVA de [buffer] (que YA es la de salida, ver arriba).
   source.start(0, sourceOffsetSeconds, sourceDurationSeconds);
@@ -84,6 +96,72 @@ export async function renderClipToWav(
 
   return {
     bytes,
+    durationSamples: rendered.length,
+    sampleRate: TARGET_SAMPLE_RATE,
+  };
+}
+
+/** Un clip dentro de una cadena, ya ubicado contra el arranque de esa cadena. */
+export interface ChainPart {
+  /** El buffer YA procesado (tempo + pitch), igual que en renderClipToWav. */
+  buffer: AudioBuffer;
+  sourceOffsetSeconds: number;
+  sourceDurationSeconds: number;
+  /** Cuántos segundos después del arranque de la CADENA entra este clip. */
+  startOffsetSeconds: number;
+  gain: number;
+  fadeInSeconds: number;
+  fadeOutSeconds: number;
+  fadeInShape: FadeShape;
+  fadeOutShape: FadeShape;
+}
+
+/**
+ * Aplana VARIOS clips solapados a un solo WAV, con el cruce ya horneado.
+ *
+ * ⚠️ Esto existe por el motor nativo de Android, no por la web. En
+ * `renderBlock` (native_engine.cpp) la mezcla de una pista toma el
+ * PRIMER clip que cubre cada frame y corta: el motor da por sentado que
+ * los clips de una pista nunca se superponen. Mandar un .mystudio con
+ * clips solapados no sonaría cruzado en el teléfono, sonaría con un
+ * AGUJERO — el clip que gana en la zona del cruce es justo el que se
+ * está yendo a silencio. Aplanando la cadena acá, el teléfono recibe un
+ * clip común y corriente que ya trae el cruce adentro.
+ *
+ * El cruce se suma en un OfflineAudioContext, o sea con la MISMA
+ * envolvente que sonó en el navegador durante la edición: "lo que
+ * escuchás es lo que exportás" sigue valiendo.
+ */
+export async function renderClipChainToWav(
+  parts: readonly ChainPart[],
+  totalDurationSeconds: number,
+): Promise<RenderedClipAudio> {
+  const outputFrames = Math.max(1, Math.ceil(totalDurationSeconds * TARGET_SAMPLE_RATE));
+  const offlineCtx = new OfflineAudioContext(1, outputFrames, TARGET_SAMPLE_RATE);
+
+  for (const part of parts) {
+    const source = offlineCtx.createBufferSource();
+    source.buffer = part.buffer;
+    const gainNode = offlineCtx.createGain();
+    source.connect(gainNode);
+    gainNode.connect(offlineCtx.destination);
+    scheduleGainEnvelope(
+      gainNode.gain,
+      part.startOffsetSeconds,
+      0,
+      part.sourceDurationSeconds,
+      part.gain,
+      part.fadeInSeconds,
+      part.fadeOutSeconds,
+      part.fadeInShape,
+      part.fadeOutShape,
+    );
+    source.start(part.startOffsetSeconds, part.sourceOffsetSeconds, part.sourceDurationSeconds);
+  }
+
+  const rendered = await offlineCtx.startRendering();
+  return {
+    bytes: encodeWavMono16(rendered.getChannelData(0), TARGET_SAMPLE_RATE),
     durationSamples: rendered.length,
     sampleRate: TARGET_SAMPLE_RATE,
   };
