@@ -66,6 +66,7 @@ import {
 } from "@/lib/barClock";
 import { transposeSemitonesFor } from "@/lib/sampleAffinity";
 import { computePeaks } from "@/lib/samplePeaks";
+import { detectTempo } from "@/lib/tempoDetect";
 import { computeSnappedStart, type SnapNeighbour } from "@/lib/arrangerSnap";
 import {
   buildClipboard,
@@ -172,6 +173,25 @@ const SCHEDULER_INTERVAL_MS = 250;
 
 /** Cuántos compases dura el loop que se crea solo al tocar el botón sin haber marcado ninguno. */
 const DEFAULT_LOOP_BARS = 4;
+
+/**
+ * Hasta acá un archivo puede ser un loop. Más largo que esto es una
+ * canción, y una canción NO se estira al tempo del proyecto sin que
+ * nadie lo haya pedido: es la misma frontera que usa Ableton para
+ * decidir si un archivo entra "warpeado" o no.
+ */
+const MAX_LOOP_SECONDS = 30;
+
+/**
+ * Debajo de esto el tempo detectado se informa con reservas.
+ *
+ * ⚠️ NO es el filtro de "¿hay música acá?" — eso ya lo resolvió
+ * detectTempo devolviendo null (ver MIN_ONSET_STRENGTH en
+ * tempoDetect.ts). Esto mide si el tempo elegido es CLARO o si había
+ * otro candidato pisándole los talones. Medido sobre archivos reales:
+ * entre 0,54 y 0,82.
+ */
+const MIN_TEMPO_CONFIDENCE = 0.55;
 // Paso 4 (rendimiento) — ancho del bloque "esqueleto" que se muestra
 // mientras se resuelve el audio real de un clip recién soltado (ver
 // PendingDrop). Un valor fijo en segundos de duración ESTIMADA (no en
@@ -1599,6 +1619,22 @@ export default function ArrangerPage() {
    * time-stretchear este clip igual que cualquier loop del Banco de
    * Sonidos, con el MISMO motor (audioDsp.ts) que ya usa el pitch.
    */
+  /**
+   * Mezcla a mono para analizar. El detector de tempo mira UN canal:
+   * quedarse solo con el izquierdo perdería un bombo paneado a la
+   * derecha, que es justo lo que más aporta al pulso.
+   */
+  function monoMix(buffer: AudioBuffer): Float32Array {
+    if (buffer.numberOfChannels === 1) return buffer.getChannelData(0);
+    const mixed = new Float32Array(buffer.length);
+    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+      const data = buffer.getChannelData(channel);
+      for (let i = 0; i < mixed.length; i++) mixed[i] += data[i];
+    }
+    for (let i = 0; i < mixed.length; i++) mixed[i] /= buffer.numberOfChannels;
+    return mixed;
+  }
+
   async function handleUploadAudioFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ""; // permite volver a elegir el mismo archivo después
@@ -1628,6 +1664,54 @@ export default function ArrangerPage() {
       // del código (Sound Bank, .mystudio importado).
       setCachedBuffer(sampleId, buffer);
 
+      // ─── Tempo detectado ───────────────────────────────────────
+      //
+      // Hasta acá el Arranger asumía `originalBpm = tempo del proyecto`,
+      // o sea "esto ya está a tiempo, no lo toques". Es la suposición
+      // más segura y casi siempre es falsa.
+      //
+      // ⚠️ Pero detectar el tempo NO alcanza para estirar. Un loop de
+      // cuatro compases y una canción entera son dos intenciones
+      // distintas: al loop lo querés al tempo del proyecto, a la canción
+      // la querés como la grabaste. Estirar una canción de tres minutos
+      // sin que nadie lo pida es un desastre silencioso, así que solo se
+      // estira cuando hay evidencia FUERTE de que es un loop: que dure
+      // poco Y que calce en un número entero de compases. En los demás
+      // casos el tempo se INFORMA y la persona decide con el control de
+      // "BPM original".
+      const estimate = detectTempo(
+        monoMix(buffer),
+        buffer.sampleRate,
+        timeSignatureNumerator,
+      );
+      // Para ESTIRAR hace falta evidencia fuerte de que es un loop, y
+      // la evidencia fuerte es que el archivo DURE un número entero de
+      // compases al tempo detectado. La confianza no entra acá a
+      // propósito: mide ambigüedad entre candidatos, no si el archivo
+      // es un loop (ver MIN_TEMPO_CONFIDENCE).
+      const isLoop =
+        estimate != null && estimate.snappedToLoop && buffer.duration <= MAX_LOOP_SECONDS;
+      const detectedBpm = estimate ? Math.round(estimate.bpm * 10) / 10 : null;
+
+      if (isLoop) {
+        setDraftNotice(
+          `"${displayName}": detecté ${detectedBpm} BPM (${estimate!.bars} ${estimate!.bars === 1 ? "compás" : "compases"}), ` +
+            `así que el clip sigue el tempo del proyecto. Si no es así, corregí "BPM original" en la barra del clip.`,
+        );
+      } else if (detectedBpm != null) {
+        const reserva =
+          estimate!.confidence < MIN_TEMPO_CONFIDENCE ? " (la lectura no es muy clara)" : "";
+        setDraftNotice(
+          `"${displayName}": detecté unos ${detectedBpm} BPM${reserva}, pero no calza en compases enteros o es muy largo ` +
+            `para ser un loop, así que lo dejé SIN estirar. Si querés que siga el tempo del proyecto, poné ${detectedBpm} en "BPM original".`,
+        );
+      } else {
+        setDraftNotice(
+          `"${displayName}": no encontré un pulso claro, así que el clip queda sin estirar. ` +
+            `Si sabés a qué tempo está, ponelo en "BPM original" y se ajusta solo.`,
+        );
+      }
+
       const trackId = newId();
       const trackColor = TRACK_COLORS[tracks.length % TRACK_COLORS.length];
       const clip: ArrangerClip = {
@@ -1640,7 +1724,10 @@ export default function ArrangerPage() {
         // cuenta estos clips como perdidos y lo avisa, en vez de
         // restaurar un arreglo mudo.
         audioPath: "",
-        originalBpm: projectTempoBpm,
+        // Con el tempo del proyecto acá, playbackRateFor da 1.0 y el
+        // clip no se toca — que es lo que corresponde cuando no hay
+        // evidencia de que sea un loop.
+        originalBpm: isLoop ? estimate!.bpm : projectTempoBpm,
         sampleType: "Loop",
         startSeconds: Math.max(0, playheadSeconds),
         sourceOffsetSeconds: 0,
