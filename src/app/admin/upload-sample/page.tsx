@@ -16,6 +16,8 @@
 // formas va a fallar con permission-denied al enviarlo.
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { detectTempo, type TempoEstimate } from "@/lib/tempoDetect";
+import { detectKey, isKnownSampleKey, type KeyEstimate } from "@/lib/keyDetect";
 import {
   collection,
   deleteDoc,
@@ -68,6 +70,20 @@ export default function UploadSamplePage() {
   const [bpm, setBpm] = useState("");
   const [key, setKey] = useState<string>(SAMPLE_KEYS[0]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Análisis automático del archivo elegido: tempo y tonalidad, medidos
+  // sobre el audio. El objetivo es que cargar un sample deje de
+  // depender de abrir otra aplicación para medir a mano — que es lento
+  // y se equivoca, y un sample con el BPM o la tonalidad mal cargados
+  // no rompe nada: simplemente aparece donde no corresponde y
+  // desaparece donde sí.
+  const [analysis, setAnalysis] = useState<{
+    fileName: string;
+    durationSeconds: number;
+    tempo: TempoEstimate | null;
+    key: KeyEstimate | null;
+  } | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -188,6 +204,70 @@ export default function UploadSamplePage() {
     }
   }
 
+  /**
+   * Analiza el archivo apenas se elige y COMPLETA los campos.
+   *
+   * Completa en vez de solo sugerir porque el flujo real es cargar
+   * muchos samples seguidos: si cada uno pide confirmar dos valores que
+   * ya están bien, la función no ahorra tiempo, que era el punto. Lo
+   * detectado queda visible arriba del formulario y los campos son
+   * editables como siempre.
+   *
+   * ⚠️ Lo que NO se toca es el tipo, el instrumento ni el género: eso
+   * no se puede medir en el audio y adivinarlo sería peor que dejarlo
+   * en blanco, porque un valor puesto por el sistema se revisa menos
+   * que uno vacío.
+   */
+  async function handleFileChosen() {
+    const file = fileInputRef.current?.files?.[0];
+    setAnalysis(null);
+    if (!file) return;
+
+    setError(null);
+    setIsAnalyzing(true);
+    try {
+      const context = new AudioContext();
+      const buffer = await context.decodeAudioData(await file.arrayBuffer());
+      void context.close();
+
+      // Mono: quedarse con el canal izquierdo perdería un bombo paneado
+      // a la derecha, que es justo lo que más aporta al pulso.
+      let mono: Float32Array;
+      if (buffer.numberOfChannels === 1) {
+        mono = buffer.getChannelData(0);
+      } else {
+        mono = new Float32Array(buffer.length);
+        for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+          const data = buffer.getChannelData(channel);
+          for (let i = 0; i < mono.length; i++) mono[i] += data[i] / buffer.numberOfChannels;
+        }
+      }
+
+      const tempo = detectTempo(mono, buffer.sampleRate);
+      const detectedKey = detectKey(mono, buffer.sampleRate);
+      setAnalysis({
+        fileName: file.name,
+        durationSeconds: buffer.duration,
+        tempo,
+        key: detectedKey,
+      });
+
+      if (!name.trim()) setName(file.name.replace(/\.(mp3|wav)$/i, ""));
+      if (tempo) setBpm(String(Math.round(tempo.bpm * 10) / 10));
+      if (detectedKey && isKnownSampleKey(detectedKey.key)) setKey(detectedKey.key);
+    } catch (err) {
+      // Que el análisis falle no puede impedir subir el sample: los
+      // campos siguen estando y se completan a mano, como antes.
+      setAnalysis(null);
+      setError(
+        `No se pudo analizar el archivo${err instanceof Error ? `: ${err.message}` : ""}. ` +
+          `Podés cargar el BPM y la tonalidad a mano.`,
+      );
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -247,6 +327,7 @@ export default function UploadSamplePage() {
       setGenre(SAMPLE_GENRES[0]);
       setBpm("");
       setKey(SAMPLE_KEYS[0]);
+      setAnalysis(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo subir el sample.");
@@ -397,9 +478,74 @@ export default function UploadSamplePage() {
               type="file"
               accept=".wav,.mp3,audio/wav,audio/mpeg"
               disabled={isUploading}
+              onChange={handleFileChosen}
               className="w-full text-xs text-white/60 file:mr-3 file:rounded-full file:border file:border-neon-cyan/40 file:bg-onyx-black file:px-4 file:py-1.5 file:text-xs file:font-semibold file:text-neon-cyan"
             />
           </div>
+
+          {isAnalyzing && (
+            <p className="text-xs text-white/50">Analizando el audio...</p>
+          )}
+
+          {analysis && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-neon-cyan/25 bg-onyx-black/60 p-3 text-xs">
+              <p className="font-semibold text-neon-cyan">
+                Detectado en {analysis.durationSeconds.toFixed(2)} s
+              </p>
+
+              <p className="text-white/60">
+                <span className="text-white/40">Tempo: </span>
+                {analysis.tempo ? (
+                  <>
+                    {Math.round(analysis.tempo.bpm * 10) / 10} BPM
+                    {analysis.tempo.bars != null && (
+                      <span className="text-white/40">
+                        {" "}
+                        ({analysis.tempo.bars}{" "}
+                        {analysis.tempo.bars === 1 ? "compás" : "compases"} justos)
+                      </span>
+                    )}
+                    {analysis.tempo.confidence < 0.55 && (
+                      <span className="text-amber-300/80"> · lectura poco clara</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-white/40">
+                    sin pulso claro — dejá el BPM vacío si no tiene tempo
+                  </span>
+                )}
+              </p>
+
+              <p className="text-white/60">
+                <span className="text-white/40">Tonalidad: </span>
+                {analysis.key ? (
+                  <>
+                    {analysis.key.key}
+                    {/* La confusión estructural es la relativa: C Major
+                        y A Minor tienen las mismas notas y solo las
+                        separa el peso de cada una. Ofrecer la segunda a
+                        un click es más honesto que afirmar una sola. */}
+                    <button
+                      type="button"
+                      onClick={() => setKey(analysis.key!.alternative)}
+                      className="ml-1 text-white/40 underline-offset-2 hover:text-white hover:underline"
+                    >
+                      (¿{analysis.key.alternative}?)
+                    </button>
+                    {analysis.key.confidence < 0.15 && (
+                      <span className="text-amber-300/80"> · muy parejas</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-white/40">sin tonalidad definida (percusión o ruido)</span>
+                )}
+              </p>
+
+              <p className="text-[10px] text-white/30">
+                Ya quedaron cargados abajo. Corregilos si hace falta.
+              </p>
+            </div>
+          )}
 
           {isUploading && (
             <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
