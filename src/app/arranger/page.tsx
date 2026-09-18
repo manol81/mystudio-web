@@ -65,7 +65,7 @@ import {
   secondsPerQuarterNote,
 } from "@/lib/barClock";
 import {
-  camelotLabel,
+  keyLabel,
   keysAreCompatible,
   transposeKey,
   transposeSemitonesFor,
@@ -4028,21 +4028,16 @@ export default function ArrangerPage() {
                       <option value="">—</option>
                       {SAMPLE_KEYS.filter((k) => k !== "N/A").map((k) => (
                         <option key={k} value={k}>
-                          {k}
+                          {keyLabel(k)}
                         </option>
                       ))}
                     </select>
-                    {clipKey && (
-                      <span className="text-[10px] tabular-nums text-white/35">
-                        {camelotLabel(clipKey)}
-                      </span>
-                    )}
                     {/* Con transposición aplicada se muestran las DOS:
                         de dónde salió y cómo suena. Mostrar solo una de
                         las dos deja una pregunta sin responder. */}
                     {clipKey && shift !== 0 && soundingKey && (
                       <span className="text-[10px] text-white/50">
-                        → {soundingKey} ({shift > 0 ? "+" : ""}
+                        → {keyLabel(soundingKey)} ({shift > 0 ? "+" : ""}
                         {shift} st)
                       </span>
                     )}
@@ -4052,12 +4047,12 @@ export default function ArrangerPage() {
                         // ofrecer una acción acá invitaría a "arreglar"
                         // algo que ya está bien.
                         <span className="text-[10px] font-semibold text-emerald-400">
-                          entra en {projectKey}
+                          entra en {keyLabel(projectKey)}
                         </span>
                       ) : (
                         <>
                           <span className="text-[10px] font-semibold text-amber-300">
-                            no entra en {projectKey}
+                            no entra en {keyLabel(projectKey)}
                           </span>
                           {missing !== 0 && (
                             <button

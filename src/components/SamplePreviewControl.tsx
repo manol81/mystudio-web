@@ -21,7 +21,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  camelotLabel,
+  keyLabel,
+  keyTooltip,
   isExtremeStretch,
   resolvePreviewTransform,
   type PreviewSpec,
@@ -194,12 +195,12 @@ export function SamplePreviewControl({
         {sample.originalBpm > 0 && (
           <span className="text-white/40">{Math.round(sample.originalBpm)} BPM</span>
         )}
-        {camelotLabel(sample.sampleKey) && (
+        {keyLabel(sample.sampleKey) && (
           <span
             className="rounded px-1 py-0.5 text-white/50 ring-1 ring-inset ring-white/15"
-            title={`${sample.sampleKey} — código Camelot para mezclar por tonalidad`}
+            title={keyTooltip(sample.sampleKey) ?? undefined}
           >
-            {camelotLabel(sample.sampleKey)}
+            {keyLabel(sample.sampleKey)}
           </span>
         )}
         {/* Lo que va a PASARLE al sample, no lo que es. Se muestra solo

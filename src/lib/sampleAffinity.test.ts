@@ -13,6 +13,8 @@ import {
   affinityFor,
   camelotFor,
   camelotLabel,
+  keyLabel,
+  keyTooltip,
   isExtremeStretch,
   keysAreCompatible,
   parseSampleKey,
@@ -324,5 +326,30 @@ describe("transponer una tonalidad", () => {
         expect(keysAreCompatible(projectKey, sounding)).toBe(true);
       }
     }
+  });
+});
+
+describe("keyLabel", () => {
+  it("muestra la notación corta, no el código Camelot", () => {
+    expect(keyLabel("A Minor")).toBe("A min");
+    expect(keyLabel("C Major")).toBe("C maj");
+    expect(keyLabel("F# Minor")).toBe("F# min");
+    expect(keyLabel("Eb Major")).toBe("Eb maj");
+  });
+
+  it("normaliza cómo se haya cargado la ficha", () => {
+    expect(keyLabel("a minor")).toBe("A min");
+    expect(keyLabel("Am")).toBe("A min");
+    expect(keyLabel("C maj")).toBe("C maj");
+  });
+
+  it("sin tonalidad no muestra nada", () => {
+    expect(keyLabel("N/A")).toBeNull();
+    expect(keyLabel("")).toBeNull();
+    expect(keyTooltip(null)).toBeNull();
+  });
+
+  it("el tooltip conserva el nombre completo y el código Camelot", () => {
+    expect(keyTooltip("A Minor")).toBe("A Minor · Camelot 8A");
   });
 });

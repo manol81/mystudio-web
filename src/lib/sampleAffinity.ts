@@ -153,6 +153,34 @@ export function camelotLabel(raw: string | null | undefined): string | null {
 }
 
 /**
+ * La tonalidad como se MUESTRA: "A min", "C maj", "F# min".
+ *
+ * Es lo que se ve en las etiquetas del Banco de Sonidos y del clip. El
+ * código Camelot ("8A") es lo que usa la lógica de compatibilidad, pero
+ * en pantalla confundía a casi todos: hay que conocer la rueda para
+ * leerlo. Esta es la notación de Splice, Ableton y de los nombres de
+ * los packs, y es corta para una etiqueta. Camelot queda en el tooltip
+ * para quien lo use (ver keyTooltip).
+ *
+ * Normaliza lo que sea que diga la ficha ("a minor", "Am", "Eb Major")
+ * a la misma escritura, así dos samples en la misma tonalidad se ven
+ * iguales aunque se hayan cargado distinto.
+ */
+export function keyLabel(raw: string | null | undefined): string | null {
+  const parsed = parseSampleKey(raw);
+  if (!parsed) return null;
+  return `${ROOT_NAMES[parsed.pitchClass]} ${parsed.mode === "minor" ? "min" : "maj"}`;
+}
+
+/** "A Minor · Camelot 8A" — el nombre completo y el código, para el title. */
+export function keyTooltip(raw: string | null | undefined): string | null {
+  const parsed = parseSampleKey(raw);
+  if (!parsed) return null;
+  const full = `${ROOT_NAMES[parsed.pitchClass]} ${parsed.mode === "minor" ? "Minor" : "Major"}`;
+  return `${full} · Camelot ${camelotLabel(raw)}`;
+}
+
+/**
  * ¿Se pueden mezclar sin que choquen?
  *
  * Es DELIBERADAMENTE permisivo en los casos de duda: si el proyecto no
