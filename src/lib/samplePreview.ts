@@ -110,7 +110,9 @@ export async function startPreview(
 
   const raw = await loadAndCacheBuffer(spec.sampleId, spec.audioPath);
   const { rate, semitones } = resolvePreviewTransform(spec, options);
-  const buffer = await getOrProcessBuffer(spec.sampleId, raw, rate, semitones);
+  // Mismo `loopable` que el clip: si no, pre-escucha y clip dejan de
+  // compartir el caché (ver getOrProcessBuffer).
+  const buffer = await getOrProcessBuffer(spec.sampleId, raw, rate, semitones, spec.sampleType === "Loop");
 
   // Mientras se bajaba/procesaba, el usuario pidió otra cosa.
   if (requestId !== requestCounter) return;

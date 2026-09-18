@@ -60,11 +60,47 @@ const IDENTITY_EPSILON = 0.0005;
 // cola sin cortarla.
 const RENDER_PADDING_SECONDS = 2;
 
+/**
+ * Cuánto audio se le da al motor DESPUÉS del final del sample.
+ *
+ * ⚠️ Sin esto el buffer estirado pierde su cola, y no poco: medido
+ * sobre un loop de batería de 8,276 s estirado a 120 BPM, los últimos
+ * ~100 ms salían en SILENCIO, cuando el original tiene audio hasta el
+ * último milisegundo. El motor necesita "ver" un poco más adelante para
+ * producir cada tramo de salida; cuando la entrada se termina, lo que
+ * queda por producir sale vacío.
+ *
+ * Con una sola pasada casi no se nota (se come el final del último
+ * golpe). Pero al REPETIR un clip, o al encadenar dos copias del mismo
+ * loop, ese hueco aparece en CADA junta — reportado como "se corta el
+ * sonido cuando empieza la parte nueva del clip estirado". Sin estirar
+ * no pasa, porque ese camino no toca el motor.
+ */
+const CONTINUATION_SECONDS = 1;
+
+/**
+ * Qué se le da al motor después del final.
+ *
+ * Para un LOOP, el principio del mismo loop: es literalmente lo que va a
+ * sonar después cuando se repita o se encadene, así que la cola sale
+ * calculada con la continuidad real y la junta queda pegada. Para lo que
+ * no es loop (un One-Shot al que se le cambió el tono), SILENCIO:
+ * envolver un golpe sobre sí mismo haría que su propio ataque se cuele
+ * como eco al final.
+ */
+function withContinuation(data: Float32Array, loopable: boolean, sampleRate: number): Float32Array {
+  const extra = Math.min(Math.ceil(CONTINUATION_SECONDS * sampleRate), loopable ? data.length : Infinity);
+  const out = new Float32Array(data.length + extra);
+  out.set(data, 0);
+  if (loopable) out.set(data.subarray(0, extra), data.length);
+  return out;
+}
+
 const processedBufferCache = new Map<string, AudioBuffer>();
 const pendingProcessing = new Map<string, Promise<AudioBuffer>>();
 
-function cacheKey(sampleId: string, rate: number, semitones: number): string {
-  return `${sampleId}::${rate.toFixed(4)}::${semitones}`;
+function cacheKey(sampleId: string, rate: number, semitones: number, loopable: boolean): string {
+  return `${sampleId}::${rate.toFixed(4)}::${semitones}::${loopable ? "loop" : "once"}`;
 }
 
 async function loadSignalsmithStretch(): Promise<SignalsmithStretchFactory> {
@@ -96,6 +132,7 @@ export async function applyTimeStretch(
   buffer: AudioBuffer,
   rate: number,
   semitones: number,
+  loopable = false,
 ): Promise<AudioBuffer> {
   const isIdentity = Math.abs(rate - 1) < IDENTITY_EPSILON && Math.abs(semitones) < IDENTITY_EPSILON;
   if (isIdentity || rate <= 0) return buffer;
@@ -117,7 +154,11 @@ export async function applyTimeStretch(
 
   const channelData: Float32Array[] = [];
   for (let ch = 0; ch < channels; ch++) {
-    channelData.push(Float32Array.from(buffer.getChannelData(ch)));
+    // Con continuación después del final: ver CONTINUATION_SECONDS.
+    // Lo que se recorta de la salida sigue siendo `outputFrames`, así
+    // que la duración del buffer no cambia — solo deja de faltarle la
+    // cola.
+    channelData.push(withContinuation(buffer.getChannelData(ch), loopable, sampleRate));
   }
   await node.addBuffers(channelData);
   node.connect(offlineCtx.destination);
@@ -152,18 +193,25 @@ export function getOrProcessBuffer(
   buffer: AudioBuffer,
   rate: number,
   semitones: number,
+  /**
+   * true para los Loop: la cola se calcula sabiendo que después viene
+   * el principio del mismo sample (ver withContinuation). La
+   * pre-escucha y el clip tienen que pasar el MISMO valor, o dejan de
+   * compartir el caché y la pre-escucha ya no adelanta trabajo.
+   */
+  loopable = false,
 ): Promise<AudioBuffer> {
   const isIdentity = Math.abs(rate - 1) < IDENTITY_EPSILON && Math.abs(semitones) < IDENTITY_EPSILON;
   if (isIdentity) return Promise.resolve(buffer);
 
-  const key = cacheKey(sampleId, rate, semitones);
+  const key = cacheKey(sampleId, rate, semitones, loopable);
   const cached = processedBufferCache.get(key);
   if (cached) return Promise.resolve(cached);
 
   const pending = pendingProcessing.get(key);
   if (pending) return pending;
 
-  const promise = applyTimeStretch(buffer, rate, semitones).then((result) => {
+  const promise = applyTimeStretch(buffer, rate, semitones, loopable).then((result) => {
     processedBufferCache.set(key, result);
     return result;
   });

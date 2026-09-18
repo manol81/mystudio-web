@@ -1080,7 +1080,13 @@ export default function ArrangerPage() {
   async function getProcessedBuffer(clip: ArrangerClip, rate: number): Promise<AudioBuffer> {
     if (Math.abs(rate - 1) < 0.0005 && clip.pitchShift === 0) return clip.buffer;
     try {
-      return await getOrProcessBuffer(clip.sampleId, clip.buffer, rate, clip.pitchShift);
+      return await getOrProcessBuffer(
+        clip.sampleId,
+        clip.buffer,
+        rate,
+        clip.pitchShift,
+        clip.sampleType === "Loop",
+      );
     } catch (err) {
       // Si el motor de DSP falla, mejor sonar SIN procesar que dejar
       // muda TODA la reproducción (antes, un error acá tumbaba el
@@ -3261,6 +3267,7 @@ export default function ArrangerPage() {
           // crear uno nuevo al lado, y sabemos de qué versión partimos.
           setCloudProjectId(openId);
           setCloudBaseVersion(openedVersion);
+          pendingOpenedSnapshotRef.current = true;
           // SILENT: la tonalidad venía guardada en el documento, no la
           // acaba de elegir nadie. Con un commit normal, abrir un
           // proyecto dejaba un "Deshacer: Cambiar la tonalidad" que no
@@ -3311,6 +3318,18 @@ export default function ArrangerPage() {
   /// contra esto que se decide si hay cambios sin guardar — no contra
   /// "¿pasó algo?", que daría siempre que sí apenas se restaura.
   const cloudSavedSignatureRef = useRef<string | null>(null);
+  /**
+   * Se acaba de ABRIR un proyecto desde la nube y todavía no se anotó
+   * cómo quedó. Hace falta un paso diferido porque al terminar la
+   * descarga el estado nuevo todavía no se aplicó (la importación revela
+   * las pistas de a una): la firma se toma en la primera pasada del
+   * guardado continuo después de que todo se asentó.
+   *
+   * ⚠️ Sin esto, abrir un proyecto recién bajado mostraba "Sin
+   * sincronizar" sin haber tocado nada — el mismo cartel mentiroso que
+   * se arregló al guardar, pero del lado de abrir.
+   */
+  const pendingOpenedSnapshotRef = useRef(false);
 
   function currentDraft(): ArrangerDraft {
     return {
@@ -3379,6 +3398,11 @@ export default function ArrangerPage() {
 
     const handle = setTimeout(() => {
       const draft = currentDraft();
+      if (pendingOpenedSnapshotRef.current) {
+        // Lo que se acaba de bajar ES lo que está en la nube.
+        cloudSavedSignatureRef.current = arrangementSignature(draft);
+        pendingOpenedSnapshotRef.current = false;
+      }
       const dirty = arrangementSignature(draft) !== cloudSavedSignatureRef.current;
       rememberArrangerDraft(user.uid, { ...draft, isDirty: dirty });
       setIsDirty(dirty);
