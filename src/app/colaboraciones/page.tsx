@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Handshake, MessageCircle, Music2 } from "lucide-react";
+import { Download, Handshake, MessageCircle, Music2, Smartphone } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
 import { CollabThread } from "@/components/CollabThread";
@@ -29,6 +29,106 @@ import { fetchCommunityPost } from "@/lib/CommunityService";
 interface PostInfo {
   title: string;
   authorName: string;
+  /**
+   * El paquete liviano de pistas (un MP3 por pista, ver stemsExport.ts).
+   * Es lo que la app baja para que el colaborador grabe encima, y es de
+   * lectura pública. null en las publicaciones anteriores a esa función
+   * o si se publicaron sin generarlo.
+   */
+  stemsUrl: string | null;
+}
+
+const PLAY_STORE_URL =
+  "https://play.google.com/store/apps/details?id=com.aquiles.mystudio.pocket";
+
+/**
+ * Qué hace falta para que el colaborador sume su pista, dicho donde lo
+ * va a buscar.
+ *
+ * El circuito siempre existió, pero vivía entero en la APP (apretón de
+ * manos → Abrir → grabar → enviar) y esta página no lo mencionaba: un
+ * colaborador aceptado veía la conversación y nada más, y concluía que
+ * no había forma de recibir el tema. No se graba en el navegador a
+ * propósito —acá no se puede compensar la latencia y la pista llegaría
+ * corrida—, así que lo que corresponde es mandarlo a la app, con los
+ * nombres exactos de lo que va a tocar allá.
+ *
+ * El ZIP es para escuchar o ensayar en la computadora, o para grabar
+ * con otro programa. Es un <a href> y no un fetch: una navegación no
+ * pasa por CORS (ver el comentario de /api/download-proxy), y así no
+ * hace falta pasar los bytes por nuestro servidor.
+ */
+function CollaboratorSteps({
+  info,
+  delivered,
+}: {
+  info: PostInfo | undefined;
+  delivered: boolean;
+}) {
+  const authorName = info?.authorName || "el autor";
+
+  if (!info?.stemsUrl) {
+    return (
+      <p className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3 text-xs leading-relaxed text-amber-200/90">
+        Esta canción todavía no tiene el paquete de pistas que necesitás para grabar
+        encima. Pedile a {authorName} que la vuelva a publicar desde la web: al
+        publicarla se genera solo.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+      {!delivered && (
+        <>
+          <p className="flex items-center gap-1.5 text-xs font-semibold text-white/80">
+            <Smartphone size={13} className="text-neon-cyan" />
+            Cómo sumar tu pista
+          </p>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-relaxed text-white/55">
+            <li>
+              Abrí la app{" "}
+              <a
+                href={PLAY_STORE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-neon-cyan hover:underline"
+              >
+                MY STUDIO
+              </a>{" "}
+              con esta misma cuenta.
+            </li>
+            <li>
+              En tus proyectos, tocá el ícono del <b className="text-white/75">apretón de manos</b>{" "}
+              de la barra de arriba.
+            </li>
+            <li>
+              Buscá «{info.title}» y tocá <b className="text-white/75">Abrir</b>: la app baja el
+              tema y arma un proyecto con una pista por instrumento.
+            </li>
+            <li>Grabá tu parte ahí mismo, con la latencia ya calibrada.</li>
+            <li>
+              Desde el mezclador, tocá el ícono de <b className="text-white/75">enviar</b> y
+              elegí tu pista. Le llega a {authorName}, que tiene 7 días para bajarla.
+            </li>
+          </ol>
+        </>
+      )}
+      <a
+        href={info.stemsUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${delivered ? "" : "mt-3 "}inline-flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/60 transition-colors hover:border-white/40 hover:text-white`}
+      >
+        <Download size={13} />
+        Descargar pistas (ZIP)
+      </a>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-white/35">
+        Un MP3 por pista, todas alineadas desde el principio. Sirven para escuchar o
+        ensayar en la computadora; para grabar y mandar tu parte, usá la app.
+      </p>
+    </div>
+  );
 }
 
 function threadKey(c: CollabRequest): string {
@@ -70,7 +170,11 @@ export default function CollaborationsPage() {
           const post = await fetchCommunityPost(id).catch(() => null);
           return [
             id,
-            { title: post?.title ?? "Tema", authorName: post?.authorName ?? "" },
+            {
+              title: post?.title ?? "Tema",
+              authorName: post?.authorName ?? "",
+              stemsUrl: post?.stemsUrl ?? null,
+            },
           ] as const;
         }),
       );
@@ -174,6 +278,20 @@ export default function CollaborationsPage() {
               : c.downloadedAt
                 ? "El autor ya bajó tu pista."
                 : `Tu pista está subida — vence en ${days} ${days === 1 ? "día" : "días"}.`}
+          </p>
+        )}
+
+        {c.status === "accepted" && !iAmAuthor && (
+          <CollaboratorSteps info={info} delivered={Boolean(c.deliveryUrl)} />
+        )}
+
+        {/* Del lado del autor, lo único que puede trabar al colaborador
+            es que falte el paquete de pistas — y el único que lo puede
+            arreglar es él. */}
+        {c.status === "accepted" && iAmAuthor && info && !info.stemsUrl && (
+          <p className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3 text-xs leading-relaxed text-amber-200/90">
+            Esta publicación no tiene el paquete de pistas que {c.requesterName} necesita para
+            grabar encima en la app. Volvé a publicarla desde la web y se genera solo.
           </p>
         )}
 
