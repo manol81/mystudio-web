@@ -54,6 +54,7 @@ function clip(overrides: Partial<ArrangerClip> = {}): ArrangerClip {
     startSeconds: 4,
     sourceOffsetSeconds: 0,
     sourceDurationSeconds: 2,
+    repeats: 1,
     gain: 1,
     fadeInSeconds: 0,
     fadeOutSeconds: 0,

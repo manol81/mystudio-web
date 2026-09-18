@@ -57,8 +57,10 @@ export async function renderClipToWav(
   fadeOutSeconds = 0,
   fadeInShape: FadeShape = "linear",
   fadeOutShape: FadeShape = "linear",
+  repeats = 1,
 ): Promise<RenderedClipAudio> {
-  const outputFrames = Math.max(1, Math.ceil(sourceDurationSeconds * TARGET_SAMPLE_RATE));
+  const totalSeconds = sourceDurationSeconds * Math.max(1, repeats);
+  const outputFrames = Math.max(1, Math.ceil(totalSeconds * TARGET_SAMPLE_RATE));
 
   // numberOfChannels: 1 — el propio OfflineAudioContext hace el downmix
   // a mono (misma idea que loadWavFile del lado C++, que promedia
@@ -75,11 +77,23 @@ export async function renderClipToWav(
   // El export siempre renderiza el clip COMPLETO desde su propio
   // principio (displayOffset = 0) — a diferencia de la reproducción en
   // vivo, acá nunca hace falta "arrancar a mitad" del fade.
+  // Repeticiones con el loop NATIVO del nodo, igual que en la
+  // reproducción en vivo: el empalme entre vuelta y vuelta lo resuelve
+  // el motor al sample exacto. El `duration` de start() corta al final
+  // aunque el loop esté activo, así que una repetición fraccionaria
+  // (2,5 vueltas) sale cortada donde corresponde.
+  if (repeats > 1) {
+    source.loop = true;
+    source.loopStart = sourceOffsetSeconds;
+    source.loopEnd = sourceOffsetSeconds + sourceDurationSeconds;
+  }
+  // La envolvente se aplica sobre el LARGO TOTAL: el fade-out va al
+  // final de la última repetición, no al final de la primera.
   scheduleGainEnvelope(
     gainNode.gain,
     0,
     0,
-    sourceDurationSeconds,
+    totalSeconds,
     gain,
     fadeInSeconds,
     fadeOutSeconds,
@@ -88,7 +102,7 @@ export async function renderClipToWav(
   );
   // start(when, offset, duration) — offset/duration en la base de
   // tiempo NATIVA de [buffer] (que YA es la de salida, ver arriba).
-  source.start(0, sourceOffsetSeconds, sourceDurationSeconds);
+  source.start(0, sourceOffsetSeconds, totalSeconds);
 
   const rendered = await offlineCtx.startRendering();
   const samples = rendered.getChannelData(0);
@@ -107,6 +121,8 @@ export interface ChainPart {
   buffer: AudioBuffer;
   sourceOffsetSeconds: number;
   sourceDurationSeconds: number;
+  /** Cuántas veces se repite la ventana (1 = una sola pasada). */
+  repeats: number;
   /** Cuántos segundos después del arranque de la CADENA entra este clip. */
   startOffsetSeconds: number;
   gain: number;
@@ -142,6 +158,12 @@ export async function renderClipChainToWav(
   for (const part of parts) {
     const source = offlineCtx.createBufferSource();
     source.buffer = part.buffer;
+    const partSeconds = part.sourceDurationSeconds * Math.max(1, part.repeats);
+    if (part.repeats > 1) {
+      source.loop = true;
+      source.loopStart = part.sourceOffsetSeconds;
+      source.loopEnd = part.sourceOffsetSeconds + part.sourceDurationSeconds;
+    }
     const gainNode = offlineCtx.createGain();
     source.connect(gainNode);
     gainNode.connect(offlineCtx.destination);
@@ -149,14 +171,14 @@ export async function renderClipChainToWav(
       gainNode.gain,
       part.startOffsetSeconds,
       0,
-      part.sourceDurationSeconds,
+      partSeconds,
       part.gain,
       part.fadeInSeconds,
       part.fadeOutSeconds,
       part.fadeInShape,
       part.fadeOutShape,
     );
-    source.start(part.startOffsetSeconds, part.sourceOffsetSeconds, part.sourceDurationSeconds);
+    source.start(part.startOffsetSeconds, part.sourceOffsetSeconds, partSeconds);
   }
 
   const rendered = await offlineCtx.startRendering();

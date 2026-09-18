@@ -343,6 +343,28 @@ function slicePeaksForWindow(
   return peaks.slice(startBucket * 2, endBucket * 2);
 }
 
+/**
+ * Repite los picos de una ventana tantas veces como se repita el clip,
+ * cortando la última si la repetición es fraccionaria.
+ *
+ * Sin esto, un clip repetido cuatro veces se ve como UNA onda estirada
+ * a lo largo de todo el bloque: parecería que el audio se ralentizó, que
+ * es justo lo contrario de lo que pasa.
+ */
+function tilePeaks(peaks: Float32Array, repeats: number): Float32Array {
+  const times = Math.max(1, repeats || 1);
+  if (times <= 1 || peaks.length === 0) return peaks;
+  const buckets = peaks.length / 2;
+  const totalBuckets = Math.max(1, Math.round(buckets * times));
+  const out = new Float32Array(totalBuckets * 2);
+  for (let bucket = 0; bucket < totalBuckets; bucket++) {
+    const source = (bucket % buckets) * 2;
+    out[bucket * 2] = peaks[source];
+    out[bucket * 2 + 1] = peaks[source + 1];
+  }
+  return out;
+}
+
 function playbackRateFor(clip: ArrangerClip, projectTempoBpm: number): number {
   // Los One-Shot (percusión suelta, FX puntuales, etc.) suenan SIEMPRE
   // a su velocidad y tono original, en su posición de inicio tal cual
@@ -356,8 +378,21 @@ function playbackRateFor(clip: ArrangerClip, projectTempoBpm: number): number {
   return projectTempoBpm / clip.originalBpm;
 }
 
-function displayDurationFor(clip: ArrangerClip, projectTempoBpm: number): number {
+/** Lo que dura UNA pasada del clip en la línea de tiempo, sin repetir. */
+function windowDurationFor(clip: ArrangerClip, projectTempoBpm: number): number {
   return clip.sourceDurationSeconds / playbackRateFor(clip, projectTempoBpm);
+}
+
+/**
+ * Lo que ocupa el clip en la línea de tiempo, repeticiones incluidas.
+ *
+ * Es la función de la que cuelga TODO lo demás —el imán, el rectángulo
+ * de selección, el crossfade, la duración total del arreglo, el
+ * exportador—, así que hacer que entienda de repeticiones acá alcanza
+ * para que el resto se entere solo.
+ */
+function displayDurationFor(clip: ArrangerClip, projectTempoBpm: number): number {
+  return windowDurationFor(clip, projectTempoBpm) * Math.max(1, clip.repeats || 1);
 }
 
 function formatTime(seconds: number): string {
@@ -752,6 +787,7 @@ export default function ArrangerPage() {
     startSeconds: number;
     sourceOffsetSeconds: number;
     sourceDurationSeconds: number;
+    repeats: number;
   } | null>(null);
 
   // Arrastre de los "tiradores" de fade en las esquinas superiores del
@@ -1104,7 +1140,7 @@ export default function ArrangerPage() {
       if (track.clips.length === 0) continue;
       for (const clip of track.clips) {
         const rate = playbackRateFor(clip, projectTempoBpm);
-        const displayDuration = clip.sourceDurationSeconds / rate;
+        const displayDuration = displayDurationFor(clip, projectTempoBpm);
         if (clip.startSeconds + displayDuration <= clamped) continue;
         // Con loop, lo que empieza DESPUÉS del final del tramo no entra
         // en esta vuelta. Sin este filtro, el audio de más adelante
@@ -1150,7 +1186,14 @@ export default function ArrangerPage() {
       // duración (definidos contra el buffer ORIGINAL) se convierten
       // dividiendo por `rate`, misma relación que ya usaba
       // displayDuration más arriba.
-      const bufferStart = clip.sourceOffsetSeconds / rate + displayOffset;
+      // ⚠️ Con repeticiones, el punto del buffer donde hay que entrar
+      // NO es `offset + displayOffset`: hay que quedarse DENTRO de la
+      // ventana. Si el cursor cayó a mitad de la tercera vuelta de un
+      // loop de 2 s, se entra a 0,4 s de la ventana, no a 4,4 s del
+      // buffer (que ni siquiera existiría).
+      const windowDisplay = clip.sourceDurationSeconds / rate;
+      const offsetInWindow = windowDisplay > 0 ? displayOffset % windowDisplay : displayOffset;
+      const bufferStart = clip.sourceOffsetSeconds / rate + offsetInWindow;
       let remainingDuration = displayDuration - displayOffset;
       // Con loop, el clip se corta en el final del tramo. Se recorta
       // acá, en la duración de la propia fuente, en vez de llamar
@@ -1166,6 +1209,17 @@ export default function ArrangerPage() {
 
       const source = ctx.createBufferSource();
       source.buffer = stretchedBuffers[i];
+      // Las repeticiones las hace el PROPIO nodo, con su loop nativo, y
+      // no agendando N fuentes encadenadas: así el empalme entre vuelta
+      // y vuelta lo resuelve el motor de audio al sample exacto, y un
+      // clip repetido cuarenta veces sigue siendo un solo nodo. El
+      // `duration` de start() es el que corta al final, incluso con
+      // loop activo.
+      if (clip.repeats > 1) {
+        source.loop = true;
+        source.loopStart = clip.sourceOffsetSeconds / rate;
+        source.loopEnd = clip.sourceOffsetSeconds / rate + windowDisplay;
+      }
       // playbackRate se queda en 1 (default): el tempo YA está
       // resuelto por el time-stretch — resamplear de nuevo acá
       // volvería a cambiar el tono.
@@ -1552,6 +1606,7 @@ export default function ArrangerPage() {
       startSeconds: Math.max(0, startSeconds),
       sourceOffsetSeconds: 0,
       sourceDurationSeconds: buffer.duration,
+      repeats: 1,
       gain: 1,
       fadeInSeconds: 0,
       fadeOutSeconds: 0,
@@ -1753,6 +1808,7 @@ export default function ArrangerPage() {
         startSeconds: Math.max(0, playheadSeconds),
         sourceOffsetSeconds: 0,
         sourceDurationSeconds: buffer.duration,
+        repeats: 1,
         gain: 1,
         fadeInSeconds: 0,
         fadeOutSeconds: 0,
@@ -1987,6 +2043,11 @@ export default function ArrangerPage() {
     const leftClip: ArrangerClip = {
       ...clip,
       sourceDurationSeconds: cutOffsetSource,
+      // Las piezas de un corte no heredan las repeticiones: partir por
+      // la mitad "esto suena tres veces" no tiene un significado obvio,
+      // y dejar el multiplicador daría dos clips que duran el triple de
+      // lo que se ve en pantalla.
+      repeats: 1,
       fadeOutSeconds: 0,
     };
     const rightClip: ArrangerClip = {
@@ -1995,6 +2056,7 @@ export default function ArrangerPage() {
       startSeconds: playheadSeconds,
       sourceOffsetSeconds: clip.sourceOffsetSeconds + cutOffsetSource,
       sourceDurationSeconds: clip.sourceDurationSeconds - cutOffsetSource,
+      repeats: 1,
       fadeInSeconds: 0,
     };
 
@@ -2445,6 +2507,7 @@ export default function ArrangerPage() {
       startSeconds: clip.startSeconds,
       sourceOffsetSeconds: clip.sourceOffsetSeconds,
       sourceDurationSeconds: clip.sourceDurationSeconds,
+      repeats: clip.repeats,
     });
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
@@ -2531,17 +2594,60 @@ export default function ArrangerPage() {
         startSeconds: trimDrag.original.startSeconds + clampedDelta / rate,
         sourceOffsetSeconds: trimDrag.original.sourceOffsetSeconds + clampedDelta,
         sourceDurationSeconds: trimDrag.original.sourceDurationSeconds - clampedDelta,
+        repeats: trimDrag.original.repeats,
       });
     } else {
+      // El borde derecho hace DOS cosas, en este orden:
+      //
+      //   1. Mientras quede audio sin usar, lo DESTAPA (recorte de
+      //      siempre).
+      //   2. Cuando ya no queda, empieza a REPETIR la ventana.
+      //
+      // El orden importa y no es arbitrario: para un sample recién
+      // soltado del Banco la ventana YA es el archivo entero, así que
+      // el primer píxel de arrastre hacia la derecha ya repite, que es
+      // el caso común. Y para un clip recortado, tirar de la derecha
+      // primero devuelve lo que se había recortado, que es lo que
+      // cualquiera espera antes de pensar en repetir.
+      //
+      // ⚠️ Consecuencia a tener presente: NO se puede repetir una
+      // ventana recortada. Estirar hacia la derecha la destapa antes de
+      // repetir, así que lo que se repite es siempre el audio completo
+      // desde el offset. Repetir un recorte necesitaría un gesto
+      // aparte, y no vale la pena inventarle un modificador a esto.
       const maxAvailable = trimDrag.original.buffer.duration - trimDrag.original.sourceOffsetSeconds;
-      const newDuration = Math.max(
-        MIN_SOURCE_DURATION_SECONDS,
-        Math.min(maxAvailable, trimDrag.original.sourceDurationSeconds + deltaSourceSeconds),
+      const originalWindowDisplay = trimDrag.original.sourceDurationSeconds / rate;
+      const desiredDisplay = Math.max(
+        MIN_SOURCE_DURATION_SECONDS / rate,
+        originalWindowDisplay * trimDrag.original.repeats + deltaSourceSeconds / rate,
       );
+      const maxWindowDisplay = maxAvailable / rate;
+
+      let newDuration: number;
+      let newRepeats: number;
+      if (desiredDisplay <= maxWindowDisplay) {
+        newDuration = Math.max(MIN_SOURCE_DURATION_SECONDS, desiredDisplay * rate);
+        newRepeats = 1;
+      } else {
+        newDuration = maxAvailable;
+        newRepeats = desiredDisplay / maxWindowDisplay;
+        // Imán a repeticiones ENTERAS, salvo con Alt. Un loop repetido
+        // 2,97 veces corta la última justo antes de su golpe final y
+        // suena a error; acertar el entero a pulso, con el zoom
+        // alejado, es imposible.
+        if (!e.altKey) {
+          const whole = Math.round(newRepeats);
+          const wholePx = Math.abs(whole - newRepeats) * maxWindowDisplay * effectivePixelsPerSecond;
+          if (whole >= 1 && wholePx <= SNAP_THRESHOLD_PX) newRepeats = whole;
+        }
+        newRepeats = Math.max(1, newRepeats);
+      }
+
       setTrimPreview({
         startSeconds: trimDrag.original.startSeconds,
         sourceOffsetSeconds: trimDrag.original.sourceOffsetSeconds,
         sourceDurationSeconds: newDuration,
+        repeats: newRepeats,
       });
     }
   }
@@ -2588,7 +2694,7 @@ export default function ArrangerPage() {
         `${clip.sampleId}::${clip.sourceOffsetSeconds.toFixed(4)}::` +
         `${clip.sourceDurationSeconds.toFixed(4)}::${rate.toFixed(4)}::` +
         `${clip.gain.toFixed(4)}::${fades.fadeInSeconds.toFixed(4)}::${fades.fadeOutSeconds.toFixed(4)}::` +
-        `${fades.fadeInShape}::${fades.fadeOutShape}::${clip.pitchShift}`;
+        `${fades.fadeInShape}::${fades.fadeOutShape}::${clip.pitchShift}::${clip.repeats.toFixed(4)}`;
 
       /** Un archivo del .mystudio: un clip suelto, o una cadena solapada aplanada. */
       interface ExportUnit {
@@ -2669,12 +2775,14 @@ export default function ArrangerPage() {
             fades.fadeOutSeconds,
             fades.fadeInShape,
             fades.fadeOutShape,
+            clip.repeats,
           );
         } else {
           const parts: ChainPart[] = unit.clips.map(({ clip, rate, fades }, index) => ({
             buffer: buffers[index],
             sourceOffsetSeconds: clip.sourceOffsetSeconds / rate,
             sourceDurationSeconds: clip.sourceDurationSeconds / rate,
+            repeats: clip.repeats,
             startOffsetSeconds: clip.startSeconds - unit.startSeconds,
             gain: clip.gain,
             fadeInSeconds: fades.fadeInSeconds,
@@ -2981,6 +3089,7 @@ export default function ArrangerPage() {
         startSeconds: clip.startBeat,
         sourceOffsetSeconds: 0,
         sourceDurationSeconds: buffer.duration,
+        repeats: 1,
         gain: 1,
         fadeInSeconds: 0,
         fadeOutSeconds: 0,
@@ -3335,7 +3444,15 @@ export default function ArrangerPage() {
           lostClips++;
           continue;
         }
-        clips.push({ ...clip, buffer, peaks: computePeaks(buffer, PEAK_BUCKETS) });
+        // `repeats` no existía en los borradores anteriores a esta
+        // función: sin el ?? 1, displayDurationFor daría NaN y el clip
+        // desaparecería de la pantalla.
+        clips.push({
+          ...clip,
+          repeats: clip.repeats || 1,
+          buffer,
+          peaks: computePeaks(buffer, PEAK_BUCKETS),
+        });
       }
       restored.push({ ...track, clips });
     }
@@ -4360,11 +4477,14 @@ export default function ArrangerPage() {
                           displayDurationFor(effective, projectTempoBpm) * effectivePixelsPerSecond,
                         );
                         const isSelected = selectedClipIds.includes(clip.id);
-                        const visiblePeaks = slicePeaksForWindow(
-                          clip.peaks,
-                          effective.sourceOffsetSeconds,
-                          effective.sourceDurationSeconds,
-                          clip.buffer.duration,
+                        const visiblePeaks = tilePeaks(
+                          slicePeaksForWindow(
+                            clip.peaks,
+                            effective.sourceOffsetSeconds,
+                            effective.sourceDurationSeconds,
+                            clip.buffer.duration,
+                          ),
+                          effective.repeats,
                         );
                         // Lo que se DIBUJA es el fade resuelto (con el
                         // crossfade de los solapes ya adentro), no el que
@@ -4480,9 +4600,31 @@ export default function ArrangerPage() {
                                 )}
                               </svg>
                             )}
+                            {/* Dónde arranca cada vuelta. Es lo que
+                                convierte "un bloque largo" en "esto se
+                                repite cuatro veces" de un vistazo. */}
+                            {effective.repeats > 1 &&
+                              Array.from(
+                                { length: Math.ceil(effective.repeats) - 1 },
+                                (_, i) => i + 1,
+                              ).map((n) => (
+                                <div
+                                  key={`rep-${n}`}
+                                  className="pointer-events-none absolute top-0 bottom-0 w-px bg-white/25"
+                                  style={{ left: (widthPx / effective.repeats) * n }}
+                                />
+                              ))}
                             <span className="pointer-events-none absolute left-1 top-0.5 truncate text-[9px] font-semibold text-white/80">
                               {clip.sampleName}
                             </span>
+                            {effective.repeats > 1 && (
+                              <span
+                                className="pointer-events-none absolute right-1 top-0.5 rounded bg-black/50 px-1 text-[9px] font-semibold text-white/70"
+                                title={`Se repite ${effective.repeats.toFixed(2).replace(/\.?0+$/, "")} veces`}
+                              >
+                                ×{Math.round(effective.repeats * 100) / 100}
+                              </span>
+                            )}
                             {showTempoBadge && (
                               <span
                                 title="El motor está adaptando este sample al tempo del proyecto"

@@ -45,6 +45,18 @@ export interface ArrangerClip {
   sourceOffsetSeconds: number;
   /** Cuánto de `buffer`, desde sourceOffsetSeconds, suena — base de tiempo nativa (no la toca el tempo). */
   sourceDurationSeconds: number;
+  /**
+   * Cuántas veces se repite esa ventana, arrastrando el borde derecho.
+   * 1 = suena una sola vez (el default de siempre). Admite fracciones:
+   * 2,5 son dos pasadas enteras y media, cortada.
+   *
+   * ⚠️ Es un MULTIPLICADOR, no una duración en segundos, y eso importa:
+   * un loop de 4 compases repetido 3 veces tiene que seguir durando 12
+   * compases aunque se cambie el tempo del proyecto. Con una duración
+   * absoluta guardada acá, subir el BPM dejaría repeticiones cortadas
+   * por la mitad.
+   */
+  repeats: number;
   /** Volumen propio del clip (1 = sin cambio), independiente del volumen de la pista. */
   gain: number;
   /** Fade-in/out en segundos de LÍNEA DE TIEMPO (ya con el tempo aplicado) — arrastrables desde las esquinas superiores del clip. */
