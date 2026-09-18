@@ -23,6 +23,7 @@ import {
   Send,
   Handshake,
   Search,
+  HelpCircle,
   Shield,
   Menu,
   X,
@@ -78,6 +79,15 @@ const NAV_ITEMS = [
     label: "Buscar Personas",
     icon: Search,
     hint: "Encontrá a alguien por su apodo",
+  },
+  {
+    // Visible con y sin sesión: la guía explica sobre todo lo que se
+    // hace en la APP, y quien llega sin cuenta es justo quien más la
+    // necesita.
+    href: "/ayuda",
+    label: "Ayuda",
+    icon: HelpCircle,
+    hint: "Qué podés hacer en la app y en la web, en corto",
   },
 ] as const;
 

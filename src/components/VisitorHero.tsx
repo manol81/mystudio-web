@@ -8,6 +8,7 @@
 // quién, dos botones, y debajo el feed real ya sonando.
 
 import { Mic2, Share2, Cloud } from "lucide-react";
+import Link from "next/link";
 import { PLAY_STORE_URL } from "@/lib/site";
 
 const VALUE_PROPS = [
@@ -60,6 +61,12 @@ export function VisitorHero({ onCreateAccount }: { onCreateAccount: () => void }
         >
           Crear cuenta gratis
         </button>
+        <Link
+          href="/ayuda"
+          className="rounded-full px-4 py-2.5 font-display text-sm font-semibold text-white/55 transition-colors duration-200 hover:text-white"
+        >
+          Ver cómo funciona →
+        </Link>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">

@@ -23,6 +23,7 @@ import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
 import { PostCard } from "@/components/PostCard";
 import { VisitorHero } from "@/components/VisitorHero";
+import { HelpWelcomeCard } from "@/components/HelpWelcomeCard";
 import { fetchFollowingUids } from "@/lib/PublicProfileService";
 import { COLLAB_ROLES } from "@/lib/collabRoles";
 import {
@@ -259,6 +260,7 @@ export default function CommunityFeedPage() {
   return (
     <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-8 px-6 py-12">
       {!loading && !user && <VisitorHero onCreateAccount={requireLogin} />}
+      {!loading && user && <HelpWelcomeCard />}
 
       <div>
         <h1 className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl">
