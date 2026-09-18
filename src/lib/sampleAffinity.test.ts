@@ -18,8 +18,10 @@ import {
   parseSampleKey,
   stretchRatioFor,
   tempoDistance,
+  transposeKey,
   transposeSemitonesFor,
 } from "./sampleAffinity";
+import { SAMPLE_KEYS } from "./sampleTaxonomy";
 
 describe("parseSampleKey", () => {
   it("lee el formato del catálogo", () => {
@@ -276,5 +278,51 @@ describe("affinityFor", () => {
     expect(score.keyFits).toBe(false);
     expect(score.semitones).toBe(-2); // D Major → C Major, la relativa de A Minor
     expect(score.stretchRatio).toBeCloseTo(1.3333, 4);
+  });
+});
+
+describe("transponer una tonalidad", () => {
+  it("mueve la tónica y conserva el modo", () => {
+    expect(transposeKey("G Minor", 2)).toBe("A Minor");
+    expect(transposeKey("C Major", 4)).toBe("E Major");
+  });
+
+  it("baja y da la vuelta por el otro lado", () => {
+    expect(transposeKey("C Minor", -1)).toBe("B Minor");
+    expect(transposeKey("B Major", 1)).toBe("C Major");
+  });
+
+  it("con cero devuelve lo mismo", () => {
+    expect(transposeKey("Eb Major", 0)).toBe("Eb Major");
+  });
+
+  it("de lo que no tiene tonalidad no inventa nada", () => {
+    expect(transposeKey("N/A", 3)).toBeNull();
+    expect(transposeKey("", 3)).toBeNull();
+    expect(transposeKey(null, 3)).toBeNull();
+  });
+
+  it("lo que devuelve es SIEMPRE un nombre que el catálogo conoce", () => {
+    // Si devolviera "A# Minor" en vez de "Bb Minor", el <select> del
+    // clip se quedaría sin opción seleccionada y el valor se perdería
+    // al guardar.
+    for (const raw of ["C Major", "A Minor", "F# Minor", "Bb Major"]) {
+      for (let shift = -12; shift <= 12; shift++) {
+        const moved = transposeKey(raw, shift)!;
+        expect(SAMPLE_KEYS as readonly string[]).toContain(moved);
+      }
+    }
+  });
+
+  it("transponer lo que YA entra por lo que falta lo deja compatible", () => {
+    // Es la propiedad que sostiene el botón "Adaptar": partir de cómo
+    // suena, sumar lo que falta, y quedar adentro.
+    for (const projectKey of ["A Minor", "C Major", "F# Minor"]) {
+      for (const clipKey of ["G Minor", "Eb Major", "B Major", "D Minor"]) {
+        const missing = transposeSemitonesFor(projectKey, clipKey);
+        const sounding = transposeKey(clipKey, missing)!;
+        expect(keysAreCompatible(projectKey, sounding)).toBe(true);
+      }
+    }
   });
 });

@@ -107,6 +107,33 @@ export function parseSampleKey(raw: string | null | undefined): ParsedKey | null
   return { pitchClass, mode };
 }
 
+/**
+ * Los nombres que usa el catálogo, en el orden de la clase de altura
+ * (0 = C). Es el inverso de PITCH_CLASSES, y espeja a KEY_ROOTS de
+ * sampleTaxonomy.ts.
+ */
+const ROOT_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"];
+
+/**
+ * "G Minor" + 2 semitonos → "A Minor".
+ *
+ * Hace falta para responder la única pregunta que importa mirando un
+ * clip ya puesto: **no en qué tono se grabó, sino en qué tono SUENA**.
+ * Un clip del Banco de Sonidos nace transpuesto (ver
+ * transposeSemitonesFor), así que juzgar su tonalidad original diría
+ * "no entra" de algo que entra perfecto — y ofrecería arreglar lo que
+ * ya está arreglado.
+ *
+ * Devuelve null si la tonalidad de partida no se puede leer (percusión,
+ * vacío, "N/A"), igual que parseSampleKey.
+ */
+export function transposeKey(raw: string | null | undefined, semitones: number): string | null {
+  const parsed = parseSampleKey(raw);
+  if (!parsed) return null;
+  const shifted = mod12(parsed.pitchClass + Math.round(semitones));
+  return `${ROOT_NAMES[shifted]} ${parsed.mode === "minor" ? "Minor" : "Major"}`;
+}
+
 /** Posición en la rueda Camelot. A Minor = 8A y C Major = 8B son los anclajes. */
 export function camelotFor(key: ParsedKey): CamelotCode {
   const anchorPitchClass = key.mode === "minor" ? 9 : 0; // A minor / C major

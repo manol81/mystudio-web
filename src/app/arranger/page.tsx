@@ -67,6 +67,7 @@ import {
 import {
   camelotLabel,
   keysAreCompatible,
+  transposeKey,
   transposeSemitonesFor,
 } from "@/lib/sampleAffinity";
 import { detectKey } from "@/lib/keyDetect";
@@ -3854,8 +3855,21 @@ export default function ArrangerPage() {
                 const found = selectedClipId ? findClip(selectedClipId) : null;
                 if (!found) return null;
                 const clipKey = found.clip.sampleKey;
-                const fits = keysAreCompatible(projectKey || null, clipKey || null);
-                const suggested = transposeSemitonesFor(projectKey || null, clipKey || null);
+                const shift = found.clip.pitchShift;
+                // ⚠️ Se juzga en qué tono SUENA, no en cuál se grabó.
+                // Un clip del Banco nace transpuesto, así que mirar su
+                // tonalidad original decía "no entra" de algo que
+                // entraba perfecto y ofrecía aplicar una transposición
+                // que YA estaba aplicada. Encontrado probándolo: un
+                // piano en G Minor con +2 st puestos automáticamente
+                // suena en A Minor, y el control insistía con
+                // "Adaptar +2 st".
+                const soundingKey = shift === 0 ? clipKey : (transposeKey(clipKey, shift) ?? clipKey);
+                const fits = keysAreCompatible(projectKey || null, soundingKey || null);
+                // Cuánto FALTA desde donde está ahora, no desde el
+                // original: si no, "Adaptar" volvería a contar desde
+                // cero y desharía lo que ya se aplicó.
+                const missing = transposeSemitonesFor(projectKey || null, soundingKey || null);
                 const canCompare = Boolean(projectKey && clipKey);
                 return (
                   <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
@@ -3882,6 +3896,15 @@ export default function ArrangerPage() {
                         {camelotLabel(clipKey)}
                       </span>
                     )}
+                    {/* Con transposición aplicada se muestran las DOS:
+                        de dónde salió y cómo suena. Mostrar solo una de
+                        las dos deja una pregunta sin responder. */}
+                    {clipKey && shift !== 0 && soundingKey && (
+                      <span className="text-[10px] text-white/50">
+                        → {soundingKey} ({shift > 0 ? "+" : ""}
+                        {shift} st)
+                      </span>
+                    )}
                     {canCompare &&
                       (fits ? (
                         // Verde y sin botón: no hay nada que hacer, y
@@ -3895,17 +3918,17 @@ export default function ArrangerPage() {
                           <span className="text-[10px] font-semibold text-amber-300">
                             no entra en {projectKey}
                           </span>
-                          {suggested !== 0 && (
+                          {missing !== 0 && (
                             <button
                               type="button"
                               onClick={() =>
-                                updateClip(found.clip.id, { pitchShift: suggested })
+                                updateClip(found.clip.id, { pitchShift: shift + missing })
                               }
-                              title={`Transponer ${suggested > 0 ? "+" : ""}${suggested} semitonos, que es el desplazamiento más chico que lo vuelve compatible`}
+                              title={`Mover ${missing > 0 ? "+" : ""}${missing} semitonos más (quedaría en ${shift + missing} st): es el desplazamiento más chico que lo vuelve compatible`}
                               className="rounded-full border border-amber-300/40 px-2 py-0.5 text-[10px] text-amber-200 hover:border-amber-300"
                             >
-                              Adaptar {suggested > 0 ? "+" : ""}
-                              {suggested} st
+                              Adaptar {missing > 0 ? "+" : ""}
+                              {missing} st
                             </button>
                           )}
                         </>
