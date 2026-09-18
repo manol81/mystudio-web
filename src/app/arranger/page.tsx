@@ -64,7 +64,12 @@ import {
   secondsPerBeat,
   secondsPerQuarterNote,
 } from "@/lib/barClock";
-import { transposeSemitonesFor } from "@/lib/sampleAffinity";
+import {
+  camelotLabel,
+  keysAreCompatible,
+  transposeSemitonesFor,
+} from "@/lib/sampleAffinity";
+import { detectKey } from "@/lib/keyDetect";
 import { computePeaks } from "@/lib/samplePeaks";
 import { detectTempo } from "@/lib/tempoDetect";
 import { computeSnappedStart, type SnapNeighbour } from "@/lib/arrangerSnap";
@@ -1539,6 +1544,9 @@ export default function ArrangerPage() {
       // arrangerDraft.ts).
       audioPath: sample.audioPath,
       originalBpm: sample.bpm,
+      // La ficha del sample ya sabía esto; antes se usaba para calcular
+      // la transposición de abajo y se descartaba.
+      sampleKey: sample.key ?? "",
       sampleType: sample.type,
       startSeconds: Math.max(0, startSeconds),
       sourceOffsetSeconds: 0,
@@ -1679,11 +1687,13 @@ export default function ArrangerPage() {
       // poco Y que calce en un número entero de compases. En los demás
       // casos el tempo se INFORMA y la persona decide con el control de
       // "BPM original".
-      const estimate = detectTempo(
-        monoMix(buffer),
-        buffer.sampleRate,
-        timeSignatureNumerator,
-      );
+      const mono = monoMix(buffer);
+      const estimate = detectTempo(mono, buffer.sampleRate, timeSignatureNumerator);
+      // La tonalidad se DETECTA pero nunca se usa sola para transponer:
+      // se guarda en el clip para poder verla y compararla contra la del
+      // proyecto, y la transposición sigue siendo una decisión explícita
+      // (el botón "Adaptar" de la barra del clip).
+      const keyEstimate = detectKey(mono, buffer.sampleRate);
       // Para ESTIRAR hace falta evidencia fuerte de que es un loop, y
       // la evidencia fuerte es que el archivo DURE un número entero de
       // compases al tempo detectado. La confianza no entra acá a
@@ -1693,22 +1703,31 @@ export default function ArrangerPage() {
         estimate != null && estimate.snappedToLoop && buffer.duration <= MAX_LOOP_SECONDS;
       const detectedBpm = estimate ? Math.round(estimate.bpm * 10) / 10 : null;
 
+      const keyNote = keyEstimate
+        ? ` Tonalidad detectada: ${keyEstimate.key}${
+            keyEstimate.confidence < 0.15 ? ` (o ${keyEstimate.alternative})` : ""
+          }.`
+        : " No encontré una tonalidad definida (puede ser percusión).";
+
       if (isLoop) {
         setDraftNotice(
           `"${displayName}": detecté ${detectedBpm} BPM (${estimate!.bars} ${estimate!.bars === 1 ? "compás" : "compases"}), ` +
-            `así que el clip sigue el tempo del proyecto. Si no es así, corregí "BPM original" en la barra del clip.`,
+            `así que el clip sigue el tempo del proyecto. Si no es así, corregí "BPM original" en la barra del clip.` +
+            keyNote,
         );
       } else if (detectedBpm != null) {
         const reserva =
           estimate!.confidence < MIN_TEMPO_CONFIDENCE ? " (la lectura no es muy clara)" : "";
         setDraftNotice(
           `"${displayName}": detecté unos ${detectedBpm} BPM${reserva}, pero no calza en compases enteros o es muy largo ` +
-            `para ser un loop, así que lo dejé SIN estirar. Si querés que siga el tempo del proyecto, poné ${detectedBpm} en "BPM original".`,
+            `para ser un loop, así que lo dejé SIN estirar. Si querés que siga el tempo del proyecto, poné ${detectedBpm} en "BPM original".` +
+            keyNote,
         );
       } else {
         setDraftNotice(
           `"${displayName}": no encontré un pulso claro, así que el clip queda sin estirar. ` +
-            `Si sabés a qué tempo está, ponelo en "BPM original" y se ajusta solo.`,
+            `Si sabés a qué tempo está, ponelo en "BPM original" y se ajusta solo.` +
+            keyNote,
         );
       }
 
@@ -1728,6 +1747,7 @@ export default function ArrangerPage() {
         // clip no se toca — que es lo que corresponde cuando no hay
         // evidencia de que sea un loop.
         originalBpm: isLoop ? estimate!.bpm : projectTempoBpm,
+        sampleKey: keyEstimate?.key ?? "",
         sampleType: "Loop",
         startSeconds: Math.max(0, playheadSeconds),
         sourceOffsetSeconds: 0,
@@ -2945,6 +2965,9 @@ export default function ArrangerPage() {
         // devuelva 1.0 siempre (nunca se time-stretchea), igual
         // criterio que ya existe para los One-Shot.
         originalBpm: 0,
+        // El manifiesto tampoco guarda la tonalidad. Queda vacía y
+        // editable, igual que el BPM de origen.
+        sampleKey: "",
         sampleType: "Imported",
         // REGLA CRÍTICA: `startBeat` es SIEMPRE un offset en
         // SEGUNDOS absolutos (pese al nombre — ver CLAUDE.md), acá
@@ -3818,6 +3841,80 @@ export default function ArrangerPage() {
                       }
                       className="w-14 rounded-lg border border-white/15 bg-onyx-black px-2 py-1 text-[10px] text-white outline-none focus:border-neon-cyan"
                     />
+                  </div>
+                );
+              })()}
+              {/* Tonalidad del clip, y si ENTRA o no en la del
+                  proyecto. Es la respuesta a "¿este audio está en el
+                  tono del tema?", que antes no se podía contestar en
+                  ninguna pantalla: el dato del Banco se usaba al soltar
+                  el sample y se descartaba, y un archivo propio no lo
+                  tenía nunca. */}
+              {(() => {
+                const found = selectedClipId ? findClip(selectedClipId) : null;
+                if (!found) return null;
+                const clipKey = found.clip.sampleKey;
+                const fits = keysAreCompatible(projectKey || null, clipKey || null);
+                const suggested = transposeSemitonesFor(projectKey || null, clipKey || null);
+                const canCompare = Boolean(projectKey && clipKey);
+                return (
+                  <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
+                    <span
+                      className="text-[10px] text-white/40"
+                      title="Tonalidad de este clip. Si el proyecto tiene tonalidad elegida, al lado dice si entra o no."
+                    >
+                      Tono
+                    </span>
+                    <select
+                      value={clipKey}
+                      onChange={(e) => updateClip(found.clip.id, { sampleKey: e.target.value })}
+                      className="rounded-lg border border-white/15 bg-onyx-black px-1.5 py-1 text-[10px] text-white outline-none focus:border-neon-cyan"
+                    >
+                      <option value="">—</option>
+                      {SAMPLE_KEYS.filter((k) => k !== "N/A").map((k) => (
+                        <option key={k} value={k}>
+                          {k}
+                        </option>
+                      ))}
+                    </select>
+                    {clipKey && (
+                      <span className="text-[10px] tabular-nums text-white/35">
+                        {camelotLabel(clipKey)}
+                      </span>
+                    )}
+                    {canCompare &&
+                      (fits ? (
+                        // Verde y sin botón: no hay nada que hacer, y
+                        // ofrecer una acción acá invitaría a "arreglar"
+                        // algo que ya está bien.
+                        <span className="text-[10px] font-semibold text-emerald-400">
+                          entra en {projectKey}
+                        </span>
+                      ) : (
+                        <>
+                          <span className="text-[10px] font-semibold text-amber-300">
+                            no entra en {projectKey}
+                          </span>
+                          {suggested !== 0 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateClip(found.clip.id, { pitchShift: suggested })
+                              }
+                              title={`Transponer ${suggested > 0 ? "+" : ""}${suggested} semitonos, que es el desplazamiento más chico que lo vuelve compatible`}
+                              className="rounded-full border border-amber-300/40 px-2 py-0.5 text-[10px] text-amber-200 hover:border-amber-300"
+                            >
+                              Adaptar {suggested > 0 ? "+" : ""}
+                              {suggested} st
+                            </button>
+                          )}
+                        </>
+                      ))}
+                    {!projectKey && (
+                      <span className="text-[10px] text-white/30">
+                        elegí el tono del proyecto arriba para comparar
+                      </span>
+                    )}
                   </div>
                 );
               })()}

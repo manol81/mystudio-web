@@ -26,6 +26,18 @@ export interface ArrangerClip {
   audioPath: string;
 
   originalBpm: number;
+  /**
+   * La tonalidad de ESTE clip, en el formato de SAMPLE_KEYS ("A Minor").
+   * Vacía = desconocida.
+   *
+   * Existe para poder RESPONDER "¿este audio está en el tono del
+   * proyecto?" mirando el clip. Antes el dato existía —el Banco de
+   * Sonidos lo trae en la ficha del sample— pero se usaba una sola vez,
+   * al soltarlo, para calcular la transposición, y se tiraba: el clip
+   * ya puesto no sabía de qué tono era y no había dónde verlo. Para un
+   * archivo subido desde la computadora directamente no existía.
+   */
+  sampleKey: string;
   /** "Loop" | "One-Shot" (ver sampleTaxonomy.ts) — determina si este clip se adapta al tempo del proyecto (ver playbackRateFor). */
   sampleType: string;
   startSeconds: number;

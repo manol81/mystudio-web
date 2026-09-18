@@ -49,6 +49,7 @@ function clip(overrides: Partial<ArrangerClip> = {}): ArrangerClip {
     sampleName: "Kick",
     audioPath: "samples/kick.wav",
     originalBpm: 90,
+    sampleKey: "A Minor",
     sampleType: "Loop",
     startSeconds: 4,
     sourceOffsetSeconds: 0,
