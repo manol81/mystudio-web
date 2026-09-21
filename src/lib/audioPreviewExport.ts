@@ -89,7 +89,11 @@ export type { DecodedProject };
 /// mismo primer paso.
 export async function loadDecodedTracks(
   downloadUrl: string,
-  ctx: AudioContext,
+  /// Decodifica con ESTE contexto, y por lo tanto A SU TASA: quien
+  /// después mezcle muestra a muestra tiene que pedir la misma (ver
+  /// resample.ts). Acepta un OfflineAudioContext justamente para poder
+  /// fijar la tasa sin depender del hardware.
+  ctx: BaseAudioContext,
 ): Promise<DecodedProject> {
   // Mismo motivo que ProjectViewer para pasar por /api/download-proxy:
   // decodeAudioData es una lectura por JS del contenido del archivo, y
@@ -291,13 +295,17 @@ export async function buildCommunityPreview(
   downloadUrl: string,
   onProgress?: (ratio: number) => void,
 ): Promise<MixdownResult> {
-  const ctx = new AudioContext();
-  try {
-    const project = await loadDecodedTracks(downloadUrl, ctx);
-    const { buffer, durationSeconds } = await renderMixdown(project);
-    const blob = await encodeMp3(buffer, onProgress);
-    return { blob, durationSeconds };
-  } finally {
-    await ctx.close();
-  }
+  // A SAMPLE_RATE desde el arranque: renderMixdown mezcla muestra a
+  // muestra cuando hay efectos, y con buffers en otra tasa eso sonaba
+  // 1,5× más lento (ver resample.ts).
+  // Sin try/finally: un OfflineAudioContext no se cierra (no tiene
+  // close()), se descarta solo — a diferencia del AudioContext que
+  // había acá antes, que sí ocupaba un dispositivo de audio real.
+  const project = await loadDecodedTracks(
+    downloadUrl,
+    new OfflineAudioContext(1, 1, SAMPLE_RATE),
+  );
+  const { buffer, durationSeconds } = await renderMixdown(project);
+  const blob = await encodeMp3(buffer, onProgress);
+  return { blob, durationSeconds };
 }

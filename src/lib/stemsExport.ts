@@ -30,6 +30,7 @@ import {
   SAMPLE_RATE,
   type DecodedProject,
 } from "@/lib/audioPreviewExport";
+import { resampleLinear } from "@/lib/resample";
 import { applyTrackFxInPlace, constantPowerGains } from "@/lib/trackEffects";
 import { contentDurationSeconds } from "@/lib/projectMixdown";
 
@@ -61,13 +62,15 @@ export async function buildStemsPackage(
   downloadUrl: string,
   onProgress?: (ratio: number) => void,
 ): Promise<StemsPackage> {
-  const ctx = new AudioContext();
-  try {
-    const project = await loadDecodedTracks(downloadUrl, ctx);
-    return await renderStems(project, onProgress);
-  } finally {
-    await ctx.close();
-  }
+  // OfflineAudioContext a SAMPLE_RATE y no `new AudioContext()`:
+  // decodeAudioData devuelve el audio a la tasa del contexto, así que
+  // así los buffers YA llegan a la tasa del paquete y los remuestrea el
+  // navegador, que lo hace mejor que nosotros (ver resample.ts).
+  const project = await loadDecodedTracks(
+    downloadUrl,
+    new OfflineAudioContext(1, 1, SAMPLE_RATE),
+  );
+  return await renderStems(project, onProgress);
 }
 
 async function renderStems(
@@ -94,7 +97,13 @@ async function renderStems(
     // el compresor necesita ver (mismo criterio que projectMixdown.ts).
     const mono = new Float32Array(totalFrames);
     for (const clip of track.clips) {
-      const data = clip.buffer.getChannelData(0);
+      // A SAMPLE_RATE sí o sí: ver resample.ts. Lo normal es que ya
+      // vengan así (se decodifican a esta misma tasa) y no copie nada.
+      const data = resampleLinear(
+        clip.buffer.getChannelData(0),
+        clip.buffer.sampleRate,
+        SAMPLE_RATE,
+      );
       const offset = Math.round(clip.startSeconds * SAMPLE_RATE);
       const count = Math.min(data.length, totalFrames - offset);
       for (let n = 0; n < count; n++) mono[offset + n] += data[n];

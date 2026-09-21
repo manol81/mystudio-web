@@ -18,6 +18,7 @@
 // clips, igual que en el motor). Procesar clip por clip los
 // reiniciaría en cada uno y sonaría distinto.
 
+import { resampleLinear } from "@/lib/resample";
 import {
   applyTrackFxInPlace,
   isTrackFxActive,
@@ -102,7 +103,15 @@ export function renderProjectMix(
       // Todo lo que graba la app es mono; si algún día llega un clip
       // estéreo, se toma el canal izquierdo (el motor también mezcla
       // a mono antes de la cadena de pista).
-      const data = clip.buffer.getChannelData(0);
+      // ⚠️ A [sampleRate], no a la del buffer: si el llamador decodificó
+      // con un contexto de otra tasa, copiar muestra a muestra haría
+      // sonar todo más lento y cortaría el final (ver resample.ts).
+      // Cuando coinciden —el caso normal— no copia nada.
+      const data = resampleLinear(
+        clip.buffer.getChannelData(0),
+        clip.buffer.sampleRate,
+        sampleRate,
+      );
       const offset = Math.round(clip.startSeconds * sampleRate);
       const count = Math.min(data.length, contentFrames - offset);
       for (let i = 0; i < count; i++) samples[offset + i] += data[i];
