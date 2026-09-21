@@ -50,6 +50,13 @@ export function PublishModal({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewProgress, setPreviewProgress] = useState(0);
   const [previewFailed, setPreviewFailed] = useState(false);
+  /// La publicación que quedó SIN preview ni pistas. Se guarda para
+  /// poder reintentar sobre el MISMO post: volver a publicar crearía
+  /// una segunda publicación del mismo tema, que es justo lo que no
+  /// hay que hacer.
+  const [pendingExtras, setPendingExtras] = useState<
+    { postId: string; audioUrl: string } | null
+  >(null);
 
   const [nickname, setNicknameInput] = useState("");
   const [nicknameStatus, setNicknameStatus] = useState<"idle" | "saving" | "error">("idle");
@@ -111,12 +118,25 @@ export function PublishModal({
     // El post YA existe en este punto — cualquier error de acá en
     // adelante no debe bloquear el "éxito": la publicación es real,
     // solo falta (o no) el preview liviano.
+    await generateExtras(postId, audioUrl);
+  }
+
+  /// Genera el preview liviano y el paquete de pistas de un post que YA
+  /// existe. Aparte de handleSubmit porque también lo usa "Reintentar".
+  ///
+  /// ⚠️ Sin estas dos cosas la publicación se ve en el feed pero NADIE
+  /// más que el autor la puede escuchar: el .mystudio original vive en
+  /// su espacio privado (ver projectOwnership.ts). Por eso fallar acá
+  /// dejó de cerrar el modal solo.
+  async function generateExtras(postId: string, audioUrl: string) {
+    if (!user) return;
+    setPreviewFailed(false);
     setStatus("generating-preview");
     setPreviewProgress(0);
     // Variable LOCAL además del setState: setPreviewFailed(true) no se
     // refleja en `previewFailed` dentro de esta misma ejecución (los
-    // setState son asíncronos) — para decidir el delay del cierre
-    // automático más abajo hace falta el valor real, no el de render.
+    // setState son asíncronos) — para decidir el cierre automático de
+    // más abajo hace falta el valor real, no el de render.
     let didPreviewFail = false;
     try {
       const { blob, durationSeconds } = await buildCommunityPreview(audioUrl, setPreviewProgress);
@@ -128,27 +148,28 @@ export function PublishModal({
       // Paquete de pistas livianas: lo que permite que cualquiera
       // escuche la canción por dentro. Va después del preview porque
       // es más lento (un MP3 por pista) y porque el preview es lo que
-      // el feed necesita para reproducir; si esto falla, la
-      // publicación sigue siendo válida.
+      // el feed necesita para reproducir.
       setStatus("generating-stems");
       setPreviewProgress(0);
       const stems = await buildStemsPackage(audioUrl, setPreviewProgress);
       const stemsRef = ref(storage, `community_stems/${user.uid}/${postId}.zip`);
       await uploadBytes(stemsRef, stems.blob, { contentType: "application/zip" });
       await attachCommunityStems(postId, await getDownloadURL(stemsRef));
+      setPendingExtras(null);
     } catch (err) {
-      // NO bloquea el "éxito" — ver el comentario del encabezado, el
-      // post publicado sigue siendo válido sin preview. Pero sí se
-      // avisa en la UI (a diferencia de antes, que quedaba en
-      // silencio total y hacía muy difícil notar/diagnosticar que
-      // había fallado).
-      console.error("No se pudo generar el preview liviano de la publicación:", err);
+      console.error("No se pudo generar el audio de la publicación:", err);
       didPreviewFail = true;
       setPreviewFailed(true);
+      // Se recuerda qué post quedó a medias para poder reintentar
+      // sobre él en vez de publicar el tema dos veces.
+      setPendingExtras({ postId, audioUrl });
     }
 
     setStatus("success");
-    setTimeout(onClose, didPreviewFail ? 2600 : 1100);
+    // Si falló, el modal NO se cierra solo: se queda con el aviso y el
+    // botón de reintentar. Cerrarlo a los 2,6 s dejaba una publicación
+    // que nadie iba a poder escuchar y un autor que no se enteró.
+    if (!didPreviewFail) setTimeout(onClose, 1100);
   }
 
   // Todavía no llegó la primera respuesta del perfil (ensureUserProfile
@@ -242,10 +263,31 @@ export function PublishModal({
             </div>
             <p className="text-sm text-white/70">¡Publicado en la comunidad!</p>
             {previewFailed && (
-              <p className="max-w-xs text-xs text-white/40">
-                El preview liviano no se pudo generar — tu publicación de todas formas se ve en el
-                feed, abriendo el proyecto completo al escucharla.
-              </p>
+              <>
+                <p className="max-w-xs text-xs leading-relaxed text-amber-200/90">
+                  No se pudo generar el audio de la publicación, así que por ahora solo vos podés
+                  escucharla. Reintentá — no hace falta publicar de nuevo.
+                </p>
+                <div className="mt-1 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      pendingExtras &&
+                      void generateExtras(pendingExtras.postId, pendingExtras.audioUrl)
+                    }
+                    className="rounded-full border border-neon-cyan/40 px-4 py-1.5 text-xs font-semibold text-neon-cyan transition-colors hover:border-neon-cyan"
+                  >
+                    Reintentar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/60 transition-colors hover:border-white/40 hover:text-white"
+                  >
+                    Ahora no
+                  </button>
+                </div>
+              </>
             )}
           </div>
         ) : (

@@ -115,6 +115,10 @@ export function PostCard({
   const avatarColor = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   const heights = fakeWaveformHeights(hash);
   const isOwnPost = user?.uid === post.authorId;
+  /// Se puede abrir el visor multipista: con el paquete liviano lo abre
+  /// cualquiera; sin él, solo el autor (el .mystudio original es
+  /// privado).
+  const canOpenFullProject = Boolean(post.stemsUrl) || isOwnPost;
 
   async function handleBlock() {
     if (!user || isBlocking) return;
@@ -243,8 +247,9 @@ export function PostCard({
         )}
       </div>
 
-      {/* Reproductor — preview liviano si ya existe, si no, abre el
-          visor multipista completo sobre el .mystudio original. */}
+      {/* Reproductor — preview liviano si ya existe; si no, el visor
+          multipista sobre el .mystudio original, que SOLO puede abrir
+          su autor (ver canOpenFullProject). */}
       {post.audioPreviewUrl ? (
         <div className="rounded-xl bg-onyx-black px-3 py-3">
           <SamplePlayer
@@ -256,11 +261,30 @@ export function PostCard({
           />
         </div>
       ) : (
-        <Tooltip text="Abre el proyecto completo con sus pistas — todavía no hay un preview liviano" wrapperClassName="relative flex w-full">
+        // ⚠️ Sin preview y sin paquete de pistas, el visor cae al
+        // .mystudio original, que vive en el espacio PRIVADO del autor:
+        // para cualquier otra persona eso termina en un error de
+        // permisos de Firebase, imposible de entender desde afuera
+        // (reportado: "Firebase: Error (auth/network-request-failed)").
+        // Antes este botón se ofrecía igual a todo el mundo; el botón
+        // "Pistas" de más abajo sí estaba bien limitado desde siempre.
+        <Tooltip
+          text={
+            canOpenFullProject
+              ? "Abre el proyecto completo con sus pistas — todavía no hay un preview liviano"
+              : isOwnPost
+                ? "Falta generar el audio de esta publicación: volvé a publicar el proyecto"
+                : "El autor todavía no generó el audio de esta publicación"
+          }
+          wrapperClassName="relative flex w-full"
+        >
           <button
             type="button"
+            disabled={!canOpenFullProject}
             onClick={() => setIsViewerOpen(true)}
-            className="flex w-full items-center gap-3 rounded-xl bg-onyx-black px-3 py-3 text-left transition-colors duration-200 hover:bg-white/5"
+            className={`flex w-full items-center gap-3 rounded-xl bg-onyx-black px-3 py-3 text-left transition-colors duration-200 ${
+              canOpenFullProject ? "hover:bg-white/5" : "cursor-default opacity-50"
+            }`}
           >
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 text-neon-cyan">
               <span className="ml-0.5 block h-0 w-0 border-y-[7px] border-l-[11px] border-y-transparent border-l-current" />
@@ -314,7 +338,7 @@ export function PostCard({
             para el resto el visor falla con permiso denegado. Las
             publicaciones anteriores a esta función no tienen paquete:
             se regenera volviendo a publicar. */}
-        {(post.stemsUrl || user?.uid === post.authorId) && (
+        {canOpenFullProject && (
           <Tooltip text="Escuchá la canción por dentro: silenciá o destacá cada pista">
             <button
               type="button"

@@ -51,7 +51,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
 import { ref, getDownloadURL } from "firebase/storage";
-import { storage } from "@/lib/firebase";
+import { auth, storage } from "@/lib/firebase";
+import { isProjectOwner } from "@/lib/projectOwnership";
 import {
   projectHasEffects,
   renderProjectMix,
@@ -354,6 +355,18 @@ export function ProjectViewer({
         if (stemsUrl) {
           await loadFromStems(stemsUrl);
           return;
+        }
+        // Red de seguridad: el .mystudio vive en `users/{uid}/…`, que
+        // por reglas lee SOLO su dueño. Sin paquete liviano y sin ser
+        // el autor, pedirlo igual devuelve un error de Firebase
+        // incomprensible para quien lo lee (storage/unauthorized, o
+        // auth/network-request-failed si además falla el refresco del
+        // token). Mejor decir qué pasa y quién lo puede arreglar.
+        if (!isProjectOwner(storagePath, auth.currentUser?.uid)) {
+          throw new Error(
+            "El autor todavía no generó las pistas livianas de este tema, " +
+              "así que solo él puede abrirlo. Volviendo a publicarlo se generan.",
+          );
         }
         const downloadUrl = await getDownloadURL(ref(storage, storagePath));
         const response = await fetch(
