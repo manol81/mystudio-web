@@ -22,6 +22,7 @@
 // necesario para que el nickname cumpla su función actual: dejar de
 // mostrar el email real en público.
 
+import { ensurePublicProfile } from "@/lib/PublicProfileService";
 import {
   collection,
   collectionGroup,
@@ -81,6 +82,12 @@ export interface UsernamePropagation {
 /// es best-effort: si falla, el apodo igual quedó guardado.
 export async function setUsername(uid: string, username: string): Promise<UsernamePropagation> {
   await setDoc(doc(db, "users", uid), { username, updatedAt: serverTimestamp() }, { merge: true });
+  // El perfil PÚBLICO se escribe acá y no solo en "Editar Perfil": es
+  // lo único que hace encontrable a una persona en /buscar, y quien
+  // elegía su apodo al publicar en la Comunidad no aparecía nunca (ver
+  // ensurePublicProfile). Va DESPUÉS del doc privado a propósito: las
+  // reglas exigen que el apodo público coincida con el privado.
+  await ensurePublicProfile(uid, username);
   return propagateUsername(uid, username);
 }
 

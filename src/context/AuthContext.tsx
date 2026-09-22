@@ -16,6 +16,13 @@ import {
 import { onAuthStateChanged, type User } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { ensureUserProfile, watchUserProfile, type UserProfile } from "@/lib/UserProfileService";
+import { ensurePublicProfile } from "@/lib/PublicProfileService";
+
+/// uids ya revisados en esta carga de página: la reparación del perfil
+/// público es una lectura, y el perfil llega por un listener en vivo que
+/// dispara en cada cambio. Sin esto, editar la presentación volvería a
+/// leer de más.
+const publicProfileChecked = new Set<string>();
 
 interface AuthContextValue {
   user: User | null;
@@ -60,7 +67,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // termine de crear el doc — watchUserProfile ya lo refleja apenas
     // exista, sin importar el orden exacto en que resuelvan las dos.
     void ensureUserProfile(user.uid, user.email);
-    return watchUserProfile(user.uid, setProfile);
+    return watchUserProfile(user.uid, (next) => {
+      setProfile(next);
+      // Repara a quien eligió su apodo antes de que el perfil público
+      // se creara solo (ver ensurePublicProfile): la próxima vez que
+      // entra a la web queda encontrable, sin tener que enterarse de
+      // nada ni tocar "Editar Perfil".
+      const username = next?.username;
+      if (username && !publicProfileChecked.has(user.uid)) {
+        publicProfileChecked.add(user.uid);
+        void ensurePublicProfile(user.uid, username);
+      }
+    });
   }, [user]);
 
   return (

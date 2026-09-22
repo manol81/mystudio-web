@@ -111,6 +111,57 @@ export async function savePublicProfile(
   await setDoc(ref, payload, { merge: true });
 }
 
+/// ¿Hay que (re)escribir el perfil público para que la persona sea
+/// encontrable? Separado y puro para poder probarlo.
+export function publicProfileNeedsUpdate(
+  existing: { username?: unknown; usernameLower?: unknown } | undefined,
+  username: string,
+): boolean {
+  if (!existing) return true;
+  return (
+    existing.username !== username ||
+    existing.usernameLower !== username.toLowerCase()
+  );
+}
+
+/// Se asegura de que exista el perfil PÚBLICO de quien ya eligió apodo,
+/// que es lo único que hace a alguien encontrable en /buscar.
+///
+/// ⚠️ El perfil público nacía SOLO al abrir "Editar Perfil" y guardar.
+/// Quien eligió su apodo en otro lado —al publicar en la Comunidad, que
+/// también lo pide— no existía para el buscador, y no había ninguna
+/// señal: su nombre se ve igual en el feed y su página /u/{uid} funciona
+/// lo mismo. Reportado como "pongo Nicox y no encuentra a nadie";
+/// verificado en la web: "cab" encuentra a CABEZA (que sí había pasado
+/// por Editar Perfil) y "nic" no encuentra nada.
+///
+/// De paso repara los perfiles viejos a los que les falta
+/// `usernameLower`, que llegó después que ellos.
+///
+/// Nunca lanza: no poder hacer buscable a alguien no puede romperle la
+/// sesión ni impedirle publicar.
+export async function ensurePublicProfile(
+  uid: string,
+  username: string,
+): Promise<boolean> {
+  if (!username.trim()) return false;
+  try {
+    const snap = await getDoc(doc(db, "public_profiles", uid));
+    const data = snap.exists() ? snap.data() : undefined;
+    if (!publicProfileNeedsUpdate(data, username)) return false;
+    await savePublicProfile(uid, {
+      username,
+      // La presentación que ya tenga NO se toca: esto repara la
+      // búsqueda, no edita el perfil de nadie.
+      bio: (data?.bio as string) ?? "",
+    });
+    return true;
+  } catch (err) {
+    console.error("No se pudo asegurar el perfil público:", err);
+    return false;
+  }
+}
+
 export async function fetchProfilePosts(uid: string, max = 30): Promise<ProfilePost[]> {
   const snap = await getDocs(
     query(
@@ -169,18 +220,32 @@ export async function fetchProfileActivity(uid: string, max = 20): Promise<Profi
 /// Los apodos NO son únicos en este proyecto, así que esto devuelve una
 /// lista y la desambiguación es visual (presentación y seguidores).
 ///
-/// ⚠️ Los perfiles guardados antes de que existiera `usernameLower` no
-/// aparecen. Se regeneran solos la próxima vez que su dueño guarde el
-/// perfil desde "Editar Perfil".
-export async function searchProfiles(term: string, max = 20): Promise<PublicProfile[]> {
+/// Quien todavía no tenga perfil público (o lo tenga sin
+/// `usernameLower`) no aparece. Ya no hace falta que haga nada: se crea
+/// y se repara solo al elegir el apodo y al iniciar sesión — ver
+/// ensurePublicProfile.
+/// Los dos extremos del rango de una búsqueda por prefijo, o null si el
+/// término es muy corto (con una sola letra entra media base y no ayuda
+/// a nadie). Separado para poder probarlo: el `` del tope es
+/// invisible al leer el archivo y es lo único que diferencia un prefijo
+/// de una igualdad exacta.
+export function usernamePrefixBounds(
+  term: string,
+): { start: string; end: string } | null {
   const prefix = term.trim().toLowerCase();
-  if (prefix.length < 2) return [];
+  if (prefix.length < 2) return null;
+  return { start: prefix, end: `${prefix}` };
+}
+
+export async function searchProfiles(term: string, max = 20): Promise<PublicProfile[]> {
+  const bounds = usernamePrefixBounds(term);
+  if (!bounds) return [];
   const snap = await getDocs(
     query(
       collection(db, "public_profiles"),
       orderBy("usernameLower"),
-      where("usernameLower", ">=", prefix),
-      where("usernameLower", "<=", `${prefix}`),
+      where("usernameLower", ">=", bounds.start),
+      where("usernameLower", "<=", bounds.end),
       limit(max),
     ),
   );
