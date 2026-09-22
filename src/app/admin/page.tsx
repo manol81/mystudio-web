@@ -6,7 +6,7 @@
 // del panel — ver AdminService.ts / firestore.rules.
 
 import Link from "next/link";
-import { BarChart3, Flag, Piano, Radio } from "lucide-react";
+import { BarChart3, Crown, Flag, Piano, Radio } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 
@@ -28,6 +28,12 @@ const SECTIONS = [
     icon: Radio,
     title: "Publicaciones",
     description: "Todo el feed, para sacar lo que nadie reportó.",
+  },
+  {
+    href: "/admin/pro",
+    icon: Crown,
+    title: "Cuentas PRO",
+    description: "Dar o sacar MY STUDIO PRO a mano, sin pasar por Play.",
   },
   {
     href: "/admin/stats",

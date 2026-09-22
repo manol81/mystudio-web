@@ -249,3 +249,77 @@ export async function updateSampleMetadata(
 ): Promise<void> {
   await updateDoc(doc(db, "samples", sampleId), { ...patch });
 }
+
+// ─── PRO otorgado a mano (2026-09-22) ────────────────────────────────
+//
+// Regalar MY STUDIO PRO sin pasar por una compra de Play. Pedido para
+// que las cuentas de admin lo tengan y para poder dárselo a quien se
+// elija (testers, músicos invitados, quien reporta un bug bueno).
+//
+// El dato vive en el MISMO doc de usuario (`users/{uid}.pro`), que el
+// admin ya podía leer entero y que la app ya lee para el apodo. Las
+// reglas dejan que solo un admin toque esos tres campos, y ni siquiera
+// el dueño puede dárselo a sí mismo (ver firestore.rules y
+// test/firestore_rules/pro_grant_rules_test.mjs).
+//
+// ⚠️ Un PRO otorgado así está atado a la CUENTA, no al teléfono: la
+// persona lo tiene cuando inicia sesión. El comprado por Play sigue
+// funcionando sin cuenta, porque lo confirma el propio Play.
+
+/// Firestore devuelve Timestamp; la UI quiere Date. Igual criterio que
+/// en PublicProfileService: lo que no sea Timestamp (ausente, o un
+/// serverTimestamp todavía sin resolver) vale null.
+function toDate(value: unknown): Date | null {
+  return value instanceof Timestamp ? value.toDate() : null;
+}
+
+export interface AdminUser {
+  uid: string;
+  email: string;
+  username: string;
+  isPro: boolean;
+  proGrantedBy: string | null;
+  proGrantedAt: Date | null;
+  createdAt: Date | null;
+}
+
+function toAdminUser(snap: QueryDocumentSnapshot<DocumentData>): AdminUser {
+  const data = snap.data();
+  return {
+    uid: snap.id,
+    email: (data.email as string) ?? "",
+    username: (data.username as string) ?? "",
+    isPro: data.pro === true,
+    proGrantedBy: (data.proGrantedBy as string) ?? null,
+    proGrantedAt: toDate(data.proGrantedAt),
+    createdAt: toDate(data.createdAt),
+  };
+}
+
+/// Todas las cuentas, las más nuevas primero.
+///
+/// Sin paginación ni búsqueda server-side a propósito: Firestore no
+/// busca por subcadena, y con esta escala la lista entera entra de una
+/// (la misma decisión que /admin/posts). El día que sean miles, el
+/// camino es un índice de búsqueda aparte, no media solución acá.
+export async function fetchUsers(max = 200): Promise<AdminUser[]> {
+  const snap = await getDocs(
+    query(collection(db, "users"), orderBy("createdAt", "desc"), limit(max)),
+  );
+  return snap.docs.map(toAdminUser);
+}
+
+/// Da o saca PRO. `adminUid` queda registrado para saber quién lo dio.
+export async function setUserPro(
+  uid: string,
+  isPro: boolean,
+  adminUid: string,
+): Promise<void> {
+  await updateDoc(doc(db, "users", uid), {
+    pro: isPro,
+    // Al quitarlo se conserva quién lo había dado: sirve para
+    // entender después por qué esa cuenta lo tuvo.
+    proGrantedBy: adminUid,
+    proGrantedAt: Timestamp.now(),
+  });
+}
