@@ -41,13 +41,21 @@ import { ref, getDownloadURL, uploadBytesResumable } from "firebase/storage";
 import {
   DEFAULT_MASTER_FX,
   NO_TRACK_FX,
+  isTrackFxActive,
   parseMasterFx,
   parseTrackFx,
+  type MasterFx,
 } from "@/lib/trackEffects";
 import JSZip from "jszip";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
+import { MasterFxPanel, TrackFxPanel } from "@/components/FxPanel";
+import {
+  mixSignature,
+  renderArrangementWithFx,
+  type PreviewTrack,
+} from "@/lib/arrangerFxPreview";
 import { renderClipToWav, renderClipChainToWav, type ChainPart } from "@/lib/wavExport";
 import { scheduleGainEnvelope } from "@/lib/clipEnvelope";
 import {
@@ -508,6 +516,13 @@ export default function ArrangerPage() {
   const setTimeSignatureDenominator = (updater: Updater<number>) =>
     commit((prev) => ({ ...prev, timeSignatureDenominator: resolve(updater, prev.timeSignatureDenominator) }),
       push("Cambiar el compás", "compas"));
+  // El máster se edita desde el 2026-09-23: antes el Arranger solo lo
+  // TRANSPORTABA. Clave de fusión propia, igual que el tempo: mover un
+  // slider dispara un cambio por píxel y todo el arrastre tiene que ser
+  // UNA acción de deshacer.
+  const setMasterFx = (updater: Updater<MasterFx>) =>
+    commit((prev) => ({ ...prev, masterFx: resolve(updater, prev.masterFx) }),
+      push("Ajustar el máster", "master-fx"));
   /** Carga un arreglo COMPLETO de una (abrir, recuperar, empezar de cero): el historial arranca de nuevo desde acá. */
   function loadArrangement(next: Partial<ArrangementState>) {
     commit((prev) => ({ ...prev, ...next }), RESET);
@@ -517,6 +532,17 @@ export default function ArrangerPage() {
   // lo que se escucha en el panel sea lo que después suena en la pista.
   const [matchProject, setMatchProject] = useState(true);
   const [rulerMode, setRulerMode] = useState<"seconds" | "bars">("seconds");
+  // Qué panel de efectos está abierto: el de una pista (su id) o el del
+  // máster. Nunca los dos a la vez.
+  const [fxPanelTrackId, setFxPanelTrackId] = useState<string | null>(null);
+  const [showMasterFx, setShowMasterFx] = useState(false);
+  // Pre-escucha CON efectos (ver arrangerFxPreview.ts): es una FOTO
+  // renderizada, no monitoreo en vivo, porque el DSP del proyecto no
+  // son nodos de Web Audio. Se cachea por firma para que apretar el
+  // botón dos veces seguidas no vuelva a renderizar.
+  const [fxPreviewState, setFxPreviewState] = useState<"idle" | "rendering" | "playing">("idle");
+  const fxPreviewRef = useRef<{ signature: string; buffer: AudioBuffer } | null>(null);
+  const fxPreviewSourceRef = useRef<AudioBufferSourceNode | null>(null);
   // Arranca en 1/4 (la negra en 4/4): lo bastante fino para colocar un
   // golpe suelto y lo bastante musical para que un loop caiga en su
   // lugar. Poner un clip "en el compás 5" era literalmente imposible
@@ -1510,6 +1536,94 @@ export default function ArrangerPage() {
     // dónde contar: si no, trataría de agendar todos los beats desde
     // el arranque del ciclo, que ya pasaron.
     if (next) metronomeCursorRef.current = currentPlayheadSeconds();
+  }
+
+  /// Arma lo que necesita el render a partir del arreglo actual: los
+  /// buffers YA procesados (tempo y tono) y los fades RESUELTOS, o sea
+  /// exactamente lo que se escucha y lo que se exporta.
+  async function buildPreviewTracks(): Promise<PreviewTrack[]> {
+    const result: PreviewTrack[] = [];
+    for (const track of tracks) {
+      const clips = [];
+      for (const clip of track.clips) {
+        const rate = playbackRateFor(clip, projectTempoBpm);
+        const buffer = await getProcessedBuffer(clip, rate);
+        const fades = fadesFor(clip);
+        clips.push({
+          buffer,
+          startSeconds: clip.startSeconds,
+          // Igual que en el exportador: la ventana se convierte a la
+          // base de tiempo del buffer ya estirado dividiendo por el
+          // rate.
+          sourceOffsetSeconds: clip.sourceOffsetSeconds / rate,
+          sourceDurationSeconds: clip.sourceDurationSeconds / rate,
+          gain: clip.gain,
+          fadeInSeconds: fades.fadeInSeconds,
+          fadeOutSeconds: fades.fadeOutSeconds,
+          fadeInShape: fades.fadeInShape,
+          fadeOutShape: fades.fadeOutShape,
+          repeats: clip.repeats,
+        });
+      }
+      result.push({
+        volume: track.volume,
+        pan: track.pan,
+        isMuted: track.isMuted,
+        isSolo: track.isSolo,
+        fx: track.fx,
+        clips,
+      });
+    }
+    return result;
+  }
+
+  function stopFxPreview() {
+    fxPreviewSourceRef.current?.stop();
+    fxPreviewSourceRef.current = null;
+    setFxPreviewState("idle");
+  }
+
+  async function handleFxPreview() {
+    if (fxPreviewState === "playing") {
+      stopFxPreview();
+      return;
+    }
+    if (fxPreviewState === "rendering") return;
+    // La reproducción normal y la pre-escucha con efectos no pueden
+    // sonar juntas: serían la misma música dos veces, corrida.
+    stopAllSources();
+
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    setFxPreviewState("rendering");
+    try {
+      const previewTracks = await buildPreviewTracks();
+      const signature = mixSignature(previewTracks, importedMasterFx);
+      let rendered = fxPreviewRef.current;
+      if (!rendered || rendered.signature !== signature) {
+        const mix = await renderArrangementWithFx(previewTracks, importedMasterFx, ctx.sampleRate);
+        const buffer = ctx.createBuffer(2, Math.max(1, mix.left.length), ctx.sampleRate);
+        buffer.copyToChannel(mix.left, 0);
+        buffer.copyToChannel(mix.right, 1);
+        rendered = { signature, buffer };
+        fxPreviewRef.current = rendered;
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = rendered.buffer;
+      source.connect(ctx.destination);
+      source.onended = () => {
+        if (fxPreviewSourceRef.current === source) {
+          fxPreviewSourceRef.current = null;
+          setFxPreviewState("idle");
+        }
+      };
+      fxPreviewSourceRef.current = source;
+      source.start();
+      setFxPreviewState("playing");
+    } catch (err) {
+      console.error("No se pudo renderizar la mezcla con efectos:", err);
+      setFxPreviewState("idle");
+    }
   }
 
   function handlePlayButton() {
@@ -3859,6 +3973,36 @@ export default function ArrangerPage() {
           >
             ♩
           </button>
+          <button
+            type="button"
+            onClick={() => setShowMasterFx(true)}
+            title="Máster: la reverb compartida y el limitador de toda la mezcla"
+            className="flex h-8 items-center justify-center rounded-full border border-white/20 px-3 text-xs text-white/60 transition-all duration-200 hover:border-white/50 hover:text-white"
+          >
+            Máster
+          </button>
+          {/* La pre-escucha con efectos es una FOTO renderizada, no un
+              monitoreo en vivo: el DSP del proyecto no son nodos de Web
+              Audio (ver arrangerFxPreview.ts). Por eso es un botón
+              aparte del Play normal y no una casilla que lo modifique:
+              hacen cosas distintas y tardan distinto. */}
+          <button
+            type="button"
+            onClick={() => void handleFxPreview()}
+            disabled={fxPreviewState === "rendering" || tracks.length === 0}
+            title="Renderiza la mezcla con los efectos de cada pista y del máster, y la reproduce. Es lo mismo que se escucha al exportar."
+            className={`flex h-8 items-center justify-center whitespace-nowrap rounded-full border px-3 text-xs transition-all duration-200 disabled:opacity-40 ${
+              fxPreviewState === "playing"
+                ? "border-violet-300 bg-violet-400/15 text-violet-200"
+                : "border-white/20 text-white/60 hover:border-white/50 hover:text-white"
+            }`}
+          >
+            {fxPreviewState === "rendering"
+              ? "Renderizando…"
+              : fxPreviewState === "playing"
+                ? "Detener"
+                : "Escuchar con efectos"}
+          </button>
           <span className="w-20 font-display text-xs tabular-nums text-white/50">
             {formatTime(playheadSeconds)} / {formatTime(totalDurationSeconds)}
           </span>
@@ -4429,6 +4573,21 @@ export default function ArrangerPage() {
                         >
                           S
                         </button>
+                        {/* Violeta cuando hay algo activo, igual que el
+                            botón FX de la app: de un vistazo se ve qué
+                            pista está procesada sin abrir nada. */}
+                        <button
+                          type="button"
+                          onClick={() => setFxPanelTrackId(track.id)}
+                          title="Efectos de la pista: ecualizador, compresor y envío a la reverb"
+                          className={`h-5 rounded px-1.5 text-[10px] font-bold ${
+                            isTrackFxActive(track.fx)
+                              ? "bg-violet-400 text-black"
+                              : "bg-white/10 text-white/50"
+                          }`}
+                        >
+                          FX
+                        </button>
                       </div>
                     </div>
 
@@ -4731,6 +4890,27 @@ export default function ArrangerPage() {
           </div>
         </div>
       </div>
+
+      {fxPanelTrackId && (() => {
+        const track = tracks.find((t) => t.id === fxPanelTrackId);
+        if (!track) return null;
+        return (
+          <TrackFxPanel
+            trackName={track.name}
+            fx={track.fx}
+            onChange={(fx) => updateTrack(track.id, { fx })}
+            onClose={() => setFxPanelTrackId(null)}
+          />
+        );
+      })()}
+
+      {showMasterFx && (
+        <MasterFxPanel
+          fx={importedMasterFx}
+          onChange={(fx) => setMasterFx(fx)}
+          onClose={() => setShowMasterFx(false)}
+        />
+      )}
     </div>
   );
 }

@@ -48,7 +48,7 @@ export interface RenderedClipAudio {
  * COMPLETO (offset 0, toda la duración) sin fades. Devuelve los bytes
  * de un WAV completo (con header), listos para meter tal cual en el ZIP.
  */
-export async function renderClipToWav(
+export async function renderClipSamples(
   buffer: AudioBuffer,
   sourceOffsetSeconds = 0,
   sourceDurationSeconds: number = buffer.duration,
@@ -58,7 +58,7 @@ export async function renderClipToWav(
   fadeInShape: FadeShape = "linear",
   fadeOutShape: FadeShape = "linear",
   repeats = 1,
-): Promise<RenderedClipAudio> {
+): Promise<Float32Array<ArrayBuffer>> {
   const totalSeconds = sourceDurationSeconds * Math.max(1, repeats);
   const outputFrames = Math.max(1, Math.ceil(totalSeconds * TARGET_SAMPLE_RATE));
 
@@ -105,12 +105,44 @@ export async function renderClipToWav(
   source.start(0, sourceOffsetSeconds, totalSeconds);
 
   const rendered = await offlineCtx.startRendering();
-  const samples = rendered.getChannelData(0);
-  const bytes = encodeWavMono16(samples, TARGET_SAMPLE_RATE);
+  return rendered.getChannelData(0) as Float32Array<ArrayBuffer>;
+}
 
+/**
+ * Lo mismo que renderClipSamples, pero devolviendo el WAV listo para el
+ * ZIP.
+ *
+ * La división existe para que la pre-escucha CON EFECTOS del Arranger
+ * use EXACTAMENTE este render —volumen, fades, recorte y repeticiones—
+ * en vez de un segundo camino parecido. Si se separaran, lo que se
+ * escucha mientras se mezcla dejaría de ser lo que se exporta, que es
+ * justo la promesa de toda la cadena de audio del proyecto.
+ */
+export async function renderClipToWav(
+  buffer: AudioBuffer,
+  sourceOffsetSeconds = 0,
+  sourceDurationSeconds = buffer.duration,
+  gain = 1,
+  fadeInSeconds = 0,
+  fadeOutSeconds = 0,
+  fadeInShape: FadeShape = "linear",
+  fadeOutShape: FadeShape = "linear",
+  repeats = 1,
+): Promise<RenderedClipAudio> {
+  const samples = await renderClipSamples(
+    buffer,
+    sourceOffsetSeconds,
+    sourceDurationSeconds,
+    gain,
+    fadeInSeconds,
+    fadeOutSeconds,
+    fadeInShape,
+    fadeOutShape,
+    repeats,
+  );
   return {
-    bytes,
-    durationSamples: rendered.length,
+    bytes: encodeWavMono16(samples, TARGET_SAMPLE_RATE),
+    durationSamples: samples.length,
     sampleRate: TARGET_SAMPLE_RATE,
   };
 }
