@@ -7,7 +7,12 @@
 // "Radiografía MY STUDIO".
 
 export const SITE_NAME = "MY STUDIO";
-export const SITE_URL = "https://mystudio-web.vercel.app";
+// Dominio propio desde el 2026-09-24. `mystudio-web.vercel.app` y
+// `www.mystudio.rocks` siguen andando: los dos redirigen acá con un 308
+// que pone Vercel, así que ningún link viejo se rompe — pero el
+// canónico, el sitemap y los OpenGraph tienen que apuntar a UNO solo o
+// Google reparte el mismo contenido entre dos direcciones.
+export const SITE_URL = "https://mystudio.rocks";
 export const SITE_DESCRIPTION =
   "Grabá, mezclá y compartí tu música. Estudio multipista para músicos, en español: app Android + comunidad web.";
 export const PLAY_STORE_URL =
