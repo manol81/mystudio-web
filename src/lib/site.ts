@@ -32,3 +32,7 @@ export const PLAY_STORE_URL =
 // de community_posts) sin necesitar el SDK ni una service account.
 export const FIREBASE_PROJECT_ID = "my-studio-4530a";
 export const FIREBASE_WEB_API_KEY = "AIzaSyBks64A1cGss_t3hGSea_UaHc2VfD-81f0";
+// El bucket de Storage. Ya estaba escrito a mano en /api/download-proxy;
+// vive acá para que haya UN solo lugar cuando lo necesite otra cosa
+// (hoy también las fichas públicas del Banco de Sonidos).
+export const STORAGE_BUCKET = "my-studio-4530a.firebasestorage.app";

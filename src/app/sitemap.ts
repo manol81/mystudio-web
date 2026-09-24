@@ -4,6 +4,7 @@ import {
   fetchPublicProfileIdsFromServer,
   fetchRecentPostIdsFromServer,
 } from "@/lib/serverCommunity";
+import { fetchSamplesFromServer } from "@/lib/serverSamples";
 
 // Rutas públicas + las publicaciones recientes de la Comunidad (leídas
 // por REST desde el servidor). Next cachea este archivo; se regenera
@@ -13,9 +14,7 @@ export const revalidate = 3600;
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const staticRoutes: MetadataRoute.Sitemap = [
     { url: `${SITE_URL}/`, changeFrequency: "daily", priority: 1 },
-    // /samples NO va acá: el catálogo exige sesión para leerse (ver
-    // firestore.rules), así que un buscador solo vería una pantalla
-    // vacía. Vuelve el día que la ficha de cada sample sea pública.
+    { url: `${SITE_URL}/samples`, changeFrequency: "weekly", priority: 0.6 },
     { url: `${SITE_URL}/ayuda`, changeFrequency: "monthly", priority: 0.5 },
     { url: `${SITE_URL}/cuenta/eliminar`, changeFrequency: "yearly", priority: 0.2 },
   ];
@@ -50,5 +49,20 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // Mismo criterio que arriba.
   }
 
-  return [...staticRoutes, ...postRoutes, ...profileRoutes];
+  // Una ficha por sample. Es lo que más crece con el tiempo: cada
+  // sonido que se sube desde el panel de admin entra acá solo.
+  let sampleRoutes: MetadataRoute.Sitemap = [];
+  try {
+    const samples = await fetchSamplesFromServer();
+    sampleRoutes = samples.map((sample) => ({
+      url: `${SITE_URL}/samples/${sample.id}`,
+      changeFrequency: "monthly",
+      priority: 0.5,
+    }));
+  } catch {
+    // Mismo criterio que arriba: que falte una sección no puede dejar
+    // al sitemap sin las demás.
+  }
+
+  return [...staticRoutes, ...postRoutes, ...profileRoutes, ...sampleRoutes];
 }
