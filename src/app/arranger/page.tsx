@@ -51,6 +51,8 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { MasterFxPanel, TrackFxPanel } from "@/components/FxPanel";
+import { describeBrokenArchive } from "@/lib/zipDiagnostics";
+import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
 import {
   mixSignature,
   renderArrangementWithFx,
@@ -688,6 +690,10 @@ export default function ArrangerPage() {
   // usar el proyecto" (ver la Fase 2 al final de importProjectFromZipBytes).
   const [importProgress, setImportProgress] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
+  // Se abrió algo que NO es un proyecto pero igual se pudo abrir (el
+  // paquete de pistas de una colaboración): hay que decir qué entró y
+  // qué NO, porque se ve igual que un proyecto y no lo es.
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Subir un clip de audio (.mp3/.wav) desde la computadora — la
@@ -3140,15 +3146,29 @@ export default function ArrangerPage() {
   // reconstruir el estado de React. No maneja su propio try/catch — el
   // llamador (el picker local o el deep-link del Dashboard) es quien
   // sabe cómo se consiguieron los bytes del ZIP y reporta el error.
-  async function importProjectFromZipBytes(zipBytes: ArrayBuffer) {
+  async function importProjectFromZipBytes(zipBytes: ArrayBuffer, sourceName?: string) {
     setImportStage("Extrayendo proyecto...");
     setImportProgress(0.3);
-    const zip = await JSZip.loadAsync(zipBytes);
-    const manifestFile = zip.file("manifest.json");
-    if (!manifestFile) {
-      throw new Error("El archivo no tiene manifest.json — .mystudio inválido.");
+    let zip: JSZip;
+    try {
+      zip = await JSZip.loadAsync(zipBytes);
+    } catch (err) {
+      // JSZip solo sabe decir "Corrupted zip: can't find end of central
+      // directory", que es cierto e inútil: no distingue una descarga
+      // cortada de una página de error guardada con nombre de proyecto.
+      // Mirar los primeros bytes sí (ver zipDiagnostics.ts).
+      const diagnosis = describeBrokenArchive(new Uint8Array(zipBytes), sourceName);
+      throw new Error(diagnosis ?? (err instanceof Error ? err.message : String(err)));
     }
-    const manifest = JSON.parse(await manifestFile.async("string")) as ImportManifest;
+
+    const manifestFile = zip.file("manifest.json");
+    // Sin manifest.json todavía puede ser algo que SÍ sabemos abrir: el
+    // paquete de pistas que se baja de una colaboración. Es la forma en
+    // que hoy se comparte una canción entre dos personas, así que
+    // rechazarlo era mandar a alguien a un callejón sin salida.
+    const manifest = manifestFile
+      ? (JSON.parse(await manifestFile.async("string")) as ImportManifest)
+      : await stemsPackageAsManifest(zip, sourceName);
 
     const ctx = audioContextRef.current;
     if (!ctx) throw new Error("El motor de audio todavía no está listo.");
@@ -3183,7 +3203,7 @@ export default function ArrangerPage() {
       return {
         id: newId(),
         sampleId: `imported:${clip.audioFileName}`,
-        sampleName: clip.audioFileName.replace(/\.wav$/i, ""),
+        sampleName: clip.audioFileName.replace(/\.(wav|mp3|m4a|ogg|flac)$/i, ""),
         // Igual que el audio subido a mano: salió de un ZIP que se
         // decodificó en memoria, no de Storage.
         audioPath: "",
@@ -3309,6 +3329,69 @@ export default function ArrangerPage() {
     }
   }
 
+  /**
+   * Lee el paquete de pistas de una colaboración (un MP3 por pista +
+   * stems.json, ver stemsExport.ts) como si fuera un proyecto, para
+   * poder abrirlo acá. Si el ZIP tampoco es eso, explica qué le falta.
+   *
+   * ⚠️ Lo que entra NO es el proyecto original: cada pista ya trae
+   * horneados sus efectos, su volumen y su paneo, y la reverb del
+   * máster no viaja (es un efecto compartido, no se puede repartir
+   * entre pistas). Sirve para escuchar, ensayar y agregar cosas
+   * encima; no para recuperar la mezcla del autor. De ahí el aviso.
+   */
+  async function stemsPackageAsManifest(zip: JSZip, sourceName?: string): Promise<ImportManifest> {
+    const stemsFile = zip.file(STEMS_MANIFEST);
+    if (!stemsFile) {
+      throw new Error(
+        "El archivo es un ZIP, pero no es un proyecto .mystudio ni un paquete de pistas: no tiene manifest.json.",
+      );
+    }
+    const stems = JSON.parse(await stemsFile.async("string")) as StemsManifest;
+    if (!stems.stems?.length) {
+      throw new Error("El paquete de pistas está vacío.");
+    }
+
+    setImportNotice(
+      `Esto es un paquete de pistas (${stems.stems.length}), no el proyecto original: cada pista ya viene con sus efectos, su volumen y su paneo aplicados, y la reverb del máster no viaja. Para grabar tu parte y mandarla, usá la app.`,
+    );
+
+    return {
+      formatVersion: 1,
+      project: {
+        // El paquete no lleva título ni tempo: el nombre del archivo es
+        // lo único que hay, y el tempo queda en 120 porque los clips
+        // importados nunca se estiran (originalBpm 0).
+        title: (sourceName ?? "").replace(/\.[^.]+$/, "") || "Pistas compartidas",
+        tempoBpm: 120,
+        timeSignatureNumerator: 4,
+        timeSignatureDenominator: 4,
+      },
+      tracks: stems.stems.map((stem, i) => ({
+        name: stem.name || `Pista ${i + 1}`,
+        // Parejo para todas: bajar el conjunto no altera el balance que
+        // el autor ya dejó horneado en cada archivo, y deja margen
+        // antes del limitador.
+        volume: 0.8,
+        // El paneo ya está DENTRO del audio; volver a panear lo movería
+        // de lugar dos veces.
+        pan: 0,
+        isMuted: false,
+        isSolo: false,
+        clips: [
+          {
+            audioFileName: stem.file,
+            // Todas alineadas desde el principio, que es justamente
+            // cómo las genera stemsExport.
+            startBeat: 0,
+            durationSamples: 0,
+            sampleRate: 0,
+          },
+        ],
+      })),
+    };
+  }
+
   /** Paso 1 — abrir un .mystudio elegido con el selector de archivos local. */
   async function handleOpenLocalFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -3318,11 +3401,12 @@ export default function ArrangerPage() {
       return;
     }
     setImportError(null);
+    setImportNotice(null);
     setIsImporting(true);
     setImportProgress(0);
     try {
       const bytes = await file.arrayBuffer();
-      await importProjectFromZipBytes(bytes);
+      await importProjectFromZipBytes(bytes, file.name);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -3362,6 +3446,7 @@ export default function ArrangerPage() {
       const alreadyOpen = !!openId && liveDraftRef.current?.cloudProjectId === openId;
       if (openId && !alreadyOpen) {
         setImportError(null);
+        setImportNotice(null);
         setIsImporting(true);
         setImportProgress(0);
         setImportStage("Descargando proyecto...");
@@ -4324,6 +4409,18 @@ export default function ArrangerPage() {
       {importError && (
         <p className="bg-red-900/30 px-4 py-1.5 text-xs text-red-300">
           No se pudo abrir el proyecto: {importError}
+        </p>
+      )}
+      {importNotice && (
+        <p className="flex items-start gap-2 bg-amber-900/25 px-4 py-1.5 text-xs leading-relaxed text-amber-100">
+          <span className="flex-1">{importNotice}</span>
+          <button
+            type="button"
+            onClick={() => setImportNotice(null)}
+            className="shrink-0 text-amber-200/60 transition-colors hover:text-white"
+          >
+            Entendido
+          </button>
         </p>
       )}
       {addSampleError && (
