@@ -183,6 +183,11 @@ export function VisitorHero({ onCreateAccount }: { onCreateAccount: () => void }
           <Link href="/ayuda" className="text-neon-cyan hover:underline">
             la guía de uso
           </Link>
+          . Y si algo no sale como esperabas —una toma que queda corrida, un loop que no entra en
+          tiempo—, está explicado en{" "}
+          <Link href="/guias" className="text-neon-cyan hover:underline">
+            las guías de grabación
+          </Link>
           .
         </p>
       </div>

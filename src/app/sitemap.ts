@@ -5,6 +5,7 @@ import {
   fetchRecentPostIdsFromServer,
 } from "@/lib/serverCommunity";
 import { fetchSamplesFromServer } from "@/lib/serverSamples";
+import { GUIDES } from "@/lib/guides";
 
 // Rutas públicas + las publicaciones recientes de la Comunidad (leídas
 // por REST desde el servidor). Next cachea este archivo; se regenera
@@ -16,6 +17,16 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: `${SITE_URL}/`, changeFrequency: "daily", priority: 1 },
     { url: `${SITE_URL}/samples`, changeFrequency: "weekly", priority: 0.6 },
     { url: `${SITE_URL}/ayuda`, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${SITE_URL}/guias`, changeFrequency: "weekly", priority: 0.8 },
+    // Las guías son contenido propio y estable: la prioridad alta es
+    // deliberada, son lo que puede traer gente que todavía no conoce
+    // la app.
+    ...GUIDES.map((guide) => ({
+      url: `${SITE_URL}/guias/${guide.slug}`,
+      lastModified: new Date(guide.updated ?? guide.published),
+      changeFrequency: "monthly" as const,
+      priority: 0.8,
+    })),
     { url: `${SITE_URL}/cuenta/eliminar`, changeFrequency: "yearly", priority: 0.2 },
   ];
 

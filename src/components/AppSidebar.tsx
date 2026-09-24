@@ -23,6 +23,7 @@ import {
   Send,
   Handshake,
   Search,
+  BookOpen,
   HelpCircle,
   Shield,
   Menu,
@@ -88,6 +89,16 @@ const NAV_ITEMS = [
     label: "Ayuda",
     icon: HelpCircle,
     hint: "Qué podés hacer en la app y en la web, en corto",
+  },
+  {
+    // Las guías son la otra mitad de la Ayuda: esa dice CÓMO se hace
+    // cada cosa, estas explican POR QUÉ y para qué sirven. Van visibles
+    // sin sesión porque son la puerta de entrada de quien llega de una
+    // búsqueda.
+    href: "/guias",
+    label: "Guías",
+    icon: BookOpen,
+    hint: "Latencia, grabar varias pistas, BPM y tonalidad",
   },
 ] as const;
 

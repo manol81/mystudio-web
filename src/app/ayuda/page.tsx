@@ -129,6 +129,25 @@ export default function HelpPage() {
         </section>
       ))}
 
+      {/* Las guías son la otra mitad: acá está CÓMO se hace cada cosa,
+          allá POR QUÉ pasa lo que pasa. El enlace va en una sola
+          dirección a propósito — si cada sección de la referencia
+          llevara a un artículo, la referencia dejaría de ser corta,
+          que es su única virtud. */}
+      <section className="mt-12 flex flex-col gap-2 border-t border-white/10 pt-6">
+        <h2 className="font-display text-lg font-semibold text-white">Guías de grabación</h2>
+        <p className="text-sm leading-relaxed text-white/55">
+          Si algo no sale como esperabas, hay artículos que lo explican desde el principio: por qué
+          una toma queda corrida, cómo grabar guitarra y voz paso a paso, y qué es el BPM.
+        </p>
+        <Link
+          href="/guias"
+          className="w-fit text-sm font-semibold text-neon-cyan hover:underline"
+        >
+          Ver las guías →
+        </Link>
+      </section>
+
       <p className="mt-12 border-t border-white/10 pt-6 text-xs leading-relaxed text-white/40">
         ¿Algo no funciona como dice acá, o te falta algo? Escribinos a{" "}
         <a href="mailto:manolocenter@gmail.com" className="text-white/60 hover:underline">
