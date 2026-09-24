@@ -104,3 +104,21 @@ export async function fetchRecentPostIdsFromServer(max: number): Promise<PublicP
   const rows = (await res.json()) as Array<{ document?: FirestoreDocument }>;
   return rows.filter((r) => r.document).map((r) => toSummary(r.document!));
 }
+
+/// Los uid de los perfiles públicos, para el sitemap: cada `/u/{uid}`
+/// es una página indexable (apodo, presentación, publicaciones y
+/// colaboraciones de esa persona) y hasta el 2026-09-24 ninguna estaba
+/// declarada, así que Google solo las podía descubrir por los links del
+/// feed. Sin `orderBy`: la colección no tiene un campo de fecha
+/// garantizado en los perfiles viejos, y una consulta que ordena por un
+/// campo ausente devuelve MENOS documentos, no más.
+export async function fetchPublicProfileIdsFromServer(max: number): Promise<string[]> {
+  const res = await fetch(`${BASE}/public_profiles?pageSize=${max}&key=${FIREBASE_WEB_API_KEY}`, {
+    next: { revalidate: 3600 },
+  });
+  if (!res.ok) throw new Error(`Firestore REST ${res.status}`);
+  const body = (await res.json()) as { documents?: FirestoreDocument[] };
+  return (body.documents ?? [])
+    .map((docu) => docu.name.split("/").at(-1) ?? "")
+    .filter((uid) => uid.length > 0);
+}

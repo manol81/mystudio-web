@@ -259,11 +259,29 @@ export default function CommunityFeedPage() {
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-8 px-6 py-12">
-      {!loading && !user && <VisitorHero onCreateAccount={requireLogin} />}
+      {/* ⚠️ La condición es `!user` y NO `!loading && !user`, y en esa
+          diferencia estaba todo el SEO de la home. Durante el render
+          del servidor `loading` es siempre true (la sesión se resuelve
+          recién en el navegador), así que con la condición anterior
+          esta presentación NUNCA entraba en el HTML: lo único que
+          Google llegaba a leer del sitio eran las ~159 palabras del
+          menú. Ahora el HTML sale con la landing completa, que es lo
+          que ve cualquier visitante sin sesión — Googlebot incluido.
+          El precio es que quien SÍ tiene sesión la ve un instante
+          mientras Firebase restaura su login; dura lo que tarda una
+          lectura de localStorage, y es mejor que no tener nada que
+          indexar. */}
+      {!user && <VisitorHero onCreateAccount={requireLogin} />}
       {!loading && user && <HelpWelcomeCard />}
 
       <div>
-        <h1 className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl">
+        {/* h2, no h1: para un VISITANTE el encabezado principal de la
+            página es el de VisitorHero, que sí dice qué es esto. Un
+            solo h1 por página, y que sea el que describe el contenido.
+            Con sesión iniciada esto es lo primero de la pantalla, pero
+            la jerarquía se mantiene igual para no depender del estado
+            de login. */}
+        <h2 className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl">
           {user ? (
             <>
               Explora la <span className="text-neon-cyan">Comunidad</span>
@@ -273,7 +291,7 @@ export default function CommunityFeedPage() {
               Lo que está <span className="text-neon-cyan">sonando ahora</span>
             </>
           )}
-        </h1>
+        </h2>
         <p className="mt-2 text-sm text-white/50">
           {user
             ? "Lo que está sonando ahora en MY STUDIO."

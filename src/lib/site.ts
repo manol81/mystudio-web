@@ -13,6 +13,14 @@ export const SITE_NAME = "MY STUDIO";
 // canónico, el sitemap y los OpenGraph tienen que apuntar a UNO solo o
 // Google reparte el mismo contenido entre dos direcciones.
 export const SITE_URL = "https://mystudio.rocks";
+// Título por defecto de la home. NO es `SITE_NAME` a secas, y el
+// motivo es el mismo que se razonó para la ficha de Play (ver CLAUDE.md
+// sección 7): el título es el campo que más pesa en un buscador, y
+// "MY STUDIO" no contiene una sola palabra que alguien escriba. El que
+// hay que ganar es a quien busca "grabador multipista".
+// Las páginas internas lo sobreescriben y el template les agrega
+// " · MY STUDIO".
+export const SITE_TITLE = "MY STUDIO — Grabador multipista para Android, en español";
 export const SITE_DESCRIPTION =
   "Grabá, mezclá y compartí tu música. Estudio multipista para músicos, en español: app Android + comunidad web.";
 export const PLAY_STORE_URL =
