@@ -52,6 +52,7 @@ import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { MasterFxPanel, TrackFxPanel } from "@/components/FxPanel";
 import { describeBrokenArchive } from "@/lib/zipDiagnostics";
+import { arrangerOpened, projectSaved } from "@/lib/analytics";
 import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
 import {
   mixSignature,
@@ -460,6 +461,14 @@ function ClipWaveform({
 export default function ArrangerPage() {
   const { user, loading } = useAuth();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
+
+  // Cuánta gente llega hasta la herramienta. Junto con project_saved
+  // dice cuántos de los que la abren terminan produciendo algo — que
+  // es la pregunta que decide si el Arranger vale lo que cuesta
+  // mantenerlo.
+  useEffect(() => {
+    arrangerOpened();
+  }, []);
 
   // Paso 1 (dashboard) — el botón "+ Crear Nuevo Proyecto" linkea acá
   // con ?new=1: antes de mostrar la grilla vacía, se le pide al
@@ -3095,6 +3104,9 @@ export default function ArrangerPage() {
       // diga la verdad.
       cloudSavedSignatureRef.current = arrangementSignature(currentDraft());
       setIsDirty(false);
+      // Acá, y no al apretar el botón: cuenta el proyecto que QUEDÓ
+      // guardado. Todo lo de arriba puede fallar.
+      projectSaved();
       setExportSuccessTitle(manifest.project.title);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));

@@ -12,7 +12,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { HELP_SECTIONS, parseHelpText, type HelpWhere } from "@/lib/helpContent";
-import { PLAY_STORE_URL, SITE_NAME, SITE_URL } from "@/lib/site";
+import { PlayStoreLink } from "@/components/PlayStoreLink";
+import { SITE_NAME, SITE_URL } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Ayuda",
@@ -59,14 +60,9 @@ export default function HelpPage() {
       </h1>
       <p className="mt-3 text-sm leading-relaxed text-white/60">
         Todo lo que podés hacer, en corto. Cada parte dice si se hace en la{" "}
-        <a
-          href={PLAY_STORE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-neon-cyan hover:underline"
-        >
+        <PlayStoreLink source="ayuda" className="text-neon-cyan hover:underline">
           app Android
-        </a>
+        </PlayStoreLink>
         , acá en la web, o en las dos.
       </p>
 

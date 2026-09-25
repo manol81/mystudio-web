@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Clock } from "lucide-react";
 import { GUIDES } from "@/lib/guides";
-import { PLAY_STORE_URL, SITE_NAME, SITE_URL } from "@/lib/site";
+import { PlayStoreLink } from "@/components/PlayStoreLink";
+import { SITE_NAME, SITE_URL } from "@/lib/site";
 
 const DESCRIPTION = `Guías de grabación para músicos: latencia, cómo grabar varias pistas con el celular, BPM y tonalidad. Escritas alrededor de ${SITE_NAME}, pero sirven con cualquier programa.`;
 
@@ -62,14 +63,12 @@ export default function GuidesIndexPage() {
           </Link>{" "}
           tiene loops y samples gratis, con su BPM y su tonalidad, listos para usar.
         </p>
-        <a
-          href={PLAY_STORE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
+        <PlayStoreLink
+          source="guias"
           className="w-fit rounded-full border border-neon-cyan/40 px-5 py-2 font-display text-xs font-semibold text-neon-cyan transition-colors hover:border-neon-cyan"
         >
           Descargar MY STUDIO en Google Play
-        </a>
+        </PlayStoreLink>
       </section>
     </main>
   );

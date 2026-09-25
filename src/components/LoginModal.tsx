@@ -46,6 +46,8 @@ function authErrorMessage(error: AuthError): string {
   }
 }
 
+import { signinCompleted, signupCompleted } from "@/lib/analytics";
+
 const inputClasses =
   "w-full rounded-lg border border-white/15 bg-onyx-black px-4 py-2.5 text-sm text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan focus:shadow-[0_0_0_1px_rgba(102,252,241,0.4)]";
 
@@ -103,6 +105,10 @@ export function LoginModal({
     try {
       if (mode === "register") {
         const credential = await createUserWithEmailAndPassword(auth, email, password);
+        // Después del await: solo cuenta la cuenta que EXISTE. El par
+        // con signup_started (el click al botón) es lo que mide cuánta
+        // gente abandona el formulario a mitad de camino.
+        signupCompleted();
         // No bloquea el cierre del modal si esto falla — la cuenta ya
         // se creó igual; el usuario siempre tiene "Reenviar email"
         // disponible en la pantalla de verificación (EmailVerificationGate).
@@ -113,6 +119,7 @@ export function LoginModal({
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
+        signinCompleted();
       }
       onClose();
     } catch (err) {

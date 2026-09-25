@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
+import { postPlayed } from "@/lib/analytics";
 import { PostCard } from "@/components/PostCard";
 import { VisitorHero } from "@/components/VisitorHero";
 import { HelpWelcomeCard } from "@/components/HelpWelcomeCard";
@@ -435,7 +436,10 @@ export default function CommunityFeedPage() {
                   onLikeToggled={handleLikeToggled}
                   onBlocked={handlePostBlocked}
                   isPlaying={playingPostId === post.id}
-                  onRequestPlay={() => setPlayingPostId(post.id)}
+                  onRequestPlay={() => {
+                    postPlayed();
+                    setPlayingPostId(post.id);
+                  }}
                   commentsCount={commentCounts.get(post.id) ?? 0}
                   onCommentAdded={handleCommentAdded}
                   onRequireLogin={requireLogin}

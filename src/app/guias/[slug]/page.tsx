@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Clock } from "lucide-react";
+import { GuideViewTracker } from "@/components/GuideViewTracker";
 import { GUIDES, guideBySlug, relatedGuides, type GuideBlock } from "@/lib/guides";
 import { parseHelpText } from "@/lib/helpContent";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
@@ -128,6 +129,7 @@ export default async function GuidePage({ params }: Props) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
+      <GuideViewTracker slug={guide.slug} />
 
       <Link
         href="/guias"

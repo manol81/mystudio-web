@@ -22,6 +22,8 @@
 
 import { Mic2, Share2, Cloud, Users, Sparkles } from "lucide-react";
 import Link from "next/link";
+import { PlayStoreLink } from "@/components/PlayStoreLink";
+import { signupStarted } from "@/lib/analytics";
 import { PLAY_STORE_URL, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 
 const VALUE_PROPS = [
@@ -139,17 +141,18 @@ export function VisitorHero({
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <a
-          href={PLAY_STORE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
+        <PlayStoreLink
+          source="landing"
           className="rounded-full border border-neon-cyan/40 bg-onyx-black px-6 py-2.5 font-display text-sm font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)]"
         >
           Descargar en Google Play
-        </a>
+        </PlayStoreLink>
         <button
           type="button"
-          onClick={onCreateAccount}
+          onClick={() => {
+            signupStarted("landing");
+            onCreateAccount();
+          }}
           className="rounded-full border border-white/20 px-6 py-2.5 font-display text-sm font-semibold text-white/80 transition-colors duration-200 hover:border-white/50 hover:text-white"
         >
           Crear cuenta gratis
