@@ -103,7 +103,13 @@ const FAQ_JSON_LD = {
   })),
 };
 
-export function VisitorHero({ onCreateAccount }: { onCreateAccount: () => void }) {
+export function VisitorHero({
+  onCreateAccount,
+  onSignIn,
+}: {
+  onCreateAccount: () => void;
+  onSignIn: () => void;
+}) {
   return (
     <section className="flex flex-col gap-10 rounded-3xl border border-white/10 bg-graphite p-8 sm:p-10">
       <script
@@ -147,6 +153,17 @@ export function VisitorHero({ onCreateAccount }: { onCreateAccount: () => void }
           className="rounded-full border border-white/20 px-6 py-2.5 font-display text-sm font-semibold text-white/80 transition-colors duration-200 hover:border-white/50 hover:text-white"
         >
           Crear cuenta gratis
+        </button>
+        {/* Para quien YA tiene cuenta y llega a la portada sin sesión
+            —volvió después de días, o entró desde otro navegador—.
+            Antes su único camino era deducir que "Crear cuenta gratis"
+            también servía para entrar. */}
+        <button
+          type="button"
+          onClick={onSignIn}
+          className="rounded-full px-4 py-2.5 font-display text-sm font-semibold text-white/55 transition-colors duration-200 hover:text-white"
+        >
+          Iniciar sesión
         </button>
         <Link
           href="/ayuda"

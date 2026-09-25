@@ -51,8 +51,19 @@ const inputClasses =
 
 type Mode = "login" | "register" | "reset";
 
-export function LoginModal({ onClose }: { onClose: () => void }) {
-  const [mode, setMode] = useState<Mode>("login");
+export function LoginModal({
+  onClose,
+  initialMode = "login",
+}: {
+  onClose: () => void;
+  /// Con qué formulario abre. Importa: hasta el 2026-09-25 el botón
+  /// "Crear cuenta gratis" de la portada abría este modal en "login",
+  /// o sea que prometía una cosa y mostraba otra — quien no tenía
+  /// cuenta caía en un formulario de ingreso y tenía que darse cuenta
+  /// solo de que había un link abajo.
+  initialMode?: Mode;
+}) {
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");

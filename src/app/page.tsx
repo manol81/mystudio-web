@@ -255,7 +255,16 @@ export default function CommunityFeedPage() {
     return () => observer.disconnect();
   }, [isLoadingInitial, posts.length, loadMore]);
 
-  const requireLogin = () => setIsModalOpen(true);
+  // Con qué formulario abre el modal. Los botones de la portada
+  // prometen cosas distintas ("Iniciar sesión" vs "Crear cuenta
+  // gratis") y tienen que cumplirlas; el resto de la pantalla —dar
+  // like, comentar— pide ingresar, que es el default.
+  const [modalMode, setModalMode] = useState<"login" | "register">("login");
+  const openAuth = (mode: "login" | "register" = "login") => {
+    setModalMode(mode);
+    setIsModalOpen(true);
+  };
+  const requireLogin = () => openAuth("login");
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-8 px-6 py-12">
@@ -271,7 +280,12 @@ export default function CommunityFeedPage() {
           mientras Firebase restaura su login; dura lo que tarda una
           lectura de localStorage, y es mejor que no tener nada que
           indexar. */}
-      {!user && <VisitorHero onCreateAccount={requireLogin} />}
+      {!user && (
+        <VisitorHero
+          onCreateAccount={() => openAuth("register")}
+          onSignIn={() => openAuth("login")}
+        />
+      )}
       {!loading && user && <HelpWelcomeCard />}
 
       <div>
@@ -446,7 +460,9 @@ export default function CommunityFeedPage() {
         </div>
       )}
 
-      {isModalOpen && <LoginModal onClose={() => setIsModalOpen(false)} />}
+      {isModalOpen && (
+        <LoginModal initialMode={modalMode} onClose={() => setIsModalOpen(false)} />
+      )}
     </div>
   );
 }
