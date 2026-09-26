@@ -55,6 +55,193 @@ export interface Guide {
 
 export const GUIDES: readonly Guide[] = [
   {
+    slug: "como-no-perder-tus-ideas-de-canciones",
+    title: "Cómo no perder tus ideas de canciones",
+    description:
+      "Se te ocurre algo, pensás «después lo grabo» y a la noche no te acordás. Un método simple para capturar ideas en 30 segundos, encontrarlas semanas después y convertirlas en canciones.",
+    published: "2026-09-26",
+    minutes: 8,
+    blocks: [
+      {
+        kind: "p",
+        text: "Te sale algo tocando la guitarra. Te gusta. Pensás «esto es buenísimo, después lo grabo». A la noche te acordás de que había algo, pero no de qué era. Y si lo recordás a medias, ya no suena igual.",
+      },
+      {
+        kind: "p",
+        text: "No es mala memoria ni falta de talento: **las ideas musicales se borran rápido porque no tienen dónde agarrarse**. Una idea escrita se relee; una melodía en la cabeza se desarma sola en minutos. La única defensa es capturarla mientras existe.",
+      },
+      {
+        kind: "p",
+        text: "Lo que sigue es un método simple, sacado de cómo trabajan quienes viven de escribir canciones. No hace falta que tengas la canción entera en la cabeza — justamente se trata de lo contrario.",
+      },
+
+      { kind: "h2", text: "La regla de oro: rápido, no bien", id: "rapido-no-bien" },
+      {
+        kind: "p",
+        text: "El error más común es querer que la idea esté **buena** antes de grabarla. Que la guitarra suene afinada, que la letra diga algo, que no te escuchen desafinar. Y mientras tanto la idea se va.",
+      },
+      {
+        kind: "p",
+        text: "Los que escriben canciones todos los días hacen lo contrario: **optimizan la velocidad de captura, no la calidad**. El razonamiento es simple y difícil de discutir — mejorar una idea que ya existe es fácil; recuperar una que se te olvidó es imposible.",
+      },
+      {
+        kind: "note",
+        text: "**Grabá antes de estar listo.** Una toma horrible de 20 segundos, tarareada mal y con ruido de fondo, vale infinitamente más que la idea perfecta que no grabaste.",
+      },
+      {
+        kind: "p",
+        text: "Hay un ejemplo famoso de esto. Paul McCartney soñó la melodía de Yesterday y la grabó con una frase cualquiera de relleno —el título provisorio era «huevos revueltos»— solo para no perder la música mientras aparecía la letra. La letra real tardó meses. La melodía estaba guardada desde el primer día.",
+      },
+      {
+        kind: "p",
+        text: "Eso es exactamente lo que tenés que hacer: **separar capturar de componer**. Son dos momentos distintos, y mezclarlos es lo que mata las ideas.",
+      },
+
+      { kind: "h2", text: "Capturar en 30 segundos", id: "capturar" },
+      {
+        kind: "steps",
+        items: [
+          "Abrí MY STUDIO y tocá **Nuevo Proyecto**.",
+          "Ponele un nombre que describa el SONIDO, no el número: «riff rápido tipo rock», «vueltita triste en la menor». En un mes, «Idea 7» no te va a decir nada.",
+          "Si tenés el pulso claro, poné el BPM aproximado. Si no, dejalo y seguí — no frena nada.",
+          "**Agregar pista**, armala con el botón **R**, y grabá. Tocá o tarareá la idea tal como está.",
+          "Stop. Listo. No la escuches, no la juzgues, no la borres. Cerrá y seguí con tu día.",
+        ],
+      },
+      {
+        kind: "p",
+        text: "Si la idea es una melodía pero todavía no tenés letra, **cantala con cualquier palabra**: «na na na», o lo primero que se te cruce. Es el truco de los huevos revueltos, y funciona igual de bien un martes cualquiera.",
+      },
+      {
+        kind: "note",
+        text: "Si estás lejos del instrumento —manejando, caminando, en el trabajo—, tarareá al micrófono del teléfono igual. Una idea tarareada mal se reconstruye; una olvidada no.",
+      },
+
+      { kind: "h2", text: "El problema del que nadie habla: encontrarlas después", id: "encontrarlas" },
+      {
+        kind: "p",
+        text: "Acá está la trampa. Capturar es la parte fácil, y mucha gente la resuelve: termina con cientos de notas de voz en el teléfono. El problema aparece meses después, cuando querés usar alguna y **no hay forma de saber qué hay adentro de cada archivo**.",
+      },
+      {
+        kind: "p",
+        text: "Le pasa hasta a los profesionales. Dan Wilson —el que escribió Closing Time y trabajó con Adele— cuenta que tiene alrededor de mil ideas en sus notas de voz y que **recuperar algo de ahí le resulta casi imposible**; terminó volviendo a un fichero de tarjetas de papel, porque al menos puede revolverlas y encontrarse con algo por casualidad.",
+      },
+      {
+        kind: "p",
+        text: "Tres costumbres chicas evitan ese cementerio:",
+      },
+      {
+        kind: "ul",
+        items: [
+          "**Nombrá por sonido, no por fecha.** «lento con acordes abiertos» se encuentra; «Proyecto 12» no.",
+          "**Poné un marcador donde está lo bueno.** Si la idea aparece recién en el segundo 40, después de dos intentos fallidos, marcala ahí y ponele nombre: «el estribillo». Cuando vuelvas, vas directo.",
+          "**Sincronizá con tu cuenta.** Las ideas dejan de vivir en un solo teléfono: si lo cambiás, lo perdés o se rompe, tus ideas siguen ahí.",
+        ],
+      },
+
+      { kind: "h2", text: "La revisión semanal", id: "revision" },
+      {
+        kind: "p",
+        text: "Capturar sin revisar es juntar, no componer. La segunda costumbre de los que escriben seguido es **una pasada regular** por lo capturado: una vez por semana, veinte minutos, escuchás lo que grabaste y decidís una de tres cosas por idea.",
+      },
+      {
+        kind: "ul",
+        items: [
+          "**Sigue viva** → dejala y, si podés, sumale algo hoy mismo: una segunda pista, una vuelta más, una letra provisoria.",
+          "**No era nada** → borrala sin culpa. Que una idea no sobreviva a la semana no es un fracaso; es información.",
+          "**No sé** → dejala quieta. En un mes la escuchás distinto.",
+        ],
+      },
+      {
+        kind: "note",
+        text: "Escuchar una idea propia una semana después es lo más parecido a escucharla como la escucharía otro. Ese desfasaje es gratis y no se puede comprar: usalo.",
+      },
+
+      { kind: "h2", text: "De idea suelta a canción", id: "convertir" },
+      {
+        kind: "p",
+        text: "Una idea que sobrevive a dos revisiones merece una segunda pista. Y esa segunda pista es donde la cosa cambia de categoría: apenas escuchás tu guitarra y cantás encima, deja de ser un fragmento y empieza a sonar a canción. Es el momento en que la mayoría abandona, y es exactamente el que no hay que saltear.",
+      },
+      {
+        kind: "p",
+        text: "No hace falta que la canción esté terminada para eso. Al revés: agregar una pista suele ser lo que **destraba** la parte que faltaba.",
+      },
+      {
+        kind: "ul",
+        items: [
+          "¿Tenés la música y no la letra? Grabá la voz con palabras de relleno y escuchalo. La letra aparece más fácil sobre algo que suena que sobre un papel en blanco.",
+          "¿Tenés la letra y no la música? Grabá un rasgueo simple y recitá encima. El ritmo del habla te va a marcar la melodía.",
+          "¿Tenés dos partes sueltas y no sabés si pegan? Ponelas una después de la otra en el mismo proyecto. En dos minutos sabés.",
+        ],
+      },
+
+      { kind: "h2", text: "Cuando te trabás", id: "trabado" },
+      {
+        kind: "p",
+        text: "Quedarse en blanco no se arregla esperando la inspiración. Jeff Tweedy, de Wilco, escribió un libro entero sobre esto y su consejo central es casi aburrido de tan práctico: **escribir un rato todos los días**, aunque sean unos minutos, y terminar lo que empezaste aunque no te convenza. Sin esa constancia, dice, te quedan las pocas canciones al año que lleguen solas.",
+      },
+      {
+        kind: "p",
+        text: "Sus ejercicios para destrabar son concretos y se hacen en diez minutos:",
+      },
+      {
+        kind: "ul",
+        items: [
+          "**Escalera de palabras**: elegí un oficio (médico, panadero, mecánico) y anotá diez verbos de esa actividad. Después mirá alrededor y anotá diez objetos que veas. Cruzá verbos con objetos hasta que aparezca una combinación rara que te guste. De ahí sale un verso.",
+          "**Robar palabras de un libro**: abrí cualquier libro en una página al azar, tomá cinco o seis palabras sueltas y obligate a usarlas.",
+          "**Recortar y mezclar**: escribí varias frases, cortalas por la mitad y pegá principios con finales que no les correspondían.",
+        ],
+      },
+      {
+        kind: "note",
+        text: "El objetivo de estos ejercicios no es escribir algo bueno: es **escribir algo**. Lo bueno se elige después, y solo se puede elegir entre lo que existe.",
+      },
+
+      { kind: "h2", text: "Mostrala antes de terminarla", id: "compartir" },
+      {
+        kind: "p",
+        text: "La última costumbre es la que más cuesta y la que más rinde: **mostrar la idea antes de que esté lista**. No la versión final, no la mezcla perfecta — el fragmento tal como está.",
+      },
+      {
+        kind: "p",
+        text: "Sirve por tres motivos bien concretos, y ninguno es emocional:",
+      },
+      {
+        kind: "ul",
+        items: [
+          "**Te obliga a cerrar algo.** Una idea que nadie va a escuchar se puede dejar a medias para siempre.",
+          "**Te dice dónde está el problema**, que casi nunca es donde creías. Un comentario anclado en el segundo 48 vale más que diez «está bueno».",
+          "**Consigue lo que te falta.** Si la canción pide un bajo y vos no tocás el bajo, decilo: alguien que sí toca puede grabar su parte en su teléfono y mandártela para que la sumes a tu proyecto.",
+        ],
+      },
+      {
+        kind: "p",
+        text: "Ese último punto cambia el cálculo por completo. Durante décadas, terminar una canción con banda significaba conseguir una banda, un lugar y un día en que todos pudieran. Hoy alcanza con publicar el tema diciendo qué instrumento te falta.",
+      },
+
+      { kind: "h2", text: "El método, en cinco líneas", id: "resumen" },
+      {
+        kind: "ul",
+        items: [
+          "**Capturá rápido, no bien.** Veinte segundos horribles le ganan a la idea perfecta que no grabaste.",
+          "**Nombrá por sonido** y marcá dónde está lo bueno, o no lo vas a encontrar nunca más.",
+          "**Revisá una vez por semana** y borrá sin culpa lo que no sobrevivió.",
+          "**Sumá la segunda pista** apenas una idea aguante dos revisiones: ahí deja de ser un fragmento.",
+          "**Mostrala antes de terminarla**, y pedí el instrumento que te falta.",
+        ],
+      },
+      {
+        kind: "p",
+        text: "Nada de esto pide talento extra ni equipo caro. Pide tener el grabador a un toque de distancia y la costumbre de usarlo cuando la idea aparece, que es siempre en el peor momento.",
+      },
+    ],
+    related: [
+      "como-grabar-guitarra-y-voz-en-el-celular",
+      "que-es-el-bpm-y-como-saber-el-de-tu-cancion",
+    ],
+  },
+
+  {
     slug: "por-que-mi-grabacion-queda-corrida",
     title: "Por qué tu grabación queda corrida (y cómo arreglarlo)",
     description:
@@ -218,7 +405,11 @@ export const GUIDES: readonly Guide[] = [
         ],
       },
     ],
-    related: ["por-que-mi-grabacion-queda-corrida", "que-es-el-bpm-y-como-saber-el-de-tu-cancion"],
+    related: [
+      "por-que-mi-grabacion-queda-corrida",
+      "como-no-perder-tus-ideas-de-canciones",
+      "que-es-el-bpm-y-como-saber-el-de-tu-cancion",
+    ],
   },
 
   {
