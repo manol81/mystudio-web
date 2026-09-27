@@ -1,0 +1,19 @@
+# app-ads.txt — MY STUDIO (com.aquiles.mystudio.pocket)
+#
+# Declara quien tiene derecho a vender el inventario publicitario de la
+# app Android. Sin este archivo, varios compradores no pujan por las
+# impresiones: para ellos el inventario no esta autorizado por nadie.
+#
+# Lo verifica AdMob crawleando el "developer website" que figura en la
+# ficha de Google Play, asi que ESE campo tiene que apuntar a
+# mystudio.rocks o este archivo no se encuentra aunque este publicado.
+#
+# El id `pub-6221789540738984` es el mismo de
+# android/app/src/main/AndroidManifest.xml (APPLICATION_ID) en el repo
+# de la app. Si alguna vez cambia la cuenta de AdMob, cambian los dos.
+#
+# Next.js sirve public/ desde la raiz, o sea /app-ads.txt. La ruta
+# tiene que ser la raiz exacta del dominio: un subdirectorio no lo
+# encuentra el crawler.
+
+google.com, pub-6221789540738984, DIRECT, f08c47fec0942fa0
