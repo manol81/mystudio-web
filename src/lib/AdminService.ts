@@ -9,7 +9,6 @@
 
 import {
   collection,
-  deleteDoc,
   doc,
   getCountFromServer,
   getDoc,
@@ -20,12 +19,11 @@ import {
   Timestamp,
   updateDoc,
   where,
-  type CollectionReference,
   type QueryDocumentSnapshot,
   type DocumentData,
 } from "firebase/firestore";
-import { deleteObject, ref as storageRef } from "firebase/storage";
-import { db, storage } from "@/lib/firebase";
+import { db } from "@/lib/firebase";
+import { deletePostCascade, type DeletePostResult } from "@/lib/postDeletion";
 
 export interface Report {
   id: string;
@@ -135,91 +133,19 @@ export async function fetchPlatformStats(): Promise<PlatformStats> {
 
 // ─── Moderación: borrar una publicación ajena ────────────────────────
 //
-// Hasta ahora el panel de reportes solo podía marcar un reporte como
-// "revisado": el contenido denunciado seguía publicado, y la única
-// salida real era pedirle al autor que lo borrara o entrar a mano por
-// Firebase Console. Las reglas ahora dejan borrar al admin (ver la
-// función isAdmin() en firestore.rules), acá está el barrido completo.
-//
-// Lo que NO se toca, a propósito: el `.mystudio` del autor en
-// `users/{uid}/projects`. Eso es su proyecto, no la publicación —
-// despublicar no es confiscarle el trabajo. Lo que sí se va es todo lo
-// que existía SOLO por estar publicado: el preview y el ZIP de pistas,
-// los dos de lectura pública.
+// El barrido completo vive en postDeletion.ts, compartido con el borrado
+// que hace el propio AUTOR desde el feed: es exactamente el mismo
+// trabajo, lo único que cambia es qué rama de firestore.rules autoriza
+// la operación. Mantener dos copias garantizaba que alguna se quedara
+// corta al aparecer una subcolección nueva.
 
-export interface AdminDeletePostResult {
-  likes: number;
-  comments: number;
-  collabRequests: number;
-  storageObjects: number;
-}
+export type AdminDeletePostResult = DeletePostResult;
 
-/// Borra una publicación con TODO lo que cuelga de ella.
-///
-/// Firestore no borra subcolecciones en cascada: si se borrara solo el
-/// documento, los likes, comentarios, pedidos de colaboración y sus
-/// hilos quedarían vivos colgando de un padre inexistente — invisibles
-/// desde la app y ya imposibles de alcanzar para borrarlos después. Por
-/// eso el documento padre se borra ÚLTIMO: si algo falla a mitad de
-/// camino, el post sigue ahí y se puede reintentar.
 export async function deletePostAsAdmin(post: {
   id: string;
   authorId: string;
 }): Promise<AdminDeletePostResult> {
-  const postRef = doc(db, "community_posts", post.id);
-  const result: AdminDeletePostResult = {
-    likes: 0,
-    comments: 0,
-    collabRequests: 0,
-    storageObjects: 0,
-  };
-
-  result.likes = await deleteEntireCollection(collection(postRef, "likes"));
-  result.comments = await deleteEntireCollection(collection(postRef, "comments"));
-
-  // El hilo de mensajes vive DENTRO de cada pedido, así que se vacía
-  // antes de borrar el pedido — al revés quedarían huérfanos.
-  const requests = await getDocs(collection(postRef, "collab_requests"));
-  for (const request of requests.docs) {
-    await deleteEntireCollection(collection(request.ref, "messages"));
-    await deleteDoc(request.ref);
-    result.collabRequests++;
-  }
-
-  // Rutas EXACTAS, sin listar la carpeta: las reglas de Storage dan
-  // permiso sobre el objeto, no sobre el prefijo (mismo criterio que
-  // AccountDeletionService con las pistas de colaboración). Que un
-  // archivo no exista es un final válido, no un error: las
-  // publicaciones viejas no tienen ZIP de pistas, y un preview puede
-  // haber fallado al generarse.
-  for (const path of [
-    `community_previews/${post.authorId}/${post.id}`,
-    `community_stems/${post.authorId}/${post.id}.zip`,
-  ]) {
-    try {
-      await deleteObject(storageRef(storage, path));
-      result.storageObjects++;
-    } catch (err) {
-      if ((err as { code?: string }).code !== "storage/object-not-found") throw err;
-    }
-  }
-
-  await deleteDoc(postRef);
-  return result;
-}
-
-/// Vacía una colección de a páginas y devuelve cuántos documentos
-/// borró. De a 400 porque un post con suerte puede tener miles de
-/// likes y un `getDocs` sin límite los traería todos a memoria.
-async function deleteEntireCollection(col: CollectionReference): Promise<number> {
-  let total = 0;
-  for (;;) {
-    const page = await getDocs(query(col, limit(400)));
-    if (page.empty) return total;
-    await Promise.all(page.docs.map((d) => deleteDoc(d.ref)));
-    total += page.size;
-    if (page.size < 400) return total;
-  }
+  return deletePostCascade(post);
 }
 
 // ─── Edición de un sample ya publicado ───────────────────────────────

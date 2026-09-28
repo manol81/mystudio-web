@@ -36,6 +36,7 @@ import {
   type QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { deletePostCascade } from "@/lib/postDeletion";
 
 const COLLECTION_NAME = "community_posts";
 const PAGE_SIZE = 8;
@@ -264,6 +265,38 @@ export async function reportPost(params: {
     status: "pending",
     createdAt: serverTimestamp(),
   });
+}
+
+// ─── Borrar la publicación propia ────────────────────────────────────
+//
+// Hasta acá, publicar era de ida: el autor podía editar el texto pero
+// no sacar el tema del feed. Las reglas ya lo permitían desde el
+// principio (`allow delete: request.auth.uid == resource.data.authorId`)
+// — lo que faltaba era el barrido y un botón.
+//
+// El barrido es el MISMO que usa la moderación (postDeletion.ts), y eso
+// importa: si esto borrara solo el documento, los likes, comentarios y
+// pedidos de colaboración quedarían vivos adentro de un post que ya no
+// existe, y nadie podría alcanzarlos nunca más para borrarlos.
+//
+// ⚠️ El PROYECTO no se toca. Despublicar no es perder el trabajo: el
+// .mystudio sigue en `users/{uid}/projects`, sincronizado, y se puede
+// volver a publicar cuando se quiera.
+
+/// Borra la publicación [post], que tiene que ser de [uid].
+///
+/// La comprobación de autoría es defensiva y NO es la que protege
+/// nada: quien manda es la regla del servidor. Está para que un error
+/// de la UI falle acá, con un mensaje claro, en vez de salir a pedirle
+/// a Firestore un borrado que va a rechazar.
+export async function deleteOwnPost(
+  post: { id: string; authorId: string },
+  uid: string,
+): Promise<void> {
+  if (post.authorId !== uid) {
+    throw new Error("Solo el autor puede borrar su publicación.");
+  }
+  await deletePostCascade(post);
 }
 
 export async function blockUser(uid: string, blockedUid: string): Promise<void> {

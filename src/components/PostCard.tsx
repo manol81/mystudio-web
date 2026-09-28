@@ -29,10 +29,12 @@ import {
   Check,
   SlidersHorizontal,
   Handshake,
+  Trash2,
 } from "lucide-react";
 import { SITE_URL } from "@/lib/site";
 import { CollabRequestModal } from "@/components/CollabRequestModal";
 import { CommentsModal } from "@/components/CommentsModal";
+import { DeletePostModal } from "@/components/DeletePostModal";
 import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
 import { SamplePlayer } from "@/components/SamplePlayer";
@@ -75,6 +77,7 @@ export function PostCard({
   commentsCount,
   onCommentAdded,
   onRequireLogin,
+  onDeleted,
 }: {
   post: CommunityPost;
   isLiked: boolean;
@@ -88,6 +91,11 @@ export function PostCard({
   // comentarios; al intentar dar like se le pide iniciar sesión en vez
   // de mostrarle un botón muerto.
   onRequireLogin?: () => void;
+  // El autor borró su publicación: la tarjeta tiene que desaparecer de
+  // donde esté (el feed la saca de la lista, el permalink muestra que
+  // ya no existe). Opcional para no obligar a cada pantalla a
+  // manejarlo — sin este callback, simplemente no se ofrece borrar.
+  onDeleted?: (postId: string) => void;
 }) {
   const { user } = useAuth();
   const [linkCopied, setLinkCopied] = useState(false);
@@ -107,6 +115,7 @@ export function PostCard({
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isBlocking, setIsBlocking] = useState(false);
   const [isLiking, setIsLiking] = useState(false);
   const [playbackSeconds, setPlaybackSeconds] = useState<number | null>(null);
@@ -115,6 +124,11 @@ export function PostCard({
   const avatarColor = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   const heights = fakeWaveformHeights(hash);
   const isOwnPost = user?.uid === post.authorId;
+  /// Borrar es del AUTOR y de nadie más (así lo exige firestore.rules).
+  /// Depende además de que la pantalla sepa qué hacer después: sin
+  /// `onDeleted`, la tarjeta quedaría en pantalla apuntando a un post
+  /// que ya no existe.
+  const canDelete = isOwnPost && Boolean(onDeleted);
   /// Se puede abrir el visor multipista: con el paquete liviano lo abre
   /// cualquiera; sin él, solo el autor (el .mystudio original es
   /// privado).
@@ -178,11 +192,17 @@ export function PostCard({
           <p className="text-xs text-white/40">{formatRelativeTime(post.createdAt)}</p>
         </div>
 
-        {/* Menú de moderación — oculto en las publicaciones propias:
-            reportarse/bloquearse a uno mismo no tiene sentido. */}
-        {!isOwnPost && user && (
+        {/* Menú de la tarjeta. En una publicación AJENA es el de
+            moderación (reportar/bloquear); en la propia, eliminarla —
+            reportarse o bloquearse a uno mismo no tiene sentido, y por
+            eso durante mucho tiempo el autor no tuvo menú ninguno y
+            publicar terminaba siendo un viaje de ida. */}
+        {user && (!isOwnPost || canDelete) && (
           <div className="relative shrink-0">
-            <Tooltip text="Reportar o bloquear al autor" side="left">
+            <Tooltip
+              text={isOwnPost ? "Opciones de tu publicación" : "Reportar o bloquear al autor"}
+              side="left"
+            >
               <button
                 type="button"
                 onClick={() => setIsMenuOpen((prev) => !prev)}
@@ -198,26 +218,41 @@ export function PostCard({
                 {/* Backdrop invisible: cualquier click afuera del menú
                     lo cierra, sin necesitar un listener global. */}
                 <div className="fixed inset-0 z-10" onClick={() => setIsMenuOpen(false)} />
-                <div className="absolute right-0 top-8 z-20 w-48 overflow-hidden rounded-xl border border-white/10 bg-onyx-black shadow-2xl">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsMenuOpen(false);
-                      setIsReportOpen(true);
-                    }}
-                    className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-xs text-white/70 transition-colors hover:bg-white/5 hover:text-white"
-                  >
-                    <Flag size={14} /> Reportar publicación
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleBlock}
-                    disabled={isBlocking}
-                    className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-xs text-white/70 transition-colors hover:bg-red-400/10 hover:text-red-300 disabled:opacity-50"
-                  >
-                    <ShieldOff size={14} />
-                    {isBlocking ? "Bloqueando..." : `Bloquear a ${post.authorName}`}
-                  </button>
+                <div className="absolute right-0 top-8 z-20 w-52 overflow-hidden rounded-xl border border-white/10 bg-onyx-black shadow-2xl">
+                  {canDelete ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        setIsDeleteOpen(true);
+                      }}
+                      className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-xs text-white/70 transition-colors hover:bg-red-400/10 hover:text-red-300"
+                    >
+                      <Trash2 size={14} /> Eliminar publicación
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          setIsReportOpen(true);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-xs text-white/70 transition-colors hover:bg-white/5 hover:text-white"
+                      >
+                        <Flag size={14} /> Reportar publicación
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleBlock}
+                        disabled={isBlocking}
+                        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-xs text-white/70 transition-colors hover:bg-red-400/10 hover:text-red-300 disabled:opacity-50"
+                      >
+                        <ShieldOff size={14} />
+                        {isBlocking ? "Bloqueando..." : `Bloquear a ${post.authorName}`}
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -397,6 +432,15 @@ export function PostCard({
           storagePath={post.audioUrl}
           title={post.title}
           onClose={() => setIsViewerOpen(false)}
+        />
+      )}
+
+      {isDeleteOpen && user && onDeleted && (
+        <DeletePostModal
+          post={post}
+          uid={user.uid}
+          onDeleted={onDeleted}
+          onClose={() => setIsDeleteOpen(false)}
         />
       )}
 

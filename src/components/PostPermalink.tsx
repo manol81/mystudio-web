@@ -94,6 +94,9 @@ export function PostPermalink({ postId }: { postId: string }) {
           commentsCount={commentsCount}
           onCommentAdded={() => setCommentsCount((n) => n + 1)}
           onRequireLogin={() => setIsModalOpen(true)}
+          // Acá la publicación ES la página: al borrarla queda el
+          // mismo cartel que ve cualquiera que llegue a un link viejo.
+          onDeleted={() => setStatus("missing")}
         />
       )}
 

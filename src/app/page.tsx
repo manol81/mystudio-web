@@ -151,6 +151,13 @@ export default function CommunityFeedPage() {
     setBlockedAuthorIds((prev) => new Set(prev).add(authorId));
   }
 
+  /// El autor borró su publicación: sale del feed en el acto, sin
+  /// recargar la página. No se toca el cursor de paginación — el lote
+  /// siguiente se pide igual desde donde iba.
+  function handlePostDeleted(postId: string) {
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
+  }
+
   function handleLikeToggled(postId: string, liked: boolean, newLikesCount: number) {
     setLikedPostIds((prev) => {
       const next = new Set(prev);
@@ -443,6 +450,7 @@ export default function CommunityFeedPage() {
                   commentsCount={commentCounts.get(post.id) ?? 0}
                   onCommentAdded={handleCommentAdded}
                   onRequireLogin={requireLogin}
+                  onDeleted={handlePostDeleted}
                 />
               ))}
             </div>
