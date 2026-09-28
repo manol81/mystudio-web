@@ -37,7 +37,7 @@
 // que no pudo recuperar y lo avisa, en vez de simular que está todo bien.
 
 import type { MasterFx } from "@/lib/trackEffects";
-import type { ArrangerTrack } from "@/lib/arrangerTypes";
+import type { ArrangerTrack, ProjectMarker } from "@/lib/arrangerTypes";
 
 /// Todo lo que define un arreglo, menos el audio ya decodificado.
 export interface ArrangerDraft {
@@ -53,6 +53,13 @@ export interface ArrangerDraft {
   timeSignatureDenominator: number;
   tracks: ArrangerTrack[];
   masterFx: MasterFx;
+  /// Marcadores del proyecto importado, que el Arranger transporta sin
+  /// editar (ver ProjectMarker). Viajan en el borrador por el mismo
+  /// motivo que todo lo demás: volver del menú no puede perderlos.
+  ///
+  /// Un borrador guardado ANTES de este campo no lo tiene — quien lo
+  /// lea tiene que caer en `[]`.
+  markers: ProjectMarker[];
   /// El proyecto de la nube que estamos editando, si vinimos de uno
   /// (`?open=<cloudId>`). Viaja en el borrador para que recargar la
   /// página no convierta el próximo guardado en un duplicado.
@@ -148,6 +155,9 @@ export function arrangementSignature(draft: ArrangerDraft): string {
     // (que la mueve) marcaría el arreglo como modificado justo después
     // de dejarlo a salvo.
     masterFx: draft.masterFx,
+    // `markers` NO entra en la firma: el Arranger no los edita, solo
+    // los transporta, así que nunca pueden ser el motivo de que un
+    // arreglo figure como modificado. Mismo corte que cloudBaseVersion.
     tracks: stripAudio(draft.tracks),
   });
 }

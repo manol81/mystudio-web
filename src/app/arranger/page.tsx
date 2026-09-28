@@ -285,6 +285,10 @@ const INITIAL_ARRANGEMENT: ArrangementState = {
   // edita ni los reproduce, los devuelve al exportar para no perderlos
   // (igual que ArrangerTrack.fx).
   masterFx: DEFAULT_MASTER_FX,
+  // Marcadores del proyecto importado — mismo trato que masterFx: el
+  // Arranger no los muestra ni los edita, los devuelve al exportar para
+  // no borrarlos en un round-trip app → web → app.
+  markers: [],
   tracks: [],
 };
 
@@ -304,6 +308,24 @@ interface ImportManifestClip {
   // Ausente en un .mystudio exportado antes de esta feature (o desde
   // la app móvil, que todavía no la conoce) — se completa con 0.
   pitchShift?: number;
+  // ─── formatVersion 3 (app, 2026-09-28) ──────────────────────────────
+  //
+  // Recorte NO destructivo, volumen y fades por clip. La app los tenía
+  // en su base desde siempre y NO los escribía en el manifiesto, así
+  // que un proyecto recortado y con fades volvía entero y plano de la
+  // nube. Ahora viajan, y el Arranger tiene que APLICARLOS —no solo
+  // transportarlos— porque el WAV que trae un .mystudio de la app es el
+  // archivo COMPLETO, sin recortar: ignorarlos era reproducir (y
+  // re-exportar) audio que la persona había sacado a propósito.
+  //
+  // Ausentes en un .mystudio formatVersion 1/2 y en los que escribe
+  // esta misma página: cada uno cae en el default que significa "clip
+  // entero, a volumen pleno y sin fades".
+  sourceTrimStartFrame?: number;
+  sourceTrimDurationFrames?: number;
+  volume?: number;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
 }
 
 interface ImportManifestTrack {
@@ -329,6 +351,9 @@ interface ImportManifest {
     masterFx?: unknown;
   };
   tracks: ImportManifestTrack[];
+  // Marcadores del proyecto (formatVersion 3). Ausentes en todo lo
+  // anterior; el Arranger no los dibuja, los transporta.
+  markers?: { name: string; positionSeconds: number }[];
 }
 
 // computePeaks vive en samplePeaks.ts: lo comparten los clips de la
@@ -501,6 +526,7 @@ export default function ArrangerPage() {
     timeSignatureNumerator,
     timeSignatureDenominator,
     masterFx: importedMasterFx,
+    markers: importedMarkers,
     tracks,
   } = arrangement.state;
   const { commit } = arrangement;
@@ -2941,10 +2967,12 @@ export default function ArrangerPage() {
       }
 
       const manifest = {
-        // 2 desde que el manifest lleva efectos (ver
-        // project_backup_service.dart). El Arranger no los edita, pero
-        // los devuelve intactos, así que exporta la misma versión.
-        formatVersion: 2,
+        // 3 desde que el manifest lleva el recorte, el volumen y los
+        // fades del clip, y los marcadores del proyecto (ver
+        // project_backup_service.dart). El Arranger no edita ni los
+        // efectos del máster ni los marcadores, pero los devuelve
+        // intactos, así que exporta la misma versión que la app.
+        formatVersion: 3,
         project: {
           title: projectTitle.trim() || "Arreglo sin título",
           tempoBpm: projectTempoBpm,
@@ -2957,6 +2985,10 @@ export default function ArrangerPage() {
           timeSignatureNumerator,
           timeSignatureDenominator,
         },
+        // Marcadores transportados tal cual (ver ProjectMarker). Sin
+        // esto, editar en la web un proyecto marcado y volver a
+        // guardarlo los borraba en silencio del teléfono.
+        markers: importedMarkers,
         tracks: tracks.map((track, trackIndex) => ({
           name: track.name,
           volume: track.volume,
@@ -2989,6 +3021,20 @@ export default function ArrangerPage() {
               // todavía, mismo criterio que timeSignatureNumerator/
               // Denominator a nivel de proyecto).
               pitchShift: unit.pitchShift,
+              // Las claves del formatVersion 3 van EXPLÍCITAS y en su
+              // valor neutro, y eso no es redundancia: el WAV que se
+              // acaba de renderizar ya tiene aplicados el recorte, el
+              // volumen y los fades de este clip (ver renderClipToWav
+              // arriba), así que lo que viaja es audio ya horneado y
+              // volver a recortarlo o atenuarlo del otro lado sería
+              // aplicarlo dos veces. Escribirlas deja dicho que esta
+              // página conoce la versión 3, en vez de parecer que se
+              // olvidó de ellas.
+              sourceTrimStartFrame: 0,
+              sourceTrimDurationFrames: rendered.durationSamples,
+              volume: 1,
+              fadeInSeconds: 0,
+              fadeOutSeconds: 0,
             };
           }),
         })),
@@ -3211,6 +3257,16 @@ export default function ArrangerPage() {
     // mismo, de una, para un proyecto con muchos clips es exactamente lo
     // que hacía "esperar a que todo termine" antes de ver nada. Los
     // picos de verdad llegan en la Fase 2, después de revelar las pistas.
+    /** Frames del manifiesto → segundos, cayendo en [fallback] si la clave no está (respaldo formatVersion 1/2) o si el sampleRate no sirve. */
+    function framesToSeconds(
+      frames: number | undefined,
+      clip: ImportManifestClip,
+      fallback: number,
+    ): number {
+      if (frames === undefined || !Number.isFinite(frames) || clip.sampleRate <= 0) return fallback;
+      return frames / clip.sampleRate;
+    }
+
     function buildImportedClip(clip: ImportManifestClip, buffer: AudioBuffer): ArrangerClip {
       return {
         id: newId(),
@@ -3239,12 +3295,24 @@ export default function ArrangerPage() {
         // segundos puros (mismo motivo por el que handleExport
         // tampoco convierte nada al exportar).
         startSeconds: clip.startBeat,
-        sourceOffsetSeconds: 0,
-        sourceDurationSeconds: buffer.duration,
+        // Recorte no destructivo de la app (formatVersion 3). Los
+        // frames del manifiesto están contra el archivo de origen, y
+        // este clip nunca se estira (originalBpm: 0 ⇒ rate 1), así que
+        // dividir por sampleRate ya da la base de tiempo del buffer.
+        //
+        // Ausente ⇒ el clip suena entero, que es lo que se hacía antes
+        // y lo correcto para un .mystudio escrito por esta página (ahí
+        // el WAV YA viene recortado y con todo aplicado).
+        sourceOffsetSeconds: framesToSeconds(clip.sourceTrimStartFrame, clip, 0),
+        sourceDurationSeconds: framesToSeconds(
+          clip.sourceTrimDurationFrames,
+          clip,
+          buffer.duration,
+        ),
         repeats: 1,
-        gain: 1,
-        fadeInSeconds: 0,
-        fadeOutSeconds: 0,
+        gain: clip.volume ?? 1,
+        fadeInSeconds: clip.fadeInSeconds ?? 0,
+        fadeOutSeconds: clip.fadeOutSeconds ?? 0,
         pitchShift: clip.pitchShift ?? 0,
         buffer,
         peaks: new Float32Array(0),
@@ -3273,6 +3341,16 @@ export default function ArrangerPage() {
       masterFx: manifest.project.masterFx
         ? parseMasterFx(manifest.project.masterFx)
         : DEFAULT_MASTER_FX,
+      // Los marcadores del proyecto (formatVersion 3). Se sanean acá
+      // porque el manifiesto es un JSON de afuera: una entrada
+      // malformada no puede volver al teléfono como un marcador con
+      // nombre `undefined`.
+      markers: (manifest.markers ?? [])
+        .filter(
+          (marker) =>
+            typeof marker?.name === "string" && Number.isFinite(marker?.positionSeconds),
+        )
+        .map((marker) => ({ name: marker.name, positionSeconds: marker.positionSeconds })),
       tracks: [],
     });
 
@@ -3550,6 +3628,7 @@ export default function ArrangerPage() {
       timeSignatureDenominator,
       tracks,
       masterFx: importedMasterFx,
+      markers: importedMarkers,
       projectKey,
       cloudProjectId,
       cloudBaseVersion,
@@ -3573,6 +3652,8 @@ export default function ArrangerPage() {
         timeSignatureNumerator: live.timeSignatureNumerator,
         timeSignatureDenominator: live.timeSignatureDenominator,
         masterFx: live.masterFx,
+        // ?? [] porque puede venir de un borrador anterior a este campo.
+        markers: live.markers ?? [],
         tracks: live.tracks,
       });
       setCloudProjectId(live.cloudProjectId);
@@ -3700,6 +3781,8 @@ export default function ArrangerPage() {
       timeSignatureNumerator: stored.timeSignatureNumerator,
       timeSignatureDenominator: stored.timeSignatureDenominator,
       masterFx: stored.masterFx,
+      // ?? [] porque puede venir de un borrador anterior a este campo.
+      markers: stored.markers ?? [],
       tracks: restored,
     });
     setCloudProjectId(stored.cloudProjectId);

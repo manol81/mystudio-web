@@ -25,6 +25,7 @@ function state(over: Partial<ArrangementState> = {}): ArrangementState {
     timeSignatureNumerator: 4,
     timeSignatureDenominator: 4,
     masterFx: DEFAULT_MASTER_FX,
+    markers: [],
     tracks: [],
     ...over,
   };

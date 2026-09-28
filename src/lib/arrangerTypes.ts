@@ -7,6 +7,24 @@
 
 import type { TrackFx } from "@/lib/trackEffects";
 
+/**
+ * Un marcador nombrado de la línea de tiempo del proyecto (tabla
+ * `Markers` de la app, schemaVersion 2).
+ *
+ * El Arranger NO los muestra ni los edita: los TRANSPORTA, igual que
+ * `ArrangerTrack.fx`. Viajan en el manifiesto del .mystudio desde el
+ * formatVersion 3; sin esto, abrir en la web un proyecto marcado y
+ * volver a guardarlo los borraba en silencio.
+ *
+ * `id` y `projectId` no viajan: son ids locales del teléfono, que se
+ * reasignan al restaurar.
+ */
+export interface ProjectMarker {
+  name: string;
+  /** Posición en la línea de tiempo del proyecto, en segundos. */
+  positionSeconds: number;
+}
+
 export interface ArrangerClip {
   id: string;
   sampleId: string;

@@ -88,6 +88,7 @@ function draft(overrides: Partial<ArrangerDraft> = {}): ArrangerDraft {
     timeSignatureDenominator: 4,
     tracks: [track()],
     masterFx: DEFAULT_MASTER_FX,
+    markers: [],
     projectKey: "",
     cloudProjectId: null,
     cloudBaseVersion: null,
@@ -139,6 +140,15 @@ describe("firma de contenido", () => {
     expect(a).toBe(b);
   });
 
+  it("NO cambia por los marcadores: la web no los edita", () => {
+    // Están en el borrador para no perderlos, pero no son algo que la
+    // persona pueda escribir desde acá, así que no pueden ser el
+    // motivo de que un arreglo figure como "sin sincronizar".
+    expect(arrangementSignature(draft({ markers: [] }))).toBe(
+      arrangementSignature(draft({ markers: [{ name: "Solo", positionSeconds: 3 }] })),
+    );
+  });
+
   it("cambia si se renombra el proyecto o se mueve el tempo", () => {
     const base = arrangementSignature(draft());
     expect(arrangementSignature(draft({ projectTitle: "Otro" }))).not.toBe(base);
@@ -187,6 +197,31 @@ describe("capa de localStorage", () => {
     const stored = readStoredArrangerDraft("u1")!;
     expect(stored.cloudProjectId).toBe("proj-abc");
     expect(stored.cloudBaseVersion).toBe(7);
+  });
+
+  it("conserva los marcadores del proyecto, que la web no edita", () => {
+    // El Arranger no los dibuja ni los toca: los transporta para
+    // devolverlos al exportar (ver ProjectMarker). Si el borrador los
+    // perdiera, volver del menú y guardar los borraría del teléfono —
+    // que es justo el agujero que este campo vino a tapar.
+    rememberArrangerDraft(
+      "u1",
+      draft({ markers: [{ name: "Estribillo", positionSeconds: 42.5 }] }),
+    );
+    const stored = readStoredArrangerDraft("u1")!;
+    expect(stored.markers).toEqual([{ name: "Estribillo", positionSeconds: 42.5 }]);
+  });
+
+  it("un borrador guardado ANTES de los marcadores se lee igual", () => {
+    // Lo que hay hoy en el localStorage de la gente no tiene el campo.
+    // Tiene que leerse sin explotar y quedar en undefined, para que
+    // quien lo restaura caiga en [] — nunca en un marcador fantasma.
+    const sinMarcadores = { ...draft() } as Partial<ArrangerDraft>;
+    delete sinMarcadores.markers;
+    rememberArrangerDraft("u1", sinMarcadores as ArrangerDraft);
+    const stored = readStoredArrangerDraft("u1")!;
+    expect(stored.tracks).toHaveLength(1);
+    expect(stored.markers).toBeUndefined();
   });
 
   it("no ofrece un borrador sin pistas", () => {

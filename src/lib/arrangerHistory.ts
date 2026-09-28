@@ -43,7 +43,7 @@
 
 import { useCallback, useMemo, useReducer } from "react";
 import type { MasterFx } from "@/lib/trackEffects";
-import type { ArrangerTrack } from "@/lib/arrangerTypes";
+import type { ArrangerTrack, ProjectMarker } from "@/lib/arrangerTypes";
 
 /// Todo lo que el usuario puede cambiar y querría poder deshacer.
 ///
@@ -59,6 +59,11 @@ export interface ArrangementState {
   timeSignatureNumerator: number;
   timeSignatureDenominator: number;
   masterFx: MasterFx;
+  /// Marcadores del proyecto, que el Arranger TRANSPORTA sin editar
+  /// (ver ProjectMarker). Están acá y no aparte porque son contenido
+  /// del arreglo: cargar otro proyecto tiene que traer los suyos, y no
+  /// dejar colgando los del anterior.
+  markers: ProjectMarker[];
   tracks: ArrangerTrack[];
 }
 
