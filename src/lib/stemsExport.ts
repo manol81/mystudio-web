@@ -21,7 +21,9 @@
 // Qué NO lleva: la reverb del máster, que es un efecto compartido
 // alimentado por los envíos de todas las pistas y no se puede repartir
 // entre ellas. Cada pista sí lleva su EQ, su compresor, su volumen y
-// su paneo, así que sumarlas suena como la mezcla salvo por esa cola.
+// su paneo —y, desde el formatVersion 3 del .mystudio, el recorte, el
+// volumen y los fades de cada clip—, así que sumarlas suena como la
+// mezcla salvo por esa cola.
 
 import JSZip from "jszip";
 import {
@@ -30,9 +32,8 @@ import {
   SAMPLE_RATE,
   type DecodedProject,
 } from "@/lib/audioPreviewExport";
-import { resampleLinear } from "@/lib/resample";
 import { applyTrackFxInPlace, constantPowerGains } from "@/lib/trackEffects";
-import { contentDurationSeconds } from "@/lib/projectMixdown";
+import { contentDurationSeconds, writeClipInto } from "@/lib/projectMixdown";
 
 /// Nombre del manifiesto dentro del ZIP.
 export const STEMS_MANIFEST = "stems.json";
@@ -96,18 +97,12 @@ async function renderStems(
     // La pista entera alineada a t=0, con el silencio entre clips que
     // el compresor necesita ver (mismo criterio que projectMixdown.ts).
     const mono = new Float32Array(totalFrames);
-    for (const clip of track.clips) {
-      // A SAMPLE_RATE sí o sí: ver resample.ts. Lo normal es que ya
-      // vengan así (se decodifican a esta misma tasa) y no copie nada.
-      const data = resampleLinear(
-        clip.buffer.getChannelData(0),
-        clip.buffer.sampleRate,
-        SAMPLE_RATE,
-      );
-      const offset = Math.round(clip.startSeconds * SAMPLE_RATE);
-      const count = Math.min(data.length, totalFrames - offset);
-      for (let n = 0; n < count; n++) mono[offset + n] += data[n];
-    }
+    // El MISMO writeClipInto que usa la mezcla: recorte, volumen y
+    // fades del clip (formatVersion 3) además del remuestreo a
+    // SAMPLE_RATE. Tener acá una segunda copia del bucle fue
+    // exactamente cómo el paquete de pistas se quedó sin el recorte
+    // cuando la mezcla sí lo tenía.
+    for (const clip of track.clips) writeClipInto(mono, clip, SAMPLE_RATE);
     applyTrackFxInPlace(mono, track.fx, SAMPLE_RATE);
 
     // Volumen y paneo ya aplicados: así el oyente escucha cada pista

@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import {
   contentDurationSeconds,
+  manifestClipToMixdownClip,
   projectHasEffects,
   renderProjectMix,
   type MixdownTrack,
@@ -24,6 +25,20 @@ function fakeBuffer(seconds: number, value: number): AudioBuffer {
   const data = new Float32Array(Math.round(seconds * FS)).fill(value);
   return {
     duration: seconds,
+    length: data.length,
+    sampleRate: FS,
+    numberOfChannels: 1,
+    getChannelData: () => data,
+  } as unknown as AudioBuffer;
+}
+
+/// Un buffer donde cada segundo tiene un valor distinto, para poder
+/// afirmar QUÉ pedazo del archivo sonó y no solo que sonó algo.
+function bufferBySecond(values: number[]): AudioBuffer {
+  const data = new Float32Array(values.length * FS);
+  values.forEach((v, i) => data.fill(v, i * FS, (i + 1) * FS));
+  return {
+    duration: values.length,
     length: data.length,
     sampleRate: FS,
     numberOfChannels: 1,
@@ -139,5 +154,160 @@ describe("cola de reverb", () => {
     let tail = 0;
     for (let i = FS + 1000; i < mix.left.length; i++) tail += Math.abs(mix.left[i]);
     expect(tail).toBeGreaterThan(1e-3);
+  });
+});
+
+// ─── Recorte, volumen y fades por clip (formatVersion 3) ───────────────
+//
+// El .mystudio no llevaba nada de esto, así que acá no existía: un
+// proyecto publicado con clips recortados se pre-escuchaba ENTERO, a
+// volumen pleno y sin fades, y el paquete liviano de pistas salía
+// igual. El WAV del ZIP es el archivo COMPLETO — sin aplicar estos
+// campos se reproduce audio que la persona había sacado a propósito.
+
+describe("recorte no destructivo", () => {
+  it("la duración cuenta la ventana, no el archivo entero", () => {
+    const t = track({
+      clips: [
+        {
+          startSeconds: 1,
+          buffer: fakeBuffer(4, 0.5),
+          sourceOffsetSeconds: 1,
+          sourceDurationSeconds: 2,
+        },
+      ],
+    });
+    // 1 s de offset en la línea de tiempo + 2 s de ventana = 3, no 5.
+    expect(contentDurationSeconds([t])).toBeCloseTo(3, 9);
+  });
+
+  it("suena SOLO la ventana recortada", () => {
+    // Un archivo de 4 s donde cada segundo vale distinto; la ventana
+    // toma el segundo 1 y el 2.
+    const t = track({
+      clips: [
+        {
+          startSeconds: 0,
+          buffer: bufferBySecond([0.1, 0.2, 0.3, 0.4]),
+          sourceOffsetSeconds: 1,
+          sourceDurationSeconds: 2,
+        },
+      ],
+    });
+    const mix = renderProjectMix([t], NO_LIMITER, FS);
+    const g = Math.SQRT1_2;
+    // Al principio del clip suena lo que había en el segundo 1, no el 0.
+    expect(mix.left[100]).toBeCloseTo(0.2 * g, 5);
+    expect(mix.left[FS + 100]).toBeCloseTo(0.3 * g, 5);
+    // Y lo que quedó fuera de la ventana no aparece en ningún lado.
+    expect(mix.left.some((v) => Math.abs(v - 0.1 * g) < 1e-4)).toBe(false);
+    expect(mix.left.some((v) => Math.abs(v - 0.4 * g) < 1e-4)).toBe(false);
+  });
+
+  it("una ventana más larga que el archivo se acota al archivo", () => {
+    // Defensivo: un manifiesto inconsistente no puede leer fuera del
+    // buffer (el motor nativo también se protege así).
+    const t = track({
+      clips: [
+        {
+          startSeconds: 0,
+          buffer: fakeBuffer(1, 0.5),
+          sourceOffsetSeconds: 0.5,
+          sourceDurationSeconds: 10,
+        },
+      ],
+    });
+    expect(contentDurationSeconds([t])).toBeCloseTo(0.5, 9);
+  });
+});
+
+describe("volumen y fades del clip", () => {
+  it("el volumen del clip multiplica al de la pista", () => {
+    const t = track({
+      volume: 0.5,
+      clips: [{ startSeconds: 0, buffer: fakeBuffer(1, 0.8), gain: 0.5 }],
+    });
+    const mix = renderProjectMix([t], NO_LIMITER, FS);
+    expect(mix.left[FS / 2]).toBeCloseTo(0.8 * 0.5 * 0.5 * Math.SQRT1_2, 5);
+  });
+
+  it("el fade-in es una rampa LINEAL desde 0, como en el motor", () => {
+    const t = track({
+      clips: [{ startSeconds: 0, buffer: fakeBuffer(2, 1), fadeInSeconds: 1 }],
+    });
+    const mix = renderProjectMix([t], NO_LIMITER, FS);
+    const g = Math.SQRT1_2;
+    expect(mix.left[0]).toBeCloseTo(0, 6);
+    // A la mitad del fade, la mitad del valor: eso es lo que hace que
+    // sea lineal y no exponencial (ver renderBlock en native_engine.cpp).
+    expect(mix.left[FS / 2]).toBeCloseTo(0.5 * g, 3);
+    expect(mix.left[FS + 100]).toBeCloseTo(g, 3);
+  });
+
+  it("el fade-out llega a cero al final de la VENTANA", () => {
+    const t = track({
+      clips: [
+        {
+          startSeconds: 0,
+          buffer: fakeBuffer(4, 1),
+          sourceDurationSeconds: 2,
+          fadeOutSeconds: 1,
+        },
+      ],
+    });
+    const mix = renderProjectMix([t], NO_LIMITER, FS);
+    const g = Math.SQRT1_2;
+    // Antes de que empiece el fade, valor pleno.
+    expect(mix.left[FS / 2]).toBeCloseTo(g, 3);
+    // A mitad del fade-out, la mitad.
+    expect(mix.left[Math.round(1.5 * FS)]).toBeCloseTo(0.5 * g, 2);
+    // Y en el último frame de la ventana, prácticamente nada.
+    expect(Math.abs(mix.left[2 * FS - 1])).toBeLessThan(0.01);
+  });
+});
+
+describe("manifestClipToMixdownClip", () => {
+  it("un manifiesto SIN las claves nuevas da el clip entero y neutro", () => {
+    // formatVersion 1/2, o uno escrito por el Arranger web (que hornea
+    // el recorte y los fades en el WAV).
+    const buffer = fakeBuffer(3, 0.5);
+    const clip = manifestClipToMixdownClip(
+      { startBeat: 2, sampleRate: FS },
+      buffer,
+    );
+    expect(clip.startSeconds).toBe(2);
+    expect(clip.sourceOffsetSeconds).toBeUndefined();
+    expect(clip.sourceDurationSeconds).toBeUndefined();
+    expect(clip.gain).toBeUndefined();
+    expect(contentDurationSeconds([track({ clips: [clip] })])).toBeCloseTo(5, 9);
+  });
+
+  it("los frames se convierten con el sampleRate del MANIFIESTO", () => {
+    // ⚠️ No con el del buffer: decodeAudioData devuelve el audio a la
+    // tasa del CONTEXTO, así que los dos pueden no coincidir (ver
+    // resample.ts y el bug del paquete de pistas del 2026-09-21).
+    const buffer = fakeBuffer(4, 0.5); // decodificado a FS
+    const clip = manifestClipToMixdownClip(
+      {
+        startBeat: 0,
+        sampleRate: 22050, // el archivo original era de media tasa
+        sourceTrimStartFrame: 22050,
+        sourceTrimDurationFrames: 44100,
+      },
+      buffer,
+    );
+    expect(clip.sourceOffsetSeconds).toBeCloseTo(1, 9);
+    expect(clip.sourceDurationSeconds).toBeCloseTo(2, 9);
+  });
+
+  it("sin sampleRate utilizable no inventa un recorte", () => {
+    // Un manifiesto roto tiene que dar "clip entero", no una ventana
+    // calculada con una división por cero.
+    const clip = manifestClipToMixdownClip(
+      { startBeat: 0, sampleRate: 0, sourceTrimDurationFrames: 44100 },
+      fakeBuffer(3, 0.5),
+    );
+    expect(clip.sourceDurationSeconds).toBeUndefined();
+    expect(contentDurationSeconds([track({ clips: [clip] })])).toBeCloseTo(3, 9);
   });
 });

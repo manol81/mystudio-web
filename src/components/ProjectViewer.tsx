@@ -54,9 +54,13 @@ import { ref, getDownloadURL } from "firebase/storage";
 import { auth, storage } from "@/lib/firebase";
 import { isProjectOwner } from "@/lib/projectOwnership";
 import {
+  clipDurationSeconds,
+  manifestClipToMixdownClip,
   projectHasEffects,
   renderProjectMix,
   toAudioBuffer,
+  type ManifestClipFields,
+  type MixdownClip,
   type MixdownTrack,
 } from "@/lib/projectMixdown";
 import {
@@ -68,9 +72,13 @@ import {
   type TrackFx,
 } from "@/lib/trackEffects";
 
-interface ManifestClip {
+// El recorte, el volumen y los fades del clip (formatVersion 3) los
+// describe ManifestClipFields, en projectMixdown.ts — el MISMO tipo que
+// usa audioPreviewExport. Los dos lectores del .mystudio tienen que
+// interpretar el recorte igual: si uno se olvidara de un campo, el
+// visor sonaría distinto del preview publicado y nada lo delataría.
+interface ManifestClip extends ManifestClipFields {
   audioFileName: string;
-  startBeat: number;
   durationSamples: number;
   sampleRate: number;
 }
@@ -92,9 +100,12 @@ interface Manifest {
   tracks: ManifestTrack[];
 }
 
-interface DecodedClip {
-  startBeat: number;
-  buffer: AudioBuffer;
+/// Un clip listo para sonar y para dibujarse. Extiende [MixdownClip] en
+/// vez de copiar sus campos a propósito: así lo que se le pasa al
+/// render de efectos es el clip MISMO, sin un `.map()` de por medio que
+/// pueda olvidarse un campo nuevo — que es exactamente cómo el recorte
+/// y los fades se venían perdiendo.
+interface DecodedClip extends MixdownClip {
   // null mientras el pico todavía no se calculó (fase de "shadow
   // waveform") — pares [min,max] una vez que sí, ver computePeaks.
   peaks: Float32Array | null;
@@ -159,13 +170,27 @@ function constantPowerGains(volume: number, pan: number): { left: number; right:
 // Picos min/max por bucket — misma idea que waveform_extractor.dart del
 // lado de Flutter, calculado UNA vez por clip al decodificar (no en
 // cada render), independiente del ancho final en píxeles.
-function computePeaks(buffer: AudioBuffer, numBuckets: number): Float32Array {
-  const data = buffer.getChannelData(0); // todo lo grabado en la app es mono
-  const samplesPerBucket = Math.max(1, Math.floor(data.length / numBuckets));
+//
+// Se calculan sobre la VENTANA RECORTADA, no sobre el archivo entero:
+// el bloque que se dibuja mide lo que el clip suena, así que pintarle
+// adentro la onda completa mostraría una forma que no corresponde con
+// lo que se escucha.
+function computePeaks(clip: DecodedClip, numBuckets: number): Float32Array {
+  const data = clip.buffer.getChannelData(0); // todo lo grabado en la app es mono
+  const rate = clip.buffer.sampleRate;
+  const windowStart = Math.min(
+    data.length,
+    Math.max(0, Math.round((clip.sourceOffsetSeconds ?? 0) * rate)),
+  );
+  const windowLength = Math.max(
+    1,
+    Math.min(data.length - windowStart, Math.round(clipDurationSeconds(clip) * rate)),
+  );
+  const samplesPerBucket = Math.max(1, Math.floor(windowLength / numBuckets));
   const peaks = new Float32Array(numBuckets * 2);
   for (let i = 0; i < numBuckets; i++) {
-    const start = i * samplesPerBucket;
-    const end = Math.min(data.length, start + samplesPerBucket);
+    const start = windowStart + i * samplesPerBucket;
+    const end = Math.min(windowStart + windowLength, start + samplesPerBucket);
     let min = 0;
     let max = 0;
     for (let j = start; j < end; j++) {
@@ -398,7 +423,11 @@ export function ProjectViewer({
             if (!audioFile) continue; // clip huérfano, mismo criterio que el export en Flutter
             const arrayBuffer = await audioFile.async("arraybuffer");
             const buffer = await ctx.decodeAudioData(arrayBuffer);
-            decodedClips.push({ startBeat: clip.startBeat, buffer, peaks: null });
+            // El WAV del ZIP es el archivo COMPLETO: el recorte, el
+            // volumen y los fades viven en el manifiesto y hay que
+            // aplicarlos, o se reproduce audio que la persona había
+            // sacado a propósito.
+            decodedClips.push({ ...manifestClipToMixdownClip(clip, buffer), peaks: null });
           }
           runtimeTracks.push({
             name: track.name,
@@ -415,7 +444,7 @@ export function ProjectViewer({
         if (cancelled) return;
 
         const maxEnd = runtimeTracks
-          .flatMap((t) => t.clips.map((c) => c.startBeat + c.buffer.duration))
+          .flatMap((t) => t.clips.map((c) => c.startSeconds + clipDurationSeconds(c)))
           .reduce((max, end) => Math.max(max, end), 0);
 
         // Efectos (2026-09): si el proyecto los usa, se renderiza la
@@ -432,7 +461,10 @@ export function ProjectViewer({
           isMuted: t.isMuted,
           isSolo: t.isSolo,
           fx: t.fx,
-          clips: t.clips.map((c) => ({ startSeconds: c.startBeat, buffer: c.buffer })),
+          // Sin `.map()`: un DecodedClip YA es un MixdownClip, y
+          // reconstruirlo campo por campo es cómo se perdían el
+          // recorte, el volumen y los fades.
+          clips: t.clips,
         }));
         masterFxRef.current = master;
         let mix: AudioBuffer | null = null;
@@ -470,7 +502,7 @@ export function ProjectViewer({
           track.clips.forEach((clip, ci) => {
             const timeoutId = setTimeout(() => {
               if (cancelled) return;
-              const peaks = computePeaks(clip.buffer, PEAK_BUCKETS);
+              const peaks = computePeaks(clip, PEAK_BUCKETS);
               runtimeTracks[ti].clips[ci].peaks = peaks;
               setTracks((prev) =>
                 prev.map((t, tIdx) =>
@@ -538,7 +570,9 @@ export function ProjectViewer({
           isMuted: false,
           isSolo: false,
           fx: NO_TRACK_FX,
-          clips: [{ startBeat: 0, buffer, peaks: null }],
+          // El paquete liviano ya trae cada pista renderizada entera
+          // desde 0: no hay recorte ni fades que aplicar acá.
+          clips: [{ startSeconds: 0, buffer, peaks: null }],
           color: TRACK_COLORS[runtimeTracks.length % TRACK_COLORS.length],
         });
       }
@@ -562,7 +596,7 @@ export function ProjectViewer({
           if (cancelled) return;
           const clip = track.clips[0];
           if (!clip) return;
-          clip.peaks = computePeaks(clip.buffer, PEAK_BUCKETS);
+          clip.peaks = computePeaks(clip, PEAK_BUCKETS);
           setTracks((prev) => prev.map((t, i) => (i === ti ? { ...t } : t)));
         }, 0);
         peakTimeouts.push(timeoutId);
@@ -678,7 +712,7 @@ export function ProjectViewer({
         isMuted: !audibleWith(i),
         isSolo: false,
         fx: t.fx,
-        clips: t.clips.map((c) => ({ startSeconds: c.startBeat, buffer: c.buffer })),
+        clips: t.clips, // ver la nota de arriba: no reconstruir el clip
       }));
       const rendered = renderProjectMix(mixdownTracks, masterFxRef.current, ctx.sampleRate);
       const buffer = toAudioBuffer(rendered, ctx, ctx.sampleRate);
@@ -750,17 +784,55 @@ export function ProjectViewer({
       merger.connect(ctx.destination);
 
       for (const clip of track.clips) {
-        const clipEnd = clip.startBeat + clip.buffer.duration;
+        // Cuánto de este clip SUENA: su ventana recortada, no el
+        // archivo entero (formatVersion 3 del .mystudio).
+        const windowStart = Math.max(0, clip.sourceOffsetSeconds ?? 0);
+        const windowDuration = clipDurationSeconds(clip);
+        const clipEnd = clip.startSeconds + windowDuration;
         if (clipEnd <= clamped) continue; // ya terminó antes del punto de reanudación
 
-        const bufferOffset = Math.max(0, clamped - clip.startBeat);
-        const when = startContextTime + Math.max(0, clip.startBeat - clamped);
+        // Cuánto de la ventana ya pasó al reanudar desde `clamped`.
+        const intoClip = Math.max(0, clamped - clip.startSeconds);
+        const when = startContextTime + Math.max(0, clip.startSeconds - clamped);
 
         const source = ctx.createBufferSource();
         source.buffer = clip.buffer;
-        source.connect(gainL);
-        source.connect(gainR);
-        source.start(when, bufferOffset);
+
+        // Volumen y fades del CLIP, en su propio nodo: son distintos
+        // del volumen de la pista (que vive en gainL/gainR y el oyente
+        // puede mover con mute/solo sin rehacer nada).
+        const clipGain = ctx.createGain();
+        const gain = clip.gain ?? 1;
+        const fadeIn = Math.max(0, clip.fadeInSeconds ?? 0);
+        const fadeOut = Math.max(0, clip.fadeOutSeconds ?? 0);
+        // ⚠️ Rampas LINEALES, como renderBlock del motor nativo y como
+        // writeClipInto — no exponenciales, que además no pueden partir
+        // de 0 en Web Audio.
+        clipGain.gain.setValueAtTime(gain, when);
+        if (fadeIn > intoClip) {
+          // Entrando a mitad del fade-in: se arranca en el valor que la
+          // rampa ya tenía, no de cero.
+          clipGain.gain.setValueAtTime(gain * (intoClip / fadeIn), when);
+          clipGain.gain.linearRampToValueAtTime(gain, when + (fadeIn - intoClip));
+        } else if (fadeIn > 0) {
+          clipGain.gain.setValueAtTime(gain, when);
+        }
+        if (fadeOut > 0) {
+          const fadeOutStart = clip.startSeconds + windowDuration - fadeOut;
+          const at = startContextTime + Math.max(0, fadeOutStart - clamped);
+          clipGain.gain.setValueAtTime(
+            gain * Math.min(1, Math.max(0, (clipEnd - Math.max(clamped, fadeOutStart)) / fadeOut)),
+            at,
+          );
+          clipGain.gain.linearRampToValueAtTime(0, startContextTime + (clipEnd - clamped));
+        }
+        clipGain.connect(gainL);
+        clipGain.connect(gainR);
+        source.connect(clipGain);
+
+        // offset y duration acotados a la ventana: sin `duration`, un
+        // clip recortado seguiría sonando hasta el final del archivo.
+        source.start(when, windowStart + intoClip, windowDuration - intoClip);
         sources.push(source);
       }
     }
@@ -1039,13 +1111,13 @@ export function ProjectViewer({
                         style={{ height: ROW_HEIGHT, flex: 1 }}
                       >
                         {track.clips.map((clip, ci) => {
-                          const widthPx = Math.max(clip.buffer.duration * pxPerSecond, 3);
+                          const widthPx = Math.max(clipDurationSeconds(clip) * pxPerSecond, 3);
                           return (
                             <div
                               key={ci}
                               className="absolute top-1 bottom-1 overflow-hidden rounded-sm border"
                               style={{
-                                left: clip.startBeat * pxPerSecond,
+                                left: clip.startSeconds * pxPerSecond,
                                 width: widthPx,
                                 backgroundColor: `${track.color}1F`,
                                 borderColor: `${track.color}55`,

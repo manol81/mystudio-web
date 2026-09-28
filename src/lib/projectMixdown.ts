@@ -33,6 +33,141 @@ export interface MixdownClip {
   /// manifest, que pese al nombre son segundos — ver CLAUDE.md).
   startSeconds: number;
   buffer: AudioBuffer;
+
+  // ─── Recorte, volumen y fades POR CLIP (formatVersion 3) ───────────
+  //
+  // El .mystudio no los llevaba y por eso acá no existían: un proyecto
+  // publicado con clips recortados se pre-escuchaba ENTERO, a volumen
+  // pleno y sin fades, y el paquete liviano de pistas salía igual. El
+  // WAV del ZIP es el archivo COMPLETO, así que sin estos campos se
+  // reproduce audio que la persona había sacado a propósito.
+  //
+  // Todos opcionales: un manifiesto formatVersion 1/2 —o uno escrito
+  // por el Arranger, que hornea todo en el WAV— no los trae, y el
+  // default de cada uno es "clip entero, a volumen pleno, sin fades".
+
+  /// Offset DENTRO de `buffer`, en segundos, donde arranca lo que suena.
+  sourceOffsetSeconds?: number;
+  /// Cuánto de `buffer`, desde [sourceOffsetSeconds], suena.
+  sourceDurationSeconds?: number;
+  /// Volumen propio del clip (1 = sin cambio), ADEMÁS del de la pista.
+  gain?: number;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+}
+
+/// Lo que un clip del `manifest.json` puede traer. Las claves del
+/// formatVersion 3 son opcionales: un respaldo 1/2, o uno escrito por
+/// el Arranger web (que hornea el recorte y los fades en el WAV), no
+/// las tiene.
+export interface ManifestClipFields {
+  /// Pese al nombre son SEGUNDOS, no compases (ver CLAUDE.md).
+  startBeat: number;
+  /// Tasa del archivo, contra la que están medidos los frames de trim.
+  sampleRate?: number;
+  sourceTrimStartFrame?: number;
+  sourceTrimDurationFrames?: number;
+  volume?: number;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+}
+
+/// Traduce un clip del manifiesto a un [MixdownClip]. Vive acá, y no
+/// copiado en cada lector del .mystudio, porque los tres que hay
+/// (ProjectViewer, audioPreviewExport y de rebote stemsExport) tienen
+/// que interpretar el recorte IGUAL: si uno se olvida de un campo, esa
+/// pantalla suena distinto de las otras y nada lo delata.
+///
+/// Los frames de recorte se convierten con el `sampleRate` del
+/// MANIFIESTO, no con el del buffer decodificado: `decodeAudioData`
+/// devuelve el audio a la tasa del contexto (ver resample.ts), así que
+/// el del buffer puede no ser el del archivo.
+export function manifestClipToMixdownClip(
+  clip: ManifestClipFields,
+  buffer: AudioBuffer,
+): MixdownClip {
+  const rate = clip.sampleRate && clip.sampleRate > 0 ? clip.sampleRate : 0;
+  const framesToSeconds = (frames: number | undefined): number | undefined => {
+    if (frames === undefined || !Number.isFinite(frames) || rate <= 0) return undefined;
+    return frames / rate;
+  };
+  return {
+    startSeconds: clip.startBeat,
+    buffer,
+    sourceOffsetSeconds: framesToSeconds(clip.sourceTrimStartFrame),
+    sourceDurationSeconds: framesToSeconds(clip.sourceTrimDurationFrames),
+    gain: typeof clip.volume === "number" ? clip.volume : undefined,
+    fadeInSeconds: clip.fadeInSeconds,
+    fadeOutSeconds: clip.fadeOutSeconds,
+  };
+}
+
+/// Cuánto ocupa este clip en la línea de tiempo: su ventana recortada,
+/// o el buffer entero si no está recortado.
+export function clipDurationSeconds(clip: MixdownClip): number {
+  const trimmed = clip.sourceDurationSeconds;
+  if (trimmed === undefined || !Number.isFinite(trimmed) || trimmed <= 0) {
+    return clip.buffer.duration;
+  }
+  const offset = Math.max(0, clip.sourceOffsetSeconds ?? 0);
+  return Math.min(trimmed, Math.max(0, clip.buffer.duration - offset));
+}
+
+/// Suma un clip —ya recortado, con su ganancia y sus fades— dentro de
+/// [into], que es la pista entera alineada a t=0.
+///
+/// ⚠️ La envolvente es la MISMA que aplica `renderBlock` del motor
+/// nativo (ver native_engine.cpp): rampa LINEAL, el fade-in medido
+/// desde el inicio de la ventana recortada y el fade-out contra los
+/// frames que faltan para su final. Si allá cambia la curva, cambia acá
+/// — es el mismo trato que `trackEffects.ts` tiene con el DSP.
+export function writeClipInto(
+  into: Float32Array,
+  clip: MixdownClip,
+  sampleRate: number,
+): void {
+  // Todo lo que graba la app es mono; si algún día llega un clip
+  // estéreo, se toma el canal izquierdo (el motor también mezcla a mono
+  // antes de la cadena de pista).
+  // ⚠️ A [sampleRate], no a la del buffer: si el llamador decodificó con
+  // un contexto de otra tasa, copiar muestra a muestra haría sonar todo
+  // más lento y cortaría el final (ver resample.ts). Cuando coinciden
+  // —el caso normal— no copia nada.
+  const data = resampleLinear(
+    clip.buffer.getChannelData(0),
+    clip.buffer.sampleRate,
+    sampleRate,
+  );
+
+  // La ventana se recorta DESPUÉS de remuestrear, así que los índices
+  // van en frames de [sampleRate] y no en los del archivo original.
+  const sourceStart = Math.round(Math.max(0, clip.sourceOffsetSeconds ?? 0) * sampleRate);
+  const windowFrames = Math.max(
+    0,
+    Math.min(
+      Math.round(clipDurationSeconds(clip) * sampleRate),
+      data.length - sourceStart,
+    ),
+  );
+  if (windowFrames <= 0) return;
+
+  const offset = Math.round(clip.startSeconds * sampleRate);
+  const count = Math.min(windowFrames, into.length - offset);
+  if (count <= 0) return;
+
+  const gain = clip.gain ?? 1;
+  const fadeInFrames = Math.round(Math.max(0, clip.fadeInSeconds ?? 0) * sampleRate);
+  const fadeOutFrames = Math.round(Math.max(0, clip.fadeOutSeconds ?? 0) * sampleRate);
+
+  for (let i = 0; i < count; i++) {
+    let g = gain;
+    if (fadeInFrames > 0 && i < fadeInFrames) g *= i / fadeInFrames;
+    const framesFromEnd = windowFrames - i;
+    if (fadeOutFrames > 0 && framesFromEnd < fadeOutFrames) {
+      g *= framesFromEnd / fadeOutFrames;
+    }
+    into[offset + i] += data[sourceStart + i] * g;
+  }
 }
 
 export interface MixdownTrack {
@@ -61,7 +196,7 @@ export function projectHasEffects(tracks: MixdownTrack[]): boolean {
 
 export function contentDurationSeconds(tracks: MixdownTrack[]): number {
   return tracks
-    .flatMap((t) => t.clips.map((c) => c.startSeconds + c.buffer.duration))
+    .flatMap((t) => t.clips.map((c) => c.startSeconds + clipDurationSeconds(c)))
     .reduce((max, end) => Math.max(max, end), 0);
 }
 
@@ -99,23 +234,7 @@ export function renderProjectMix(
     // La pista entera alineada a t=0, con el silencio entre clips que
     // el compresor necesita ver.
     const samples = new Float32Array(contentFrames);
-    for (const clip of track.clips) {
-      // Todo lo que graba la app es mono; si algún día llega un clip
-      // estéreo, se toma el canal izquierdo (el motor también mezcla
-      // a mono antes de la cadena de pista).
-      // ⚠️ A [sampleRate], no a la del buffer: si el llamador decodificó
-      // con un contexto de otra tasa, copiar muestra a muestra haría
-      // sonar todo más lento y cortaría el final (ver resample.ts).
-      // Cuando coinciden —el caso normal— no copia nada.
-      const data = resampleLinear(
-        clip.buffer.getChannelData(0),
-        clip.buffer.sampleRate,
-        sampleRate,
-      );
-      const offset = Math.round(clip.startSeconds * sampleRate);
-      const count = Math.min(data.length, contentFrames - offset);
-      for (let i = 0; i < count; i++) samples[offset + i] += data[i];
-    }
+    for (const clip of track.clips) writeClipInto(samples, clip, sampleRate);
 
     applyTrackFxInPlace(samples, track.fx, sampleRate);
     mixTracksInput.push({

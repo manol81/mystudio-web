@@ -25,16 +25,22 @@ import JSZip from "jszip";
 import { Mp3Encoder } from "@breezystack/lamejs";
 import {
   contentDurationSeconds,
+  manifestClipToMixdownClip,
   projectHasEffects,
   renderProjectMix,
   toAudioBuffer,
+  type ManifestClipFields,
+  type MixdownClip,
   type MixdownTrack,
 } from "@/lib/projectMixdown";
 import { DEFAULT_MASTER_FX, parseMasterFx, parseTrackFx, type MasterFx } from "@/lib/trackEffects";
 
-interface ManifestClip {
+// El recorte, el volumen y los fades del clip (formatVersion 3) los
+// describe ManifestClipFields, en projectMixdown.ts — compartido con
+// ProjectViewer para que los dos lectores del .mystudio interpreten lo
+// mismo. Acá solo se suma de qué archivo del ZIP sale el audio.
+interface ManifestClip extends ManifestClipFields {
   audioFileName: string;
-  startBeat: number;
 }
 
 interface ManifestTrack {
@@ -111,12 +117,16 @@ export async function loadDecodedTracks(
 
   const tracks: DecodedTrack[] = [];
   for (const track of manifest.tracks) {
-    const clips: { startSeconds: number; buffer: AudioBuffer }[] = [];
+    const clips: MixdownClip[] = [];
     for (const clip of track.clips) {
       const audioFile = zip.file(clip.audioFileName);
       if (!audioFile) continue; // clip huérfano, mismo criterio que ProjectViewer/Flutter
       const buffer = await ctx.decodeAudioData(await audioFile.async("arraybuffer"));
-      clips.push({ startSeconds: clip.startBeat, buffer });
+      // El WAV del ZIP es el archivo COMPLETO: el recorte, el volumen y
+      // los fades viven en el manifiesto y hay que aplicarlos. Sin
+      // esto, el preview de la Comunidad y el paquete de pistas salían
+      // con audio que la persona había sacado a propósito.
+      clips.push(manifestClipToMixdownClip(clip, buffer));
     }
     tracks.push({
       name: track.name ?? "",
