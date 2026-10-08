@@ -17,7 +17,7 @@
 
 import { useState, type FormEvent } from "react";
 import { ref, getDownloadURL, uploadBytes } from "firebase/storage";
-import { storage } from "@/lib/firebase";
+import { auth, storage } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { attachCommunityStems, attachCommunityPreview, publishProjectToCommunity } from "@/lib/CommunityService";
 import { buildCommunityPreview } from "@/lib/audioPreviewExport";
@@ -25,6 +25,54 @@ import { buildStemsPackage } from "@/lib/stemsExport";
 import { SAMPLE_GENRES } from "@/lib/sampleTaxonomy";
 import { COLLAB_ROLES, MAX_WANTED_ROLES } from "@/lib/collabRoles";
 import { isValidUsername, setUsername as saveUsername } from "@/lib/UserProfileService";
+
+// "auth/network-request-failed" no es un problema del proyecto: es el SDK
+// de Firebase que no pudo renovar el token de la sesión (la conexión se
+// cortó un instante, la pestaña estuvo dormida más de una hora, un
+// bloqueador o una VPN frenó el pedido a securetoken.googleapis.com). Lo
+// tira el PRIMER pedido que necesita token — acá, pedir el link del
+// .mystudio — y el texto crudo hace pensar que falla la publicación.
+// Reportado el 2026-10-08 publicando "22222 copia 3": el mismo archivo se
+// abría bien un rato después con la misma cuenta.
+const NETWORK_CODES = new Set([
+  "auth/network-request-failed",
+  "storage/retry-limit-exceeded",
+  "unavailable",
+]);
+
+function isNetworkError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return typeof code === "string" && NETWORK_CODES.has(code);
+}
+
+/// Reintenta [fn] dos veces si falla por red, forzando antes un token
+/// nuevo. Un error de otro tipo (permisos, datos) sale al primer intento.
+async function withNetworkRetry<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isNetworkError(err) || attempt >= 2) throw err;
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      try {
+        await auth.currentUser?.getIdToken(true);
+      } catch {
+        // si tampoco se puede renovar, el próximo intento lo dirá
+      }
+    }
+  }
+}
+
+function publishErrorMessage(err: unknown): string {
+  if (isNetworkError(err)) {
+    return (
+      "no hubo conexión con los servidores de Google (se intentó tres veces). " +
+      "Revisá tu internet; si usás un bloqueador de anuncios o una VPN, probá " +
+      "desactivarlo para este sitio. Si sigue, cerrá sesión y volvé a entrar."
+    );
+  }
+  return err instanceof Error ? err.message : String(err);
+}
 
 const inputClasses =
   "w-full rounded-lg border border-white/15 bg-onyx-black px-4 py-2.5 text-sm text-white placeholder:text-white/30 outline-none transition-colors duration-200 focus:border-neon-cyan focus:shadow-[0_0_0_1px_rgba(102,252,241,0.4)]";
@@ -98,7 +146,7 @@ export function PublishModal({
     let postId: string;
     let audioUrl: string;
     try {
-      audioUrl = await getDownloadURL(ref(storage, project.storagePath));
+      audioUrl = await withNetworkRetry(() => getDownloadURL(ref(storage, project.storagePath)));
       postId = await publishProjectToCommunity({
         authorId: user.uid,
         authorName: profile.username,
@@ -110,7 +158,8 @@ export function PublishModal({
         description: description.trim(),
       });
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
+      console.error("No se pudo publicar:", err);
+      setErrorMessage(publishErrorMessage(err));
       setStatus("error");
       return;
     }
