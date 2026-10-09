@@ -216,3 +216,37 @@ export function describeDraftAge(savedAt: number): string {
   const days = Math.floor(hours / 24);
   return `hace ${days} ${days === 1 ? "día" : "días"}`;
 }
+
+/// Lo que hace falta para mostrar un borrador pendiente FUERA del
+/// Arranger (la tarjeta de "Mis Proyectos" y el formulario de proyecto
+/// nuevo).
+export interface PendingArrangerDraft {
+  projectTitle: string;
+  savedAt: number;
+  trackCount: number;
+  /// true si viene de la instantánea viva (se restaura entera, con el
+  /// audio); false si solo queda la copia de localStorage.
+  isLive: boolean;
+}
+
+/// El borrador con cambios que todavía no llegaron a la nube, si hay.
+///
+/// Existe por un reporte (2026-10-09): "apreté Atrás en el navegador y no
+/// se guardó nada". El borrador SÍ estaba —las dos capas—, pero desde
+/// "Mis Proyectos" no había ninguna forma de volver a él: solo aparece
+/// lo que está en la nube, y "+ Crear Nuevo Proyecto" lo descartaba sin
+/// preguntar. Para quien lo vive, eso es exactamente lo mismo que
+/// perderlo.
+///
+/// Prefiere la instantánea viva (tiene el audio); si no, la copia
+/// guardada. Un borrador ya sincronizado (isDirty false) no cuenta: no
+/// hay nada que perder.
+export function findPendingArrangerDraft(uid: string): PendingArrangerDraft | null {
+  const pick = (d: { projectTitle: string; savedAt: number; isDirty: boolean; tracks: unknown[] }, isLive: boolean) =>
+    d.isDirty && d.tracks.length > 0
+      ? { projectTitle: d.projectTitle, savedAt: d.savedAt, trackCount: d.tracks.length, isLive }
+      : null;
+  if (liveDraft) return pick(liveDraft, true);
+  const stored = readStoredArrangerDraft(uid);
+  return stored ? pick(stored, false) : null;
+}

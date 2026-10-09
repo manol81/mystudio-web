@@ -115,6 +115,7 @@ import {
 import {
   arrangementSignature,
   clearArrangerDraft,
+  findPendingArrangerDraft,
   describeDraftAge,
   peekLiveArrangerDraft,
   readStoredArrangerDraft,
@@ -3641,27 +3642,39 @@ export default function ArrangerPage() {
   //    ENTERO, con sus AudioBuffer. Se restaura sola y al instante — no
   //    se le pregunta nada al usuario porque, desde donde él lo ve,
   //    nunca se fue a ningún lado.
+  function applyLiveDraft(live: ArrangerDraft) {
+    loadArrangement({
+      projectTitle: live.projectTitle,
+      projectTempoBpm: live.projectTempoBpm,
+      projectKey: live.projectKey ?? "",
+      timeSignatureNumerator: live.timeSignatureNumerator,
+      timeSignatureDenominator: live.timeSignatureDenominator,
+      masterFx: live.masterFx,
+      // ?? [] porque puede venir de un borrador anterior a este campo.
+      markers: live.markers ?? [],
+      tracks: live.tracks,
+    });
+    setCloudProjectId(live.cloudProjectId);
+    setCloudBaseVersion(live.cloudBaseVersion);
+    setIsDirty(live.isDirty);
+    if (!live.isDirty) {
+      cloudSavedSignatureRef.current = arrangementSignature(live);
+    }
+  }
+
+  /// Saca `?new=1` / `?draft=1` de la URL. Si quedaran, "Atrás" y
+  /// "Adelante" volverían a mostrar el formulario de proyecto nuevo (o a
+  /// restaurar el borrador) encima de lo que se está editando.
+  function cleanArrangerUrl() {
+    if (window.location.search) window.history.replaceState(null, "", "/arranger");
+  }
+
   useEffect(() => {
     const live = liveDraftRef.current;
     if (!live || showNewProjectSetup) return;
     queueMicrotask(() => {
-      loadArrangement({
-        projectTitle: live.projectTitle,
-        projectTempoBpm: live.projectTempoBpm,
-        projectKey: live.projectKey ?? "",
-        timeSignatureNumerator: live.timeSignatureNumerator,
-        timeSignatureDenominator: live.timeSignatureDenominator,
-        masterFx: live.masterFx,
-        // ?? [] porque puede venir de un borrador anterior a este campo.
-        markers: live.markers ?? [],
-        tracks: live.tracks,
-      });
-      setCloudProjectId(live.cloudProjectId);
-      setCloudBaseVersion(live.cloudBaseVersion);
-      setIsDirty(live.isDirty);
-      if (!live.isDirty) {
-        cloudSavedSignatureRef.current = arrangementSignature(live);
-      }
+      applyLiveDraft(live);
+      cleanArrangerUrl();
     });
     // Solo al montar: es una restauración, no una sincronización continua.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3675,7 +3688,17 @@ export default function ArrangerPage() {
     if (!user || liveDraftRef.current || showNewProjectSetup) return;
     const stored = readStoredArrangerDraft(user.uid);
     if (!stored) return;
-    queueMicrotask(() => setRecoverableDraft(stored));
+    // Desde "Seguir editando" en Mis Proyectos la persona ya eligió:
+    // preguntarle de nuevo sería un paso de más.
+    const fromDashboard = new URLSearchParams(window.location.search).get("draft") === "1";
+    queueMicrotask(() => {
+      if (fromDashboard) {
+        void restoreStoredDraft(stored);
+        cleanArrangerUrl();
+      } else {
+        setRecoverableDraft(stored);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
@@ -3717,6 +3740,62 @@ export default function ArrangerPage() {
     cloudBaseVersion,
     projectKey,
   ]);
+
+  // 3b. Al irse del Arranger (menú, "Atrás") el guardado con debounce
+  //     de arriba se cancela: lo último que se tocó en esos 700 ms se
+  //     perdía. Se escribe ya, con lo último que se vio en pantalla.
+  const latestDraftRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    latestDraftRef.current =
+      !user || showNewProjectSetup || isImporting || tracks.length === 0
+        ? null
+        : () => {
+            const draft = currentDraft();
+            const dirty = arrangementSignature(draft) !== cloudSavedSignatureRef.current;
+            rememberArrangerDraft(user.uid, { ...draft, isDirty: dirty });
+          };
+  });
+  useEffect(() => () => latestDraftRef.current?.(), []);
+
+  // 3c. "Atrás" del navegador con cambios sin guardar en la nube
+  //     (reportado el 2026-10-09: "apreté atrás y no se guardó nada").
+  //     Nada se perdía —el borrador quedaba—, pero no había forma de
+  //     encontrarlo, y salir sin una sola señal se vive igual que perder.
+  //     Se pone una entrada de historial "guarda" con la MISMA URL: el
+  //     "Atrás" la consume a ella en vez de irse, y en ese momento se
+  //     pregunta. Next integra pushState nativo a su router (docs de
+  //     Next 16, "Native History API"), así que no se recarga nada.
+  const [leaveAsk, setLeaveAsk] = useState(false);
+  const leavingRef = useRef(false);
+  const guardActive = isDirty && tracks.length > 0 && !showNewProjectSetup;
+  useEffect(() => {
+    if (!guardActive) return;
+    // Con una marca propia en el estado (Next le suma el suyo y la
+    // conserva): guardar y volver a editar no apila guardas repetidas,
+    // que obligarían a apretar "Atrás" varias veces.
+    const pushGuard = () => {
+      if (!(window.history.state as { mystudioGuard?: boolean } | null)?.mystudioGuard) {
+        window.history.pushState({ mystudioGuard: true }, "", window.location.href);
+      }
+    };
+    pushGuard();
+    const onPop = () => {
+      if (leavingRef.current) return;
+      // Se volvió a la entrada real: se repone la guarda y se pregunta.
+      pushGuard();
+      setLeaveAsk(true);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [guardActive]);
+
+  function leaveArranger() {
+    latestDraftRef.current?.();
+    leavingRef.current = true;
+    setLeaveAsk(false);
+    // La guarda recién repuesta + la entrada del Arranger.
+    window.history.go(-2);
+  }
 
   // 4. Aviso antes de CERRAR o RECARGAR la pestaña, que es lo único que
   //    todavía puede perder trabajo: ahí muere la instantánea viva y,
@@ -3852,6 +3931,7 @@ export default function ArrangerPage() {
   // decir explícitamente que se quiere empezar de cero, y arrancar con
   // las pistas del arreglo anterior adentro sería peor que perderlas.
   if (showNewProjectSetup) {
+    const pending = user ? findPendingArrangerDraft(user.uid) : null;
     return (
       <div className="flex min-h-full flex-col items-center justify-center gap-6 bg-onyx-black px-6 text-center">
         <h1 className="font-display text-3xl font-bold text-white">
@@ -3860,6 +3940,34 @@ export default function ArrangerPage() {
         <p className="max-w-sm text-sm text-white/60">
           Definí el título, el tempo y el compás para empezar — podés cambiarlos después desde la barra superior.
         </p>
+        {pending && (
+          // Antes "Crear Proyecto" tiraba este borrador sin decir nada.
+          <div className="flex w-full max-w-sm flex-col gap-3 rounded-2xl border border-amber-400/40 bg-amber-900/20 p-4 text-left">
+            <p className="text-xs text-amber-100">
+              Tenés un arreglo sin guardar en la nube:{" "}
+              <strong>«{pending.projectTitle || "Sin título"}»</strong> ({pending.trackCount}{" "}
+              {pending.trackCount === 1 ? "pista" : "pistas"}, {describeDraftAge(pending.savedAt)}).
+              Si creás uno nuevo, ese se descarta.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setShowNewProjectSetup(false);
+                cleanArrangerUrl();
+                const live = peekLiveArrangerDraft();
+                if (live) {
+                  applyLiveDraft(live);
+                } else if (user) {
+                  const stored = readStoredArrangerDraft(user.uid);
+                  if (stored) void restoreStoredDraft(stored);
+                }
+              }}
+              className="self-start rounded-full border border-amber-300/60 px-4 py-1.5 text-xs font-semibold text-amber-100 transition-colors hover:border-amber-200"
+            >
+              Seguir con ese arreglo
+            </button>
+          </div>
+        )}
         <div className="flex w-full max-w-sm flex-col gap-4 rounded-2xl border border-white/10 bg-graphite p-6 text-left">
           <label className="flex flex-col gap-1.5">
             <span className="text-xs text-white/50">Título</span>
@@ -3909,10 +4017,11 @@ export default function ArrangerPage() {
               // ningún arreglo anterior al que volver.
               loadArrangement({ tracks: [] });
               setShowNewProjectSetup(false);
+              cleanArrangerUrl();
             }}
             className="mt-2 rounded-full bg-neon-cyan px-6 py-2.5 font-display text-sm font-semibold text-onyx-black transition-all duration-200 hover:shadow-[0_0_20px_rgba(102,252,241,0.5)] active:scale-95"
           >
-            Crear Proyecto
+            {pending ? "Crear proyecto nuevo" : "Crear Proyecto"}
           </button>
         </div>
       </div>
@@ -4520,6 +4629,50 @@ export default function ArrangerPage() {
       )}
       {addSampleError && (
         <p className="bg-red-900/30 px-4 py-1.5 text-xs text-red-300">{addSampleError}</p>
+      )}
+      {leaveAsk && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
+        >
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-graphite p-6">
+            <h2 className="font-display text-lg font-semibold text-white">
+              ¿Salir sin guardar en la nube?
+            </h2>
+            <p className="mt-2 text-sm text-white/60">
+              Tus cambios no se pierden: quedan como borrador en este navegador y los
+              vas a ver arriba de todo en Mis Proyectos, con «Seguir editando». Para
+              tenerlos también en la app y en otros dispositivos, guardalos en la nube.
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setLeaveAsk(false);
+                  void handleExport();
+                }}
+                className="rounded-full bg-neon-cyan px-4 py-2 font-display text-sm font-semibold text-onyx-black"
+              >
+                Guardar en la nube
+              </button>
+              <button
+                type="button"
+                onClick={leaveArranger}
+                className="rounded-full border border-white/20 px-4 py-2 text-sm text-white/80 hover:border-white/40"
+              >
+                Salir (queda como borrador)
+              </button>
+              <button
+                type="button"
+                onClick={() => setLeaveAsk(false)}
+                className="px-4 py-2 text-sm text-white/50 hover:text-white"
+              >
+                Seguir editando
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {recoverableDraft && (
         <div className="flex flex-wrap items-center gap-3 bg-amber-900/25 px-4 py-2 text-xs text-amber-100">

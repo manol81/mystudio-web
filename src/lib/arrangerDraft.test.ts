@@ -21,6 +21,7 @@ import type { ArrangerClip, ArrangerTrack } from "@/lib/arrangerTypes";
 import {
   arrangementSignature,
   clearArrangerDraft,
+  findPendingArrangerDraft,
   peekLiveArrangerDraft,
   readStoredArrangerDraft,
   rememberArrangerDraft,
@@ -260,5 +261,35 @@ describe("capa viva", () => {
     clearArrangerDraft("u1");
     expect(peekLiveArrangerDraft()).toBeNull();
     expect(readStoredArrangerDraft("u1")).toBeNull();
+  });
+});
+
+describe("borrador pendiente (para encontrarlo desde Mis Proyectos)", () => {
+  it("encuentra el de esta pestaña, con el audio", () => {
+    rememberArrangerDraft("u1", draft({ projectTitle: "Idea" }));
+    expect(findPendingArrangerDraft("u1")).toEqual({
+      projectTitle: "Idea",
+      savedAt: 1_700_000_000_000,
+      trackCount: 1,
+      isLive: true,
+    });
+  });
+
+  it("después de recargar, encuentra la copia guardada", () => {
+    rememberArrangerDraft("u1", draft());
+    const saved = new Map(store);
+    clearArrangerDraft("u1"); // la capa viva muere al recargar...
+    saved.forEach((v, k) => store.set(k, v)); // ...localStorage no
+    expect(findPendingArrangerDraft("u1")?.isLive).toBe(false);
+  });
+
+  it("un arreglo ya sincronizado no cuenta: no hay nada que perder", () => {
+    rememberArrangerDraft("u1", draft({ isDirty: false }));
+    expect(findPendingArrangerDraft("u1")).toBeNull();
+  });
+
+  it("sin pistas no hay nada que ofrecer", () => {
+    rememberArrangerDraft("u1", draft({ tracks: [] }));
+    expect(findPendingArrangerDraft("u1")).toBeNull();
   });
 });

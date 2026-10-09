@@ -24,6 +24,12 @@ import { ProjectViewer } from "@/components/ProjectViewer";
 import { PublishModal } from "@/components/PublishModal";
 import { StemSplitModal } from "@/components/StemSplitModal";
 import { Tooltip } from "@/components/Tooltip";
+import {
+  clearArrangerDraft,
+  describeDraftAge,
+  findPendingArrangerDraft,
+  type PendingArrangerDraft,
+} from "@/lib/arrangerDraft";
 
 interface CloudProject {
   cloudId: string;
@@ -57,6 +63,16 @@ export function ProjectsDashboard() {
   const [viewingProject, setViewingProject] = useState<CloudProject | null>(null);
   const [publishingProject, setPublishingProject] = useState<CloudProject | null>(null);
   const [splittingProject, setSplittingProject] = useState<CloudProject | null>(null);
+  // El borrador del Arranger que todavía no llegó a la nube. Vive en el
+  // navegador (ver arrangerDraft.ts) y hasta el 2026-10-09 no aparecía
+  // acá: quien se iba del Arranger con "Atrás" lo daba por perdido.
+  const [pendingDraft, setPendingDraft] = useState<PendingArrangerDraft | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    // localStorage solo existe en el navegador: se lee después de montar.
+    queueMicrotask(() => setPendingDraft(findPendingArrangerDraft(user.uid)));
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -110,8 +126,20 @@ export function ProjectsDashboard() {
     );
   }
 
+  const draftCard = pendingDraft && user && (
+    <PendingDraftCard
+      draft={pendingDraft}
+      onDiscard={() => {
+        clearArrangerDraft(user.uid);
+        setPendingDraft(null);
+      }}
+    />
+  );
+
   if (projects.length === 0) {
     return (
+      <div className="flex w-full max-w-4xl flex-col gap-2.5">
+      {draftCard}
       <div className="w-full max-w-4xl rounded-2xl border border-white/10 bg-graphite p-8 text-center">
         <p className="font-display text-sm font-semibold uppercase tracking-widest text-white/40">
           Tus Proyectos
@@ -120,11 +148,13 @@ export function ProjectsDashboard() {
           Todavía no sincronizaste ningún proyecto desde la app.
         </p>
       </div>
+      </div>
     );
   }
 
   return (
     <div className="flex w-full max-w-4xl flex-col gap-2.5">
+      {draftCard}
       {projects.map((project) => (
         // El NOMBRE va en su propio renglón, arriba de las acciones, y
         // ya no comparte fila con ellas.
@@ -250,6 +280,69 @@ export function ProjectsDashboard() {
           }}
           onClose={() => setSplittingProject(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/// Tarjeta del arreglo sin guardar en la nube. Va ARRIBA de todo y en
+/// ámbar: es lo único de la lista que se puede perder.
+function PendingDraftCard({
+  draft,
+  onDiscard,
+}: {
+  draft: PendingArrangerDraft;
+  onDiscard: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-amber-400/40 bg-amber-900/20 px-5 py-4 sm:flex-row sm:items-center">
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-semibold uppercase tracking-widest text-amber-200/80">
+          Sin guardar en la nube
+        </p>
+        <h3 className="mt-1 truncate font-display text-lg font-semibold text-white">
+          {draft.projectTitle || "Arreglo sin título"}
+        </h3>
+        <p className="mt-0.5 text-xs text-white/50">
+          {draft.trackCount} {draft.trackCount === 1 ? "pista" : "pistas"} · último cambio{" "}
+          {describeDraftAge(draft.savedAt)} · guardado solo en este navegador
+        </p>
+      </div>
+      {confirming ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-white/70">¿Tirar este arreglo? No se puede deshacer.</span>
+          <button
+            type="button"
+            onClick={onDiscard}
+            className="rounded-full border border-red-400/60 px-3 py-1.5 font-semibold text-red-300 transition-colors hover:border-red-300 hover:text-red-200"
+          >
+            Sí, descartar
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            className="rounded-full border border-white/20 px-3 py-1.5 text-white/70 transition-colors hover:border-white/40 hover:text-white"
+          >
+            No
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/arranger?draft=1"
+            className="rounded-full bg-neon-cyan px-4 py-2 font-display text-sm font-semibold text-onyx-black transition-all duration-200 hover:shadow-[0_0_20px_rgba(102,252,241,0.5)]"
+          >
+            Seguir editando
+          </Link>
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            className="rounded-full border border-white/20 px-4 py-2 text-sm text-white/60 transition-colors hover:border-white/40 hover:text-white"
+          >
+            Descartar
+          </button>
+        </div>
       )}
     </div>
   );
