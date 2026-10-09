@@ -15,7 +15,9 @@
 // post ya publicado sigue funcionando igual — cae de vuelta al visor
 // completo, no se pierde la publicación por un preview que no salió.
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { ACCEPTED_IMAGE_TYPES, imageFileProblem } from "@/lib/imageUpload";
+import { setPostCover } from "@/lib/postCover";
 import { ref, getDownloadURL, uploadBytes } from "firebase/storage";
 import { auth, storage } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
@@ -92,6 +94,18 @@ export function PublishModal({
   // terminados.
   const [wantedRoles, setWantedRoles] = useState<string[]>([]);
   const [description, setDescription] = useState("");
+  // Portada opcional (2026-10-09). Se sube después de crear el post (su
+  // ruta lleva el id); si falla, la publicación queda con la portada
+  // generada y el autor la puede poner después desde la tarjeta.
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverPreview, setCoverPreview] = useState<string | null>(null);
+  const [coverError, setCoverError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!coverFile) return;
+    const url = URL.createObjectURL(coverFile);
+    queueMicrotask(() => setCoverPreview(url));
+    return () => URL.revokeObjectURL(url);
+  }, [coverFile]);
   const [status, setStatus] = useState<
     "idle" | "publishing" | "generating-preview" | "generating-stems" | "success" | "error"
   >("idle");
@@ -167,6 +181,13 @@ export function PublishModal({
     // El post YA existe en este punto — cualquier error de acá en
     // adelante no debe bloquear el "éxito": la publicación es real,
     // solo falta (o no) el preview liviano.
+    if (coverFile && user) {
+      try {
+        await setPostCover({ id: postId, authorId: user.uid }, coverFile);
+      } catch (err) {
+        console.error("No se pudo subir la portada:", err);
+      }
+    }
     await generateExtras(postId, audioUrl);
   }
 
@@ -424,6 +445,51 @@ export function PublishModal({
                 className={`${inputClasses} resize-none`}
                 placeholder="Contá algo sobre este arreglo..."
               />
+            </div>
+
+            <div>
+              <span className="mb-1.5 block text-xs text-white/60">Imagen de portada (opcional)</span>
+              <div className="flex items-center gap-3">
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/15 bg-onyx-black text-white/20">
+                  {coverPreview && coverFile ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- vista previa local (blob:)
+                    <img src={coverPreview} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    "♪"
+                  )}
+                </div>
+                <div className="flex flex-col items-start gap-1">
+                  <label className="cursor-pointer text-xs font-semibold text-neon-cyan hover:underline">
+                    {coverFile ? "Cambiar imagen" : "Elegir imagen"}
+                    <input
+                      type="file"
+                      accept={ACCEPTED_IMAGE_TYPES}
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!file) return;
+                        const problem = imageFileProblem(file);
+                        setCoverError(problem);
+                        if (!problem) setCoverFile(file);
+                      }}
+                    />
+                  </label>
+                  {coverFile && (
+                    <button
+                      type="button"
+                      onClick={() => setCoverFile(null)}
+                      className="text-[11px] text-white/40 hover:text-red-300"
+                    >
+                      Quitar
+                    </button>
+                  )}
+                  <p className="text-[10px] text-white/30">
+                    Se ve al lado de tu canción en la Comunidad. Sin imagen, se genera una.
+                  </p>
+                </div>
+              </div>
+              {coverError && <p className="mt-1 text-xs text-red-400">{coverError}</p>}
             </div>
 
             {status === "error" && (

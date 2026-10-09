@@ -17,7 +17,7 @@
 // se deriva con un hash determinístico del id del post, no de
 // Math.random(), para no romper la hidratación SSR/CSR.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import {
   Heart,
@@ -30,6 +30,7 @@ import {
   SlidersHorizontal,
   Handshake,
   Trash2,
+  ImagePlus,
 } from "lucide-react";
 import { SITE_URL } from "@/lib/site";
 import { CollabRequestModal } from "@/components/CollabRequestModal";
@@ -39,6 +40,9 @@ import { ProjectViewer } from "@/components/ProjectViewer";
 import { ReportModal } from "@/components/ReportModal";
 import { SamplePlayer } from "@/components/SamplePlayer";
 import { Tooltip } from "@/components/Tooltip";
+import { Avatar } from "@/components/Avatar";
+import { ACCEPTED_IMAGE_TYPES, imageFileProblem } from "@/lib/imageUpload";
+import { removePostCover, setPostCover } from "@/lib/postCover";
 import { useAuth } from "@/context/AuthContext";
 import {
   blockUser,
@@ -47,8 +51,18 @@ import {
   type CommunityPost,
 } from "@/lib/CommunityService";
 
-const AVATAR_COLORS = ["#66FCF1", "#C792EA", "#FFB86C", "#82E0AA"];
 const WAVEFORM_BARS = 40;
+
+// Pares de colores para la portada generada (sin imagen del autor): la
+// paleta del sitio, para que una tarjeta sin foto no desentone al lado
+// de una que sí tiene.
+const COVER_GRADIENTS: [string, string][] = [
+  ["#66FCF1", "#1F2833"],
+  ["#C792EA", "#1F2833"],
+  ["#FFB86C", "#2A1F33"],
+  ["#82E0AA", "#1F2833"],
+  ["#7AA2F7", "#2A1F33"],
+];
 
 function hashString(value: string): number {
   let hash = 0;
@@ -121,7 +135,6 @@ export function PostCard({
   const [playbackSeconds, setPlaybackSeconds] = useState<number | null>(null);
   const [seekRequest, setSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
   const hash = hashString(post.id || post.authorId);
-  const avatarColor = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   const heights = fakeWaveformHeights(hash);
   const isOwnPost = user?.uid === post.authorId;
   /// Borrar es del AUTOR y de nadie más (así lo exige firestore.rules).
@@ -170,15 +183,15 @@ export function PostCard({
   }
 
   return (
-    <article className="relative flex flex-col gap-4 rounded-2xl border border-white/10 bg-graphite p-5 transition-colors duration-200 hover:border-neon-cyan/30">
+    // Una publicación por fila, a todo el ancho (2026-10-09; antes eran
+    // tres columnas angostas). La portada va a la derecha y, en el
+    // teléfono, arriba: es lo primero que se ve al pasar por el feed.
+    <article className="relative flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-graphite transition-colors duration-200 hover:border-neon-cyan/30 sm:flex-row">
+      <PostCover post={post} hash={hash} canEdit={isOwnPost} />
+      <div className="flex min-w-0 flex-1 flex-col gap-4 p-5 sm:order-first">
       {/* Autor */}
       <div className="flex items-center gap-3">
-        <div
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full font-display text-sm font-bold text-onyx-black"
-          style={{ backgroundColor: avatarColor }}
-        >
-          {post.authorName.charAt(0).toUpperCase()}
-        </div>
+        <Avatar uid={post.authorId} name={post.authorName} size={40} />
         <div className="min-w-0 flex-1">
           {/* El autor lleva a su perfil público: hasta ahora un nombre
               en el feed era un callejón sin salida, no se podía ver qué
@@ -414,6 +427,7 @@ export function PostCard({
           </button>
         </Tooltip>
       </div>
+      </div>
 
       {isCollabOpen && (
         <CollabRequestModal
@@ -465,5 +479,124 @@ export function PostCard({
         />
       )}
     </article>
+  );
+}
+
+/// La portada de la tarjeta: la imagen que eligió el autor o, si no hay,
+/// una generada con los colores del sitio y la inicial del tema. El autor
+/// la cambia desde acá mismo (botón sobre la imagen).
+function PostCover({
+  post,
+  hash,
+  canEdit,
+}: {
+  post: CommunityPost;
+  hash: number;
+  canEdit: boolean;
+}) {
+  const [coverUrl, setCoverUrl] = useState(post.coverUrl);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [from, to] = COVER_GRADIENTS[hash % COVER_GRADIENTS.length];
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return;
+    const problem = imageFileProblem(file);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setCoverUrl(await setPostCover(post, file));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRemove() {
+    setBusy(true);
+    setError(null);
+    try {
+      await removePostCover(post);
+      setCoverUrl(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="group relative h-44 w-full shrink-0 overflow-hidden sm:h-auto sm:min-h-56 sm:w-56">
+      {coverUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element -- URL de Storage con token: next/image obligaría a declarar el dominio y no achica nada que no esté ya achicado
+        <img
+          src={coverUrl}
+          alt={`Portada de ${post.title}`}
+          loading="lazy"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : (
+        <div
+          aria-hidden
+          className="absolute inset-0 flex flex-col items-center justify-center"
+          style={{ background: `radial-gradient(circle at 30% 25%, ${from}55, transparent 60%), linear-gradient(135deg, ${to}, #0B0C10)` }}
+        >
+          <span className="font-display text-6xl font-bold" style={{ color: `${from}cc` }}>
+            {post.title.trim().charAt(0).toUpperCase() || "♪"}
+          </span>
+          {post.genre && (
+            <span className="mt-1 text-[10px] uppercase tracking-[0.25em] text-white/40">{post.genre}</span>
+          )}
+        </div>
+      )}
+
+      {canEdit && (
+        <>
+          <input
+            ref={inputRef}
+            type="file"
+            accept={ACCEPTED_IMAGE_TYPES}
+            className="hidden"
+            onChange={(e) => {
+              void handleFile(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          {/* Visible siempre en pantallas táctiles (no hay hover); en la
+              compu aparece al pasar el mouse para no tapar la imagen. */}
+          <div className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-center gap-2 bg-gradient-to-t from-black/80 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+              className="flex items-center gap-1.5 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-semibold text-white backdrop-blur hover:bg-black/80 disabled:opacity-50"
+            >
+              <ImagePlus size={13} />
+              {busy ? "Guardando..." : coverUrl ? "Cambiar imagen" : "Agregar imagen"}
+            </button>
+            {coverUrl && !busy && (
+              <button
+                type="button"
+                onClick={() => void handleRemove()}
+                className="rounded-full bg-black/60 px-3 py-1.5 text-[11px] text-white/70 backdrop-blur hover:text-red-300"
+              >
+                Quitar
+              </button>
+            )}
+          </div>
+          {error && (
+            <p className="absolute inset-x-2 top-2 rounded-lg bg-red-950/90 px-2 py-1 text-[11px] text-red-200" role="alert">
+              {error}
+            </p>
+          )}
+        </>
+      )}
+    </div>
   );
 }

@@ -434,7 +434,9 @@ export default function CommunityFeedPage() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            // Una publicación por fila, de la más nueva a la más vieja
+            // (2026-10-09; antes eran tres columnas angostas).
+            <div className="flex flex-col gap-5">
               {visiblePosts.map((post) => (
                 <PostCard
                   key={post.id}

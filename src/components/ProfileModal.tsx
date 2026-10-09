@@ -5,7 +5,10 @@
 // real) y la presentación que se ve en el perfil público. Mismo
 // criterio visual que el resto de los modales.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Avatar } from "@/components/Avatar";
+import { ACCEPTED_IMAGE_TYPES, imageFileProblem } from "@/lib/imageUpload";
+import { removeProfilePhoto, setProfilePhoto, usePhotoUrl } from "@/lib/profilePhoto";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -25,6 +28,52 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
   const { user, profile } = useAuth();
   const [username, setUsernameInput] = useState(profile?.username ?? "");
   const [bio, setBio] = useState("");
+  // La foto se guarda APENAS se elige (no con "Guardar"): es un archivo
+  // que ya se subió, y esperar al botón obligaría a explicar por qué la
+  // foto nueva todavía no se ve en ningún lado.
+  const photoUrl = usePhotoUrl(user?.uid);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [photoStatus, setPhotoStatus] = useState<"idle" | "uploading" | "error">("idle");
+  const [photoError, setPhotoError] = useState<string | null>(null);
+
+  async function handlePhotoChosen(file: File | undefined) {
+    if (!user || !file) return;
+    const problem = imageFileProblem(file);
+    if (problem) {
+      setPhotoError(problem);
+      setPhotoStatus("error");
+      return;
+    }
+    // El perfil público (donde vive la foto) exige apodo.
+    const name = profile?.username ?? username.trim();
+    if (!isValidUsername(name)) {
+      setPhotoError("Elegí y guardá tu nickname antes de subir una foto.");
+      setPhotoStatus("error");
+      return;
+    }
+    setPhotoStatus("uploading");
+    setPhotoError(null);
+    try {
+      await setProfilePhoto(user.uid, name, file);
+      setPhotoStatus("idle");
+    } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : String(err));
+      setPhotoStatus("error");
+    }
+  }
+
+  async function handlePhotoRemoved() {
+    if (!user) return;
+    setPhotoStatus("uploading");
+    setPhotoError(null);
+    try {
+      await removeProfilePhoto(user.uid);
+      setPhotoStatus("idle");
+    } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : String(err));
+      setPhotoStatus("error");
+    }
+  }
 
   // La presentación vive en el perfil PÚBLICO, que es otra colección
   // (ver PublicProfileService.ts) — hay que traerla aparte.
@@ -114,6 +163,55 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
+            {user && (
+              <div className="flex items-center gap-4">
+                <Avatar
+                  uid={user.uid}
+                  name={profile?.username || username || "?"}
+                  size={64}
+                  photoUrl={photoUrl}
+                />
+                <div className="flex flex-col items-start gap-1">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={ACCEPTED_IMAGE_TYPES}
+                    className="hidden"
+                    onChange={(e) => {
+                      void handlePhotoChosen(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={photoStatus === "uploading"}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-xs font-semibold text-neon-cyan hover:underline disabled:opacity-50"
+                  >
+                    {photoStatus === "uploading"
+                      ? "Guardando foto..."
+                      : photoUrl
+                        ? "Cambiar foto"
+                        : "Subir una foto"}
+                  </button>
+                  {photoUrl && photoStatus !== "uploading" && (
+                    <button
+                      type="button"
+                      onClick={() => void handlePhotoRemoved()}
+                      className="text-[11px] text-white/40 hover:text-red-300"
+                    >
+                      Quitar foto
+                    </button>
+                  )}
+                  <p className="text-[10px] text-white/30">La ven todos en la Comunidad.</p>
+                </div>
+              </div>
+            )}
+            {photoStatus === "error" && photoError && (
+              <p className="text-xs text-red-400" role="alert">
+                {photoError}
+              </p>
+            )}
             <div>
               <label
                 htmlFor="profile-username"

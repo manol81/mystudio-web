@@ -33,16 +33,7 @@ import {
 } from "@/lib/PublicProfileService";
 import { fetchAcceptedCollabs, type CollabRequest } from "@/lib/CollabService";
 import { fetchCommunityPost } from "@/lib/CommunityService";
-
-// Misma paleta que usa el feed para el avatar, derivada del nombre, así
-// una persona tiene siempre el mismo color en todos lados.
-const AVATAR_COLORS = ["#66FCF1", "#C792EA", "#FFB86C", "#FF6AC1", "#82E0AA", "#7AA2F7"];
-
-function avatarColorFor(seed: string): string {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
+import { Avatar } from "@/components/Avatar";
 
 function formatDate(date: Date | null): string {
   return date ? date.toLocaleDateString("es-AR", { day: "numeric", month: "short" }) : "";
@@ -111,6 +102,7 @@ export function PublicProfileView({ uid }: { uid: string }) {
         username: postsData[0]?.authorName ?? "",
         bio: "",
         followersCount: 0,
+        photoUrl: null,
       },
     );
     setStatus("ready");
@@ -201,12 +193,7 @@ export function PublicProfileView({ uid }: { uid: string }) {
   return (
     <div className="mx-auto w-full max-w-2xl px-6 py-10">
       <header className="flex items-start gap-4">
-        <div
-          className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full font-display text-2xl font-bold text-onyx-black"
-          style={{ backgroundColor: avatarColorFor(displayName) }}
-        >
-          {displayName.charAt(0).toUpperCase()}
-        </div>
+        <Avatar uid={profile.uid} name={displayName} size={72} photoUrl={profile.photoUrl} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate font-display text-2xl font-bold text-white">{displayName}</h1>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/50">

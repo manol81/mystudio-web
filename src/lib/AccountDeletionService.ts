@@ -160,6 +160,11 @@ async function deleteCommunityFootprint(uid: string): Promise<void> {
     await deleteDoc(post.ref);
   }
   await deleteStorageFolder(ref(storage, `community_previews/${uid}`));
+  // Las imágenes (2026-10-09): las portadas de sus publicaciones y su foto
+  // de perfil son de lectura pública y no pueden sobrevivir a la cuenta.
+  // Mismo cambio ESPEJO en account_deletion_service.dart.
+  await deleteStorageFolder(ref(storage, `community_covers/${uid}`));
+  await deleteStorageFolder(ref(storage, `avatars/${uid}`));
 
   const comments = await getDocs(
     query(collectionGroup(db, "comments"), where("authorId", "==", uid)),

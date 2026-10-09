@@ -14,7 +14,8 @@
 // se reconoce de oído cuál proyecto es cuál antes de abrirlo.
 
 import { useEffect, useState } from "react";
-import { Download, Globe, Pencil, Play, SlidersHorizontal } from "lucide-react";
+import { Download, Globe, Pencil, Play, SlidersHorizontal, Trash2 } from "lucide-react";
+import { deleteCloudProject, postsFromProject } from "@/lib/projectDeletion";
 import { collection, onSnapshot, type Timestamp } from "firebase/firestore";
 import { ref, getDownloadURL } from "firebase/storage";
 import Link from "next/link";
@@ -63,6 +64,7 @@ export function ProjectsDashboard() {
   const [viewingProject, setViewingProject] = useState<CloudProject | null>(null);
   const [publishingProject, setPublishingProject] = useState<CloudProject | null>(null);
   const [splittingProject, setSplittingProject] = useState<CloudProject | null>(null);
+  const [deletingProject, setDeletingProject] = useState<CloudProject | null>(null);
   // El borrador del Arranger que todavía no llegó a la nube. Vive en el
   // navegador (ver arrangerDraft.ts) y hasta el 2026-10-09 no aparecía
   // acá: quien se iba del Arranger con "Atrás" lo daba por perdido.
@@ -247,9 +249,28 @@ export function ProjectsDashboard() {
                 Separar en stems
               </button>
             </Tooltip>
+            <Tooltip text="Borrar este proyecto de la nube (la copia del teléfono no se toca)">
+              <button
+                type="button"
+                onClick={() => setDeletingProject(project)}
+                aria-label={`Eliminar ${project.title || "proyecto"}`}
+                className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-white/10 px-3 py-1.5 text-xs text-white/40 transition-all duration-200 hover:border-red-400/50 hover:text-red-300"
+              >
+                <Trash2 size={13} />
+                Eliminar
+              </button>
+            </Tooltip>
           </div>
         </div>
       ))}
+
+      {deletingProject && user && (
+        <DeleteProjectModal
+          uid={user.uid}
+          project={deletingProject}
+          onClose={() => setDeletingProject(null)}
+        />
+      )}
 
       {viewingProject && (
         <ProjectViewer
@@ -344,6 +365,99 @@ function PendingDraftCard({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/// Confirmación para borrar un proyecto de la nube. La lista se actualiza
+/// sola (el dashboard escucha la colección en vivo), así que acá solo se
+/// borra y se cierra.
+function DeleteProjectModal({
+  uid,
+  project,
+  onClose,
+}: {
+  uid: string;
+  project: CloudProject;
+  onClose: () => void;
+}) {
+  const [posts, setPosts] = useState<{ total: number; withoutPreview: number } | null>(null);
+  const [status, setStatus] = useState<"idle" | "deleting" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    postsFromProject(uid, project.cloudId)
+      .then((p) => alive && setPosts(p))
+      .catch(() => alive && setPosts({ total: 0, withoutPreview: 0 }));
+    return () => {
+      alive = false;
+    };
+  }, [uid, project.cloudId]);
+
+  async function handleDelete() {
+    setStatus("deleting");
+    setError(null);
+    try {
+      await deleteCloudProject(uid, project);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus("error");
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={status === "deleting" ? undefined : onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-sm rounded-2xl border border-white/10 bg-graphite p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="font-display text-lg font-semibold text-white">
+          ¿Eliminar «{project.title || "Sin título"}»?
+        </h2>
+        <p className="mt-2 text-sm text-white/60">
+          Se borra de la nube y no se puede deshacer. Si lo tenés en el teléfono,
+          esa copia sigue ahí y la podés volver a subir desde la app.
+        </p>
+        {posts && posts.total > 0 && (
+          <p className="mt-3 rounded-lg bg-amber-900/25 px-3 py-2 text-xs text-amber-100">
+            Publicaste esta canción en la Comunidad
+            {posts.total > 1 ? ` (${posts.total} veces)` : ""}. La publicación no se borra
+            {posts.withoutPreview > 0
+              ? ", pero no tiene audio propio: va a dejar de sonar."
+              : " y sigue sonando igual."}
+          </p>
+        )}
+        {status === "error" && error && (
+          <p className="mt-3 text-xs text-red-400" role="alert">
+            No se pudo eliminar: {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={status === "deleting"}
+            className="rounded-full px-4 py-2 text-sm text-white/60 hover:text-white disabled:opacity-40"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            disabled={status === "deleting" || posts === null}
+            className="rounded-full border border-red-400/60 px-5 py-2 text-sm font-semibold text-red-300 hover:border-red-300 hover:text-red-200 disabled:opacity-50"
+          >
+            {status === "deleting" ? "Eliminando..." : "Eliminar"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -21,6 +21,7 @@ import {
   formatRelativeTime,
   type PostComment,
 } from "@/lib/CommunityService";
+import { Avatar } from "@/components/Avatar";
 
 function formatTimestamp(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
@@ -145,9 +146,7 @@ export function CommentsModal({
             <ul className="flex flex-col gap-4">
               {comments.map((comment) => (
                 <li key={comment.id} className="flex gap-2.5">
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-neon-cyan/15 font-display text-xs font-semibold text-neon-cyan">
-                    {comment.authorName.charAt(0).toUpperCase()}
-                  </div>
+                  <Avatar uid={comment.authorId} name={comment.authorName} size={28} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <p className="truncate text-xs font-semibold text-white">{comment.authorName}</p>

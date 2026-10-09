@@ -30,6 +30,7 @@ import {
   type CollectionReference,
 } from "firebase/firestore";
 import { deleteObject, ref as storageRef } from "firebase/storage";
+import { postCoverPath } from "@/lib/postCover";
 import { db, storage } from "@/lib/firebase";
 
 export interface DeletePostResult {
@@ -77,6 +78,8 @@ export async function deletePostCascade(post: {
   for (const path of [
     `community_previews/${post.authorId}/${post.id}`,
     `community_stems/${post.authorId}/${post.id}.zip`,
+    // La portada (2026-10-09): pública como el preview, muere con el post.
+    postCoverPath(post.authorId, post.id),
   ]) {
     try {
       await deleteObject(storageRef(storage, path));

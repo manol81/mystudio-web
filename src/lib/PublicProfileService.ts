@@ -43,6 +43,8 @@ export interface PublicProfile {
   username: string;
   bio: string;
   followersCount: number;
+  /// Foto de perfil (ver profilePhoto.ts), o null si no subió ninguna.
+  photoUrl: string | null;
 }
 
 /// Publicación de la Comunidad, en la forma mínima que necesita el
@@ -82,6 +84,7 @@ export async function fetchPublicProfile(uid: string): Promise<PublicProfile | n
     username: (data.username as string) ?? "",
     bio: (data.bio as string) ?? "",
     followersCount: (data.followersCount as number) ?? 0,
+    photoUrl: (data.photoUrl as string) ?? null,
   };
 }
 
@@ -256,6 +259,7 @@ export async function searchProfiles(term: string, max = 20): Promise<PublicProf
       username: (data.username as string) ?? "",
       bio: (data.bio as string) ?? "",
       followersCount: (data.followersCount as number) ?? 0,
+      photoUrl: (data.photoUrl as string) ?? null,
     };
   });
 }

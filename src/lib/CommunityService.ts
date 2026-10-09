@@ -67,6 +67,9 @@ export interface CommunityPost {
   description: string;
   likesCount: number;
   createdAt: Timestamp | null;
+  /// Imagen de portada que eligió el autor (ver postCover.ts), o null:
+  /// la tarjeta dibuja entonces una portada generada.
+  coverUrl: string | null;
 }
 
 export interface CommunityPostsPage {
@@ -92,6 +95,7 @@ function toCommunityPost(doc: QueryDocumentSnapshot<DocumentData>): CommunityPos
     description: (data.description as string) ?? "",
     likesCount: (data.likesCount as number) ?? 0,
     createdAt: (data.createdAt as Timestamp) ?? null,
+    coverUrl: (data.coverUrl as string) ?? null,
   };
 }
 
