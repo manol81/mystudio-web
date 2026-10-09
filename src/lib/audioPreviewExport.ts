@@ -81,6 +81,16 @@ export interface MixdownResult {
 // multi_track_mixer_controller.dart).
 export const MP3_BITRATE_KBPS = 96;
 export const SAMPLE_RATE = 32000;
+
+/// Calidad del preview. La de siempre es liviana (ver arriba); la ALTA
+/// (2026-10-09) es un beneficio PRO: 44,1 kHz y 192 kbps, lo que pesa el
+/// doble pero ya no se le notan los agudos recortados de los 32 kHz.
+export interface PreviewQuality {
+  sampleRate: number;
+  kbps: number;
+}
+export const STANDARD_PREVIEW: PreviewQuality = { sampleRate: SAMPLE_RATE, kbps: MP3_BITRATE_KBPS };
+export const HIGH_PREVIEW: PreviewQuality = { sampleRate: 44100, kbps: 192 };
 const MP3_BLOCK_SIZE = 1152; // tamaño de frame que espera encodeBuffer, fijo por el formato MP3
 
 function constantPowerGains(volume: number, pan: number): { left: number; right: number } {
@@ -149,6 +159,7 @@ export async function loadDecodedTracks(
 
 async function renderMixdown(
   project: DecodedProject,
+  rate: number = SAMPLE_RATE,
 ): Promise<{ buffer: AudioBuffer; durationSeconds: number }> {
   const { tracks, master } = project;
   const durationSeconds = Math.max(
@@ -162,16 +173,16 @@ async function renderMixdown(
   // projectMixdown.ts) en vez del grafo de Web Audio porque los nodos
   // del navegador no son los mismos algoritmos.
   if (projectHasEffects(tracks)) {
-    const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * SAMPLE_RATE), SAMPLE_RATE);
-    const mix = renderProjectMix(tracks, master, SAMPLE_RATE);
+    const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * rate), rate);
+    const mix = renderProjectMix(tracks, master, rate);
     return {
-      buffer: toAudioBuffer(mix, offlineCtx, SAMPLE_RATE),
+      buffer: toAudioBuffer(mix, offlineCtx, rate),
       durationSeconds: mix.durationSeconds,
     };
   }
 
 
-  const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * SAMPLE_RATE), SAMPLE_RATE);
+  const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * rate), rate);
   const anySolo = tracks.some((t) => t.isSolo);
 
   for (const track of tracks) {
@@ -224,7 +235,11 @@ const BLOCKS_PER_CHUNK = 50;
 // libre y el progreso llega por mensajes. Si el worker no se puede
 // crear (navegador viejo, CSP, error de carga), cae al codificador del
 // hilo principal de abajo — mismo resultado, solo más trabado.
-export function encodeMp3(buffer: AudioBuffer, onProgress?: (ratio: number) => void): Promise<Blob> {
+export function encodeMp3(
+  buffer: AudioBuffer,
+  onProgress?: (ratio: number) => void,
+  kbps: number = MP3_BITRATE_KBPS,
+): Promise<Blob> {
   const left = floatTo16BitPCM(buffer.getChannelData(0));
   const right = buffer.numberOfChannels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : left.slice();
 
@@ -234,7 +249,7 @@ export function encodeMp3(buffer: AudioBuffer, onProgress?: (ratio: number) => v
       worker = new Worker(new URL("./previewEncoder.worker.ts", import.meta.url), { type: "module" });
     } catch (err) {
       console.warn("Worker de MP3 no disponible, codificando en el hilo principal:", err);
-      encodeMp3OnMainThread(buffer, onProgress).then(resolve, reject);
+      encodeMp3OnMainThread(buffer, onProgress, kbps).then(resolve, reject);
       return;
     }
     worker.onmessage = (e: MessageEvent<{ type: string; ratio?: number; blob?: Blob; message?: string }>) => {
@@ -252,19 +267,23 @@ export function encodeMp3(buffer: AudioBuffer, onProgress?: (ratio: number) => v
     worker.onerror = () => {
       worker.terminate();
       console.warn("El worker de MP3 falló, codificando en el hilo principal.");
-      encodeMp3OnMainThread(buffer, onProgress).then(resolve, reject);
+      encodeMp3OnMainThread(buffer, onProgress, kbps).then(resolve, reject);
     };
     worker.postMessage(
-      { left, right, sampleRate: buffer.sampleRate, kbps: MP3_BITRATE_KBPS },
+      { left, right, sampleRate: buffer.sampleRate, kbps },
       [left.buffer, right.buffer],
     );
   });
 }
 
-function encodeMp3OnMainThread(buffer: AudioBuffer, onProgress?: (ratio: number) => void): Promise<Blob> {
+function encodeMp3OnMainThread(
+  buffer: AudioBuffer,
+  onProgress?: (ratio: number) => void,
+  kbps: number = MP3_BITRATE_KBPS,
+): Promise<Blob> {
   const left = floatTo16BitPCM(buffer.getChannelData(0));
   const right = buffer.numberOfChannels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : left;
-  const encoder = new Mp3Encoder(2, buffer.sampleRate, MP3_BITRATE_KBPS);
+  const encoder = new Mp3Encoder(2, buffer.sampleRate, kbps);
   const chunks: Uint8Array[] = [];
 
   return new Promise((resolve) => {
@@ -304,6 +323,7 @@ function encodeMp3OnMainThread(buffer: AudioBuffer, onProgress?: (ratio: number)
 export async function buildCommunityPreview(
   downloadUrl: string,
   onProgress?: (ratio: number) => void,
+  quality: PreviewQuality = STANDARD_PREVIEW,
 ): Promise<MixdownResult> {
   // A SAMPLE_RATE desde el arranque: renderMixdown mezcla muestra a
   // muestra cuando hay efectos, y con buffers en otra tasa eso sonaba
@@ -313,9 +333,9 @@ export async function buildCommunityPreview(
   // había acá antes, que sí ocupaba un dispositivo de audio real.
   const project = await loadDecodedTracks(
     downloadUrl,
-    new OfflineAudioContext(1, 1, SAMPLE_RATE),
+    new OfflineAudioContext(1, 1, quality.sampleRate),
   );
-  const { buffer, durationSeconds } = await renderMixdown(project);
-  const blob = await encodeMp3(buffer, onProgress);
+  const { buffer, durationSeconds } = await renderMixdown(project, quality.sampleRate);
+  const blob = await encodeMp3(buffer, onProgress, quality.kbps);
   return { blob, durationSeconds };
 }

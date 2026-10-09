@@ -8,7 +8,21 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Avatar } from "@/components/Avatar";
 import { ACCEPTED_IMAGE_TYPES, imageFileProblem } from "@/lib/imageUpload";
-import { removeProfilePhoto, setProfilePhoto, usePhotoUrl } from "@/lib/profilePhoto";
+import {
+  removeProfileBanner,
+  removeProfilePhoto,
+  setProfileBanner,
+  setProfilePhoto,
+  usePhotoUrl,
+} from "@/lib/profilePhoto";
+import { doc, setDoc } from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import {
+  PROFILE_LINK_KEYS,
+  PROFILE_LINK_LABELS,
+  buildProfileLinks,
+  type ProfileLinkKey,
+} from "@/lib/profileLinks";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -28,6 +42,14 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
   const { user, profile } = useAuth();
   const [username, setUsernameInput] = useState(profile?.username ?? "");
   const [bio, setBio] = useState("");
+  // Perfil ampliado (PRO, 2026-10-09): banner y links.
+  const [isPro, setIsPro] = useState(false);
+  const [bannerUrl, setBannerUrl] = useState<string | null>(null);
+  const [bannerBusy, setBannerBusy] = useState(false);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
+  const [linkInputs, setLinkInputs] = useState<Record<ProfileLinkKey, string>>({
+    spotify: "", instagram: "", youtube: "", soundcloud: "", tiktok: "", web: "",
+  });
   // La foto se guarda APENAS se elige (no con "Guardar"): es un archivo
   // que ya se subió, y esperar al botón obligaría a explicar por qué la
   // foto nueva todavía no se ve en ningún lado.
@@ -62,6 +84,40 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function handleBannerChosen(file: File | undefined) {
+    if (!user || !file) return;
+    const problem = imageFileProblem(file);
+    if (problem) {
+      setPhotoError(problem);
+      setPhotoStatus("error");
+      return;
+    }
+    setBannerBusy(true);
+    setPhotoError(null);
+    try {
+      setBannerUrl(await setProfileBanner(user.uid, file));
+    } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : String(err));
+      setPhotoStatus("error");
+    } finally {
+      setBannerBusy(false);
+    }
+  }
+
+  async function handleBannerRemoved() {
+    if (!user) return;
+    setBannerBusy(true);
+    try {
+      await removeProfileBanner(user.uid);
+      setBannerUrl(null);
+    } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : String(err));
+      setPhotoStatus("error");
+    } finally {
+      setBannerBusy(false);
+    }
+  }
+
   async function handlePhotoRemoved() {
     if (!user) return;
     setPhotoStatus("uploading");
@@ -82,7 +138,15 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
     let cancelled = false;
     fetchPublicProfile(user.uid)
       .then((p) => {
-        if (!cancelled && p) setBio(p.bio);
+        if (cancelled || !p) return;
+        setBio(p.bio);
+        setIsPro(p.isPro);
+        setBannerUrl(p.bannerUrl);
+        setLinkInputs((prev) => {
+          const next = { ...prev };
+          for (const k of PROFILE_LINK_KEYS) next[k] = p.links[k] ?? "";
+          return next;
+        });
       })
       .catch(() => {});
     return () => {
@@ -111,6 +175,15 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
       setStatus("error");
       return;
     }
+    // Links del perfil ampliado: se validan antes de guardar nada.
+    const builtLinks = isPro ? buildProfileLinks(linkInputs) : null;
+    if (builtLinks && builtLinks.invalid.length > 0) {
+      setErrorMessage(
+        `Revisá ${builtLinks.invalid.map((k) => PROFILE_LINK_LABELS[k]).join(", ")}: tiene que ser un link (por ejemplo instagram.com/tu_banda).`,
+      );
+      setStatus("error");
+      return;
+    }
     setStatus("saving");
     setErrorMessage(null);
     try {
@@ -119,6 +192,9 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
       // exigen que el nombre coincida con el privado, que es la fuente
       // de verdad.
       await savePublicProfile(user.uid, { username: trimmed, bio: bio.trim() });
+      if (builtLinks) {
+        await setDoc(doc(db, "public_profiles", user.uid), { links: builtLinks.links }, { mergeFields: ["links"] });
+      }
       setPropagated(result);
       setStatus("success");
       setTimeout(onClose, result.posts + result.comments > 0 ? 2200 : 900);
@@ -248,6 +324,64 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
                 {bio.length}/{MAX_BIO_LENGTH}
               </p>
             </div>
+
+            {isPro && (
+              <div className="flex flex-col gap-3 rounded-xl border border-amber-300/25 bg-amber-300/5 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-amber-300/80">
+                  Perfil ampliado · PRO
+                </p>
+                <div>
+                  <span className="mb-1.5 block text-xs text-white/60">Banner</span>
+                  {bannerUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element -- URL de Storage con token
+                    <img src={bannerUrl} alt="" className="mb-2 h-16 w-full rounded-lg object-cover" />
+                  )}
+                  <input
+                    ref={bannerInputRef}
+                    type="file"
+                    accept={ACCEPTED_IMAGE_TYPES}
+                    className="hidden"
+                    onChange={(e) => {
+                      void handleBannerChosen(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      disabled={bannerBusy}
+                      onClick={() => bannerInputRef.current?.click()}
+                      className="text-xs font-semibold text-neon-cyan hover:underline disabled:opacity-50"
+                    >
+                      {bannerBusy ? "Guardando..." : bannerUrl ? "Cambiar banner" : "Subir un banner"}
+                    </button>
+                    {bannerUrl && !bannerBusy && (
+                      <button
+                        type="button"
+                        onClick={() => void handleBannerRemoved()}
+                        className="text-[11px] text-white/40 hover:text-red-300"
+                      >
+                        Quitar
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {PROFILE_LINK_KEYS.map((k) => (
+                    <label key={k} className="flex items-center gap-2">
+                      <span className="w-20 shrink-0 text-[11px] text-white/50">{PROFILE_LINK_LABELS[k]}</span>
+                      <input
+                        type="text"
+                        value={linkInputs[k]}
+                        onChange={(e) => setLinkInputs((prev) => ({ ...prev, [k]: e.target.value }))}
+                        placeholder={k === "web" ? "tusitio.com" : `${k}.com/…`}
+                        className="min-w-0 flex-1 rounded-lg border border-white/15 bg-onyx-black px-3 py-1.5 text-xs text-white outline-none focus:border-neon-cyan"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {user && (
               <Link

@@ -31,6 +31,7 @@ import {
   fetchBlockedAuthorIds,
   fetchCommentCounts,
   fetchCommunityPostsPage,
+  fetchFeaturedPosts,
   fetchPostsByAuthors,
   fetchPostsByWantedRole,
   fetchLikedPostIds,
@@ -81,11 +82,19 @@ export default function CommunityFeedPage() {
     setIsLoadingInitial(true);
     setFeedError(null);
     try {
-      const page = await fetchCommunityPostsPage(null);
-      setPosts(page.posts);
+      // Las DESTACADAS (autores PRO, primeras 24 h; ver onPostCreated)
+      // van arriba de todo y no se repiten más abajo. Si esa consulta
+      // falla, el feed sale igual.
+      const [page, featured] = await Promise.all([
+        fetchCommunityPostsPage(null),
+        fetchFeaturedPosts().catch(() => [] as CommunityPost[]),
+      ]);
+      const featuredIds = new Set(featured.map((p) => p.id));
+      const merged = [...featured, ...page.posts.filter((p) => !featuredIds.has(p.id))];
+      setPosts(merged);
       setCursor(page.cursor);
       setHasMore(page.hasMore);
-      const postIds = page.posts.map((p) => p.id);
+      const postIds = merged.map((p) => p.id);
       const [liked, counts] = await Promise.all([
         uid ? fetchLikedPostIds(uid, postIds) : Promise.resolve(new Set<string>()),
         fetchCommentCounts(postIds),
@@ -106,7 +115,11 @@ export default function CommunityFeedPage() {
     setIsLoadingMore(true);
     try {
       const page = await fetchCommunityPostsPage(cursor);
-      setPosts((prev) => [...prev, ...page.posts]);
+      // Sin repetir: una destacada ya está arriba de todo.
+      setPosts((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...page.posts.filter((p) => !seen.has(p.id))];
+      });
       setCursor(page.cursor);
       setHasMore(page.hasMore);
       const postIds = page.posts.map((p) => p.id);

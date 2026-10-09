@@ -24,24 +24,55 @@ export function avatarPath(uid: string): string {
 
 // ─── Caché por autor ─────────────────────────────────────────────────────
 
-const cache = new Map<string, Promise<string | null>>();
+// Lo que se cachea del perfil público: la foto y si es PRO (el sello
+// del feed y los beneficios, ver onUserProChanged en functions).
+interface PublicFlags {
+  photoUrl: string | null;
+  isPro: boolean;
+}
+
+const cache = new Map<string, Promise<PublicFlags>>();
 const listeners = new Map<string, Set<(url: string | null) => void>>();
 
-function loadPhotoUrl(uid: string): Promise<string | null> {
+function loadFlags(uid: string): Promise<PublicFlags> {
   let p = cache.get(uid);
   if (!p) {
     p = getDoc(doc(db, "public_profiles", uid))
-      .then((snap) => (snap.exists() ? ((snap.data().photoUrl as string) ?? null) : null))
-      .catch(() => null);
+      .then((snap) => ({
+        photoUrl: snap.exists() ? ((snap.data().photoUrl as string) ?? null) : null,
+        isPro: snap.exists() && snap.data().isPro === true,
+      }))
+      .catch(() => ({ photoUrl: null, isPro: false }));
     cache.set(uid, p);
   }
   return p;
 }
 
+function loadPhotoUrl(uid: string): Promise<string | null> {
+  return loadFlags(uid).then((f) => f.photoUrl);
+}
+
+/// ¿Es PRO para el servidor? (`public_profiles.isPro`). false mientras carga.
+export function useIsPro(uid: string | null | undefined): boolean {
+  const [isPro, setIsPro] = useState(false);
+  useEffect(() => {
+    if (!uid) return;
+    let alive = true;
+    void loadFlags(uid).then((f) => {
+      if (alive) setIsPro(f.isPro);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [uid]);
+  return uid ? isPro : false;
+}
+
 /// Avisa a todas las tarjetas de esa persona que la foto cambió (al
 /// subir o sacar la propia, sin recargar la página).
 function publish(uid: string, url: string | null) {
-  cache.set(uid, Promise.resolve(url));
+  const prev = cache.get(uid) ?? Promise.resolve({ photoUrl: null, isPro: false });
+  cache.set(uid, prev.then((f) => ({ ...f, photoUrl: url })));
   listeners.get(uid)?.forEach((fn) => fn(url));
 }
 
@@ -102,6 +133,37 @@ export async function removeProfilePhoto(uid: string): Promise<void> {
     // archivo huérfano, no un perfil roto: no vale la pena frenar.
     if ((err as { code?: string }).code !== "storage/object-not-found") {
       console.error("No se pudo borrar la foto vieja:", err);
+    }
+  }
+}
+
+// ─── Banner del perfil ampliado (PRO, 2026-10-09) ────────────────────────
+//
+// Mismo esquema que la foto: `banners/{uid}/banner.jpg` y
+// `public_profiles/{uid}.bannerUrl`. Que sea PRO lo exigen las reglas de
+// Firestore al guardar la URL (si no es PRO, la escritura falla y el
+// archivo queda huérfano: por eso la pantalla solo lo ofrece a PRO).
+
+export function bannerPath(uid: string): string {
+  return `banners/${uid}/banner.jpg`;
+}
+
+export async function setProfileBanner(uid: string, file: File): Promise<string> {
+  const blob = await resizeImage(file, { maxSide: 1600 });
+  const objectRef = ref(storage, bannerPath(uid));
+  await uploadBytes(objectRef, blob, { contentType: "image/jpeg" });
+  const url = withVersion(await getDownloadURL(objectRef));
+  await setDoc(doc(db, "public_profiles", uid), { bannerUrl: url, updatedAt: serverTimestamp() }, { merge: true });
+  return url;
+}
+
+export async function removeProfileBanner(uid: string): Promise<void> {
+  await setDoc(doc(db, "public_profiles", uid), { bannerUrl: null, updatedAt: serverTimestamp() }, { merge: true });
+  try {
+    await deleteObject(ref(storage, bannerPath(uid)));
+  } catch (err) {
+    if ((err as { code?: string }).code !== "storage/object-not-found") {
+      console.error("No se pudo borrar el banner viejo:", err);
     }
   }
 }

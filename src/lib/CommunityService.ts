@@ -70,6 +70,12 @@ export interface CommunityPost {
   /// Imagen de portada que eligió el autor (ver postCover.ts), o null:
   /// la tarjeta dibuja entonces una portada generada.
   coverUrl: string | null;
+  /// Beneficios PRO (2026-10-09), escritos SOLO por Cloud Functions:
+  /// el autor era PRO al publicar (sello) y hasta cuándo va destacada.
+  proAuthor: boolean;
+  featuredUntil: Timestamp | null;
+  /// Reproducciones contadas por onPlayCreated.
+  playsCount: number;
 }
 
 export interface CommunityPostsPage {
@@ -96,7 +102,60 @@ function toCommunityPost(doc: QueryDocumentSnapshot<DocumentData>): CommunityPos
     likesCount: (data.likesCount as number) ?? 0,
     createdAt: (data.createdAt as Timestamp) ?? null,
     coverUrl: (data.coverUrl as string) ?? null,
+    proAuthor: data.proAuthor === true,
+    featuredUntil: (data.featuredUntil as Timestamp) ?? null,
+    playsCount: (data.playsCount as number) ?? 0,
   };
+}
+
+/// Las publicaciones DESTACADAS de ahora: las de autores PRO durante sus
+/// primeras 24 h (ver onPostCreated). Van arriba de todo en "Todo".
+export async function fetchFeaturedPosts(max = 3): Promise<CommunityPost[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, COLLECTION_NAME),
+      where("featuredUntil", ">", Timestamp.now()),
+      orderBy("featuredUntil", "desc"),
+      limit(max),
+    ),
+  );
+  return snap.docs.map(toCommunityPost);
+}
+
+/// Deja constancia de una reproducción, para las estadísticas del autor
+/// (ver onPlayCreated). Una vez por publicación y por pestaña: volver a
+/// darle play no suma. El "país" es la región del idioma del navegador
+/// (es-AR → AR): no se pide ubicación ni se guarda nada de quién escucha.
+/// Nunca lanza.
+export function recordPlay(postId: string): void {
+  try {
+    const key = `mystudio.played.${postId}`;
+    if (window.sessionStorage.getItem(key)) return;
+    window.sessionStorage.setItem(key, "1");
+  } catch {
+    // Sin sessionStorage: se cuenta igual.
+  }
+  const region = (navigator.language || "").split("-")[1]?.toUpperCase() ?? "";
+  const country = /^[A-Z]{2}$/.test(region) ? region : "??";
+  void addDoc(collection(db, COLLECTION_NAME, postId, "plays"), {
+    country,
+    createdAt: serverTimestamp(),
+  }).catch(() => {});
+}
+
+export interface PostStats {
+  total: number;
+  countries: { code: string; plays: number }[];
+}
+
+/// Estadísticas de una publicación propia (solo PRO, lo exigen las reglas).
+export async function fetchPostStats(postId: string): Promise<PostStats> {
+  const snap = await getDoc(doc(db, COLLECTION_NAME, postId, "stats", "summary"));
+  const data = snap.exists() ? snap.data() : {};
+  const countries = Object.entries((data.countries as Record<string, number>) ?? {})
+    .map(([code, plays]) => ({ code, plays }))
+    .sort((a, b) => b.plays - a.plays);
+  return { total: (data.total as number) ?? 0, countries };
 }
 
 /// Una publicación puntual por id (página /p/[postId]) — null si no

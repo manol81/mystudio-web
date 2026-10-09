@@ -59,6 +59,8 @@ export async function deletePostCascade(post: {
 
   result.likes = await deleteEntireCollection(collection(postRef, "likes"));
   result.comments = await deleteEntireCollection(collection(postRef, "comments"));
+  // Las estadísticas PRO (2026-10-09, una sola "summary").
+  await deleteEntireCollection(collection(postRef, "stats"));
 
   // El hilo de mensajes vive DENTRO de cada pedido, así que se vacía
   // antes de borrar el pedido — al revés quedarían huérfanos.

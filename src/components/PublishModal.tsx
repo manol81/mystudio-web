@@ -22,7 +22,8 @@ import { ref, getDownloadURL, uploadBytes } from "firebase/storage";
 import { auth, storage } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { attachCommunityStems, attachCommunityPreview, publishProjectToCommunity } from "@/lib/CommunityService";
-import { buildCommunityPreview } from "@/lib/audioPreviewExport";
+import { HIGH_PREVIEW, STANDARD_PREVIEW, buildCommunityPreview } from "@/lib/audioPreviewExport";
+import { useIsPro } from "@/lib/profilePhoto";
 import { buildStemsPackage } from "@/lib/stemsExport";
 import { SAMPLE_GENRES } from "@/lib/sampleTaxonomy";
 import { COLLAB_ROLES, MAX_WANTED_ROLES } from "@/lib/collabRoles";
@@ -87,6 +88,9 @@ export function PublishModal({
   onClose: () => void;
 }) {
   const { user, profile } = useAuth();
+  // Beneficio PRO: el audio de la publicación en calidad alta (44,1 kHz,
+  // 192 kbps) en vez del preview liviano.
+  const isPro = useIsPro(user?.uid);
   const [title, setTitle] = useState(project.title || "Sin título");
   const [genre, setGenre] = useState<string>(SAMPLE_GENRES[0]);
   // Qué le falta a la canción. Es lo que convierte al feed en un lugar
@@ -209,7 +213,11 @@ export function PublishModal({
     // más abajo hace falta el valor real, no el de render.
     let didPreviewFail = false;
     try {
-      const { blob, durationSeconds } = await buildCommunityPreview(audioUrl, setPreviewProgress);
+      const { blob, durationSeconds } = await buildCommunityPreview(
+        audioUrl,
+        setPreviewProgress,
+        isPro ? HIGH_PREVIEW : STANDARD_PREVIEW,
+      );
       const previewRef = ref(storage, `community_previews/${user.uid}/${postId}`);
       await uploadBytes(previewRef, blob, { contentType: "audio/mpeg" });
       const previewUrl = await getDownloadURL(previewRef);
@@ -446,6 +454,13 @@ export function PublishModal({
                 placeholder="Contá algo sobre este arreglo..."
               />
             </div>
+
+            {isPro && (
+              <p className="rounded-lg bg-amber-300/10 px-3 py-2 text-[11px] text-amber-200">
+                PRO: se publica en calidad alta (192 kbps) y queda destacada arriba de la Comunidad
+                durante 24 horas.
+              </p>
+            )}
 
             <div>
               <span className="mb-1.5 block text-xs text-white/60">Imagen de portada (opcional)</span>

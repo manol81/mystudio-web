@@ -35,6 +35,7 @@ import {
   where,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import type { ProfileLinks } from "@/lib/profileLinks";
 
 export const MAX_BIO_LENGTH = 300;
 
@@ -45,6 +46,11 @@ export interface PublicProfile {
   followersCount: number;
   /// Foto de perfil (ver profilePhoto.ts), o null si no subió ninguna.
   photoUrl: string | null;
+  /// Perfil ampliado PRO (2026-10-09). `isPro` lo escribe solo la Cloud
+  /// Function onUserProChanged.
+  isPro: boolean;
+  bannerUrl: string | null;
+  links: ProfileLinks;
 }
 
 /// Publicación de la Comunidad, en la forma mínima que necesita el
@@ -85,6 +91,9 @@ export async function fetchPublicProfile(uid: string): Promise<PublicProfile | n
     bio: (data.bio as string) ?? "",
     followersCount: (data.followersCount as number) ?? 0,
     photoUrl: (data.photoUrl as string) ?? null,
+    isPro: data.isPro === true,
+    bannerUrl: (data.bannerUrl as string) ?? null,
+    links: (data.links as ProfileLinks) ?? {},
   };
 }
 
@@ -260,6 +269,9 @@ export async function searchProfiles(term: string, max = 20): Promise<PublicProf
       bio: (data.bio as string) ?? "",
       followersCount: (data.followersCount as number) ?? 0,
       photoUrl: (data.photoUrl as string) ?? null,
+      isPro: data.isPro === true,
+      bannerUrl: (data.bannerUrl as string) ?? null,
+      links: (data.links as ProfileLinks) ?? {},
     };
   });
 }

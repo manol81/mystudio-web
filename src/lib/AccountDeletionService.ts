@@ -148,6 +148,7 @@ async function deleteCommunityFootprint(uid: string): Promise<void> {
     // likes/comentarios ajenos dentro de SU post.
     await deleteCollection(collection(post.ref, "likes"));
     await deleteCollection(collection(post.ref, "comments"));
+    await deleteCollection(collection(post.ref, "stats"));
     // Pedidos de colaboración recibidos en este post, con su hilo de
     // mensajes adentro: el hilo es una subcolección y Firestore no
     // borra en cascada, así que si se borra el pedido primero, los
@@ -165,6 +166,7 @@ async function deleteCommunityFootprint(uid: string): Promise<void> {
   // Mismo cambio ESPEJO en account_deletion_service.dart.
   await deleteStorageFolder(ref(storage, `community_covers/${uid}`));
   await deleteStorageFolder(ref(storage, `avatars/${uid}`));
+  await deleteStorageFolder(ref(storage, `banners/${uid}`));
 
   const comments = await getDocs(
     query(collectionGroup(db, "comments"), where("authorId", "==", uid)),

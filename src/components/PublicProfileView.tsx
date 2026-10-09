@@ -34,6 +34,7 @@ import {
 import { fetchAcceptedCollabs, type CollabRequest } from "@/lib/CollabService";
 import { fetchCommunityPost } from "@/lib/CommunityService";
 import { Avatar } from "@/components/Avatar";
+import { PROFILE_LINK_KEYS, PROFILE_LINK_LABELS } from "@/lib/profileLinks";
 
 function formatDate(date: Date | null): string {
   return date ? date.toLocaleDateString("es-AR", { day: "numeric", month: "short" }) : "";
@@ -103,6 +104,9 @@ export function PublicProfileView({ uid }: { uid: string }) {
         bio: "",
         followersCount: 0,
         photoUrl: null,
+        isPro: false,
+        bannerUrl: null,
+        links: {},
       },
     );
     setStatus("ready");
@@ -192,10 +196,27 @@ export function PublicProfileView({ uid }: { uid: string }) {
 
   return (
     <div className="mx-auto w-full max-w-2xl px-6 py-10">
+      {/* Perfil ampliado PRO: el banner solo se muestra mientras la
+          persona sea PRO (si deja de serlo, queda guardado pero oculto). */}
+      {profile.isPro && profile.bannerUrl && (
+        // eslint-disable-next-line @next/next/no-img-element -- URL de Storage con token
+        <img
+          src={profile.bannerUrl}
+          alt=""
+          className="mb-6 h-36 w-full rounded-2xl object-cover sm:h-48"
+        />
+      )}
       <header className="flex items-start gap-4">
         <Avatar uid={profile.uid} name={displayName} size={72} photoUrl={profile.photoUrl} />
         <div className="min-w-0 flex-1">
-          <h1 className="truncate font-display text-2xl font-bold text-white">{displayName}</h1>
+          <h1 className="truncate font-display text-2xl font-bold text-white">
+            {displayName}
+            {profile.isPro && (
+              <span className="ml-2 rounded bg-amber-300/15 px-1.5 py-0.5 align-middle text-[10px] font-bold tracking-wider text-amber-300">
+                PRO
+              </span>
+            )}
+          </h1>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/50">
             <span>
               <span className="font-semibold text-white/80">{profile.followersCount}</span>{" "}
@@ -214,6 +235,22 @@ export function PublicProfileView({ uid }: { uid: string }) {
             <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-white/70">
               {profile.bio}
             </p>
+          )}
+          {profile.isPro && Object.keys(profile.links).length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {PROFILE_LINK_KEYS.filter((k) => profile.links[k]).map((k) => (
+                <a
+                  key={k}
+                  href={profile.links[k]}
+                  target="_blank"
+                  // ugc + nofollow: es contenido que escribió un usuario.
+                  rel="noopener noreferrer nofollow ugc"
+                  className="rounded-full border border-white/15 px-3 py-1 text-xs text-white/70 transition-colors hover:border-neon-cyan/50 hover:text-neon-cyan"
+                >
+                  {PROFILE_LINK_LABELS[k]}
+                </a>
+              ))}
+            </div>
           )}
         </div>
         {isOwnProfile ? (

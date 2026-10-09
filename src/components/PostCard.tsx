@@ -31,6 +31,7 @@ import {
   Handshake,
   Trash2,
   ImagePlus,
+  BarChart3,
 } from "lucide-react";
 import { SITE_URL } from "@/lib/site";
 import { CollabRequestModal } from "@/components/CollabRequestModal";
@@ -43,10 +44,13 @@ import { Tooltip } from "@/components/Tooltip";
 import { Avatar } from "@/components/Avatar";
 import { ACCEPTED_IMAGE_TYPES, imageFileProblem } from "@/lib/imageUpload";
 import { removePostCover, setPostCover } from "@/lib/postCover";
+import { PostStatsModal } from "@/components/PostStatsModal";
+import { useIsPro } from "@/lib/profilePhoto";
 import { useAuth } from "@/context/AuthContext";
 import {
   blockUser,
   formatRelativeTime,
+  recordPlay,
   toggleLike,
   type CommunityPost,
 } from "@/lib/CommunityService";
@@ -130,6 +134,7 @@ export function PostCard({
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [isBlocking, setIsBlocking] = useState(false);
   const [isLiking, setIsLiking] = useState(false);
   const [playbackSeconds, setPlaybackSeconds] = useState<number | null>(null);
@@ -137,6 +142,18 @@ export function PostCard({
   const hash = hashString(post.id || post.authorId);
   const heights = fakeWaveformHeights(hash);
   const isOwnPost = user?.uid === post.authorId;
+  // Beneficios PRO (2026-10-09): el sello lo pone la Cloud Function al
+  // publicar; las estadísticas son para el autor que ES PRO hoy.
+  const viewerIsPro = useIsPro(isOwnPost ? user?.uid : null);
+  // El "ahora" se fija al montar: recalcularlo en cada render haría que
+  // la tarjeta cambie sola sin que nada cambie.
+  const [mountedAt] = useState(() => Date.now());
+  const isFeatured = post.featuredUntil ? post.featuredUntil.toMillis() > mountedAt : false;
+  // Cada escucha queda contada (una por visita) para las estadísticas.
+  function handleRequestPlay() {
+    recordPlay(post.id);
+    onRequestPlay();
+  }
   /// Borrar es del AUTOR y de nadie más (así lo exige firestore.rules).
   /// Depende además de que la pantalla sepa qué hacer después: sin
   /// `onDeleted`, la tarjeta quedaría en pantalla apuntando a un post
@@ -186,7 +203,11 @@ export function PostCard({
     // Una publicación por fila, a todo el ancho (2026-10-09; antes eran
     // tres columnas angostas). La portada va a la derecha y, en el
     // teléfono, arriba: es lo primero que se ve al pasar por el feed.
-    <article className="relative flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-graphite transition-colors duration-200 hover:border-neon-cyan/30 sm:flex-row">
+    <article
+      className={`relative flex flex-col overflow-hidden rounded-2xl border bg-graphite transition-colors duration-200 hover:border-neon-cyan/30 sm:flex-row ${
+        isFeatured ? "border-amber-300/50 shadow-[0_0_24px_rgba(252,211,77,0.12)]" : "border-white/10"
+      }`}
+    >
       <PostCover post={post} hash={hash} canEdit={isOwnPost} />
       <div className="flex min-w-0 flex-1 flex-col gap-4 p-5 sm:order-first">
       {/* Autor */}
@@ -202,7 +223,15 @@ export function PostCard({
           >
             {post.authorName}
           </Link>
-          <p className="text-xs text-white/40">{formatRelativeTime(post.createdAt)}</p>
+          {post.proAuthor && (
+            <span className="ml-1.5 rounded bg-amber-300/15 px-1.5 py-0.5 align-middle text-[9px] font-bold tracking-wider text-amber-300">
+              PRO
+            </span>
+          )}
+          <p className="text-xs text-white/40">
+            {formatRelativeTime(post.createdAt)}
+            {isFeatured && <span className="ml-2 text-amber-300/80">· Destacada</span>}
+          </p>
         </div>
 
         {/* Menú de la tarjeta. En una publicación AJENA es el de
@@ -303,7 +332,7 @@ export function PostCard({
           <SamplePlayer
             src={post.audioPreviewUrl}
             isActive={isPlaying}
-            onRequestPlay={onRequestPlay}
+            onRequestPlay={handleRequestPlay}
             onTimeUpdate={setPlaybackSeconds}
             seekRequest={seekRequest}
           />
@@ -423,6 +452,18 @@ export function PostCard({
           </Tooltip>
         )}
 
+        {isOwnPost && viewerIsPro && (
+          <Tooltip text="Cuántas veces la escucharon y desde dónde (PRO)">
+            <button
+              type="button"
+              onClick={() => setIsStatsOpen(true)}
+              className="flex items-center gap-1.5 rounded-full px-1.5 py-1 text-amber-300/70 transition-colors duration-200 hover:text-amber-200"
+            >
+              <BarChart3 size={14} /> {post.playsCount}
+            </button>
+          </Tooltip>
+        )}
+
         <Tooltip text="Copiar el link de esta publicación para compartirlo" side="left" wrapperClassName="relative ml-auto inline-flex">
           <button
             type="button"
@@ -474,6 +515,14 @@ export function PostCard({
           reportedAuthorId={post.authorId}
           reporterId={user.uid}
           onClose={() => setIsReportOpen(false)}
+        />
+      )}
+
+      {isStatsOpen && (
+        <PostStatsModal
+          post={post}
+          commentsCount={commentsCount}
+          onClose={() => setIsStatsOpen(false)}
         />
       )}
 
