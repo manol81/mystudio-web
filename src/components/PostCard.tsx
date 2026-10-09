@@ -111,7 +111,7 @@ export function PostCard({
   // manejarlo — sin este callback, simplemente no se ofrece borrar.
   onDeleted?: (postId: string) => void;
 }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [linkCopied, setLinkCopied] = useState(false);
 
   async function handleCopyLink() {
@@ -352,6 +352,16 @@ export function PostCard({
             </svg>
           </button>
         </Tooltip>
+      )}
+
+      {/* La recompensa por publicar (2026-10-09), solo en lo propio y
+          mientras no se haya ganado. Sin contar cuántos faltan: likesCount
+          incluye el me gusta del propio autor, que no cuenta, y un número
+          que miente es peor que ninguno. */}
+      {isOwnPost && profile && profile.bonusTracks === 0 && (
+        <p className="-mb-1 rounded-lg bg-neon-cyan/5 px-3 py-2 text-[11px] text-neon-cyan/80">
+          Cuando esta canción junte 3 me gusta de otras personas, ganás una quinta pista en la app.
+        </p>
       )}
 
       {/* Interacción */}

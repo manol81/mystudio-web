@@ -51,7 +51,7 @@ export default function AdminPostsPage() {
 
     (async () => {
       try {
-        const page = await fetchCommunityPostsPage(null, PAGE_SIZE);
+        const page = await fetchCommunityPostsPage(null, PAGE_SIZE, "created");
         if (cancelled) return;
         setPosts(page.posts);
         setCursor(page.cursor);
@@ -72,7 +72,7 @@ export default function AdminPostsPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const page = await fetchCommunityPostsPage(cursor, PAGE_SIZE);
+      const page = await fetchCommunityPostsPage(cursor, PAGE_SIZE, "created");
       setPosts((prev) => [...prev, ...page.posts]);
       setCursor(page.cursor);
       setHasMore(page.hasMore);

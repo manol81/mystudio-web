@@ -157,15 +157,25 @@ export async function fetchCommunityPostsPage(
   // todas, y de a 8 eso son muchos clics. El feed sigue con su valor
   // de siempre.
   pageSize: number = PAGE_SIZE,
+  // El feed ordena por ACTIVIDAD (2026-10-09): `activityAt` nace igual a
+  // la fecha de publicación y la Cloud Function onPostLiked lo mueve
+  // cuando llega un me gusta de otra persona (como mucho cada 6 horas),
+  // así una canción que gusta vuelve a aparecer arriba. El panel de
+  // moderación sigue por fecha de publicación: ahí se busca, no se mira.
+  // ⚠️ Firestore deja AFUERA de un orderBy a los documentos sin ese
+  // campo: las publicaciones anteriores se completaron con
+  // functions/scripts/backfill-activity-at.mjs.
+  order: "activity" | "created" = "activity",
 ): Promise<CommunityPostsPage> {
+  const field = order === "activity" ? "activityAt" : "createdAt";
   const q = cursor
     ? query(
         collection(db, COLLECTION_NAME),
-        orderBy("createdAt", "desc"),
+        orderBy(field, "desc"),
         startAfter(cursor),
         limit(pageSize),
       )
-    : query(collection(db, COLLECTION_NAME), orderBy("createdAt", "desc"), limit(pageSize));
+    : query(collection(db, COLLECTION_NAME), orderBy(field, "desc"), limit(pageSize));
 
   const snapshot = await getDocs(q);
   const posts = snapshot.docs.map(toCommunityPost);
@@ -214,6 +224,8 @@ export async function publishProjectToCommunity(params: {
     wantedRoles: params.wantedRoles,
     likesCount: 0,
     createdAt: serverTimestamp(),
+    // Por lo que ordena el feed; las reglas exigen que sea "ahora".
+    activityAt: serverTimestamp(),
   });
   return docRef.id;
 }

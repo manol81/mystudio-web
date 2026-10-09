@@ -45,6 +45,9 @@ export interface UserProfile {
   /// Hasta cuándo el usuario vio sus notificaciones. Todo lo posterior
   /// cuenta como sin leer (ver NotificationsService.ts).
   notificationsSeenAt: Date | null;
+  /// Pistas extra ganadas por publicar (la escribe la Cloud Function
+  /// onPostLiked; 0 si todavía no).
+  bonusTracks: number;
 }
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
@@ -135,6 +138,7 @@ export function watchUserProfile(
       username: (data.username as string) ?? null,
       notificationsSeenAt:
         seenAt && typeof seenAt.toDate === "function" ? seenAt.toDate() : null,
+      bonusTracks: (data.bonusTracks as number) ?? 0,
     });
   });
 }
