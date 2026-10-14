@@ -29,6 +29,8 @@
 // espíritu que sourceTrimStartFrame/sourceTrimDurationFrames del lado
 // Flutter, en segundos en vez de frames.
 
+import ClipTonePanel, { type ClipToneUpdate } from "@/components/ClipTonePanel";
+import { pitchToApplyFromManifest, soundingKeyOf } from "@/lib/clipTransposition";
 import { applyEnvelopeToChannels, parseManifestEnvelope } from "@/lib/clipGainEnvelope";
 import { clipGainToSlider, formatClipGainDb, sliderToClipGain } from "@/lib/clipGainSlider";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -77,12 +79,7 @@ import {
   secondsPerBeat,
   secondsPerQuarterNote,
 } from "@/lib/barClock";
-import {
-  keyLabel,
-  keysAreCompatible,
-  transposeKey,
-  transposeSemitonesFor,
-} from "@/lib/sampleAffinity";
+import { keyLabel, transposeSemitonesFor } from "@/lib/sampleAffinity";
 import { detectKey } from "@/lib/keyDetect";
 import { computePeaks } from "@/lib/samplePeaks";
 import { detectTempo } from "@/lib/tempoDetect";
@@ -146,8 +143,6 @@ const MIN_SOURCE_DURATION_SECONDS = 0.05;
 const MAX_PIXELS_PER_SECOND = 300;
 const TRIM_HANDLE_WIDTH = 8;
 const FADE_HANDLE_SIZE = 12;
-const MIN_PITCH_SEMITONES = -12;
-const MAX_PITCH_SEMITONES = 12;
 // Radio del "imán" al arrastrar un clip, en PÍXELES de pantalla (no
 // segundos — así el radio se siente igual sin importar el zoom). Más
 // allá de este radio el candidato deja de atraer y el clip sigue al
@@ -333,6 +328,9 @@ interface ImportManifestClip {
   // buildImportedClip), así suena como en el teléfono y al guardar
   // vuelve con la curva ya aplicada adentro del WAV.
   gainEnvelope?: unknown;
+  // Tono en el que SUENA el audio del clip (lo escribe este Arranger
+  // desde el 2026-10-14). La app lo transporta sin usarlo.
+  key?: string;
 }
 
 interface ImportManifestTrack {
@@ -2067,6 +2065,19 @@ export default function ArrangerPage() {
     );
   }
 
+  /** Varios cambios de clips como UNA acción de deshacer (ver ClipTonePanel). */
+  function applyClipUpdates(updates: ClipToneUpdate[], label: string) {
+    const byId = new Map(updates.map((u) => [u.id, u.patch]));
+    setTracks(
+      (prev) =>
+        prev.map((t) => ({
+          ...t,
+          clips: t.clips.map((c) => (byId.has(c.id) ? { ...c, ...byId.get(c.id)! } : c)),
+        })),
+      push(label),
+    );
+  }
+
   /** Los clips seleccionados, con su pista, en el orden del arreglo. */
   function selectedPlacements(): { clip: ArrangerClip; trackIndex: number; startSeconds: number }[] {
     const ids = new Set(selectedClipIds);
@@ -2869,6 +2880,7 @@ export default function ArrangerPage() {
         key: string;
         startSeconds: number;
         pitchShift: number;
+        soundingKey: string;
         clips: { clip: ArrangerClip; rate: number; fades: ResolvedFades }[];
         totalDurationSeconds: number;
       }
@@ -2902,6 +2914,8 @@ export default function ArrangerPage() {
               .join("|"),
             startSeconds,
             pitchShift: parts[0].clip.pitchShift,
+            soundingKey:
+              soundingKeyOf(parts[0].clip.sampleKey, parts[0].clip.pitchShift) ?? parts[0].clip.sampleKey ?? "",
             clips: parts,
             totalDurationSeconds: endSeconds - startSeconds,
           };
@@ -3021,13 +3035,18 @@ export default function ArrangerPage() {
               startBeat: unit.startSeconds,
               durationSamples: rendered.durationSamples,
               sampleRate: rendered.sampleRate,
-              // Paso 3 (pitch-shifting) — el audio EN SÍ ya viaja
-              // pitcheado (el WAV renderizado usa el buffer procesado
-              // por getProcessedBuffer), así que esto es puramente
-              // informativo para una futura lectura (Flutter no lo lee
-              // todavía, mismo criterio que timeSignatureNumerator/
-              // Denominator a nivel de proyecto).
-              pitchShift: unit.pitchShift,
+              // El audio YA viaja transpuesto (el WAV sale del buffer
+              // procesado por getProcessedBuffer), así que el pitch que
+              // queda por aplicar es 0. Hasta el 2026-10-14 se escribía
+              // `unit.pitchShift` "como dato informativo", y al reabrir
+              // el proyecto la importación lo volvía a aplicar: cada
+              // clip transpuesto volvía de la nube transpuesto DOS
+              // veces. Ver pitchToApplyFromManifest.
+              pitchShift: 0,
+              // En qué tono SUENA este audio (ya transpuesto), para que
+              // al reabrir el clip siga diciendo "F maj" y los acordes
+              // del tema se puedan seguir eligiendo.
+              key: unit.soundingKey,
               // Las claves del formatVersion 3 van EXPLÍCITAS y en su
               // valor neutro, y eso no es redundancia: el WAV que se
               // acaba de renderizar ya tiene aplicados el recorte, el
@@ -3289,9 +3308,9 @@ export default function ArrangerPage() {
         // devuelva 1.0 siempre (nunca se time-stretchea), igual
         // criterio que ya existe para los One-Shot.
         originalBpm: 0,
-        // El manifiesto tampoco guarda la tonalidad. Queda vacía y
-        // editable, igual que el BPM de origen.
-        sampleKey: "",
+        // La tonalidad en la que suena, si la escribió este Arranger
+        // (desde el 2026-10-14). Si no, queda vacía y editable.
+        sampleKey: typeof clip.key === "string" ? clip.key : "",
         sampleType: "Imported",
         // REGLA CRÍTICA: `startBeat` es SIEMPRE un offset en
         // SEGUNDOS absolutos (pese al nombre — ver CLAUDE.md), acá
@@ -3320,7 +3339,11 @@ export default function ArrangerPage() {
         gain: clip.volume ?? 1,
         fadeInSeconds: clip.fadeInSeconds ?? 0,
         fadeOutSeconds: clip.fadeOutSeconds ?? 0,
-        pitchShift: clip.pitchShift ?? 0,
+        // ⚠️ Hasta el formatVersion 4 el pitch ya venía HORNEADO en el
+        // WAV (lo escribía este Arranger después de transponer):
+        // aplicarlo de nuevo transponía dos veces. Ver
+        // pitchToApplyFromManifest.
+        pitchShift: pitchToApplyFromManifest(manifest.formatVersion, clip.pitchShift),
         buffer: withBakedEnvelope(clip, buffer),
         peaks: new Float32Array(0),
       };
@@ -4375,54 +4398,16 @@ export default function ArrangerPage() {
                   </div>
                 );
               })()}
-              {(() => {
-                const found = selectedClipId ? findClip(selectedClipId) : null;
-                if (!found) return null;
-                return (
-                  <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
-                    <span className="text-[10px] text-white/40">Pitch</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateClip(found.clip.id, {
-                          pitchShift: Math.max(MIN_PITCH_SEMITONES, found.clip.pitchShift - 1),
-                        })
-                      }
-                      disabled={found.clip.pitchShift <= MIN_PITCH_SEMITONES}
-                      title="Bajar un semitono"
-                      className="flex h-4 w-4 items-center justify-center rounded-full bg-white/10 text-[10px] leading-none text-white/70 hover:bg-white/20 disabled:opacity-30"
-                    >
-                      −
-                    </button>
-                    <input
-                      type="range"
-                      min={MIN_PITCH_SEMITONES}
-                      max={MAX_PITCH_SEMITONES}
-                      step={1}
-                      value={found.clip.pitchShift}
-                      onChange={(e) => updateClip(found.clip.id, { pitchShift: Number(e.target.value) })}
-                      className="h-1 w-20 accent-neon-cyan"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateClip(found.clip.id, {
-                          pitchShift: Math.min(MAX_PITCH_SEMITONES, found.clip.pitchShift + 1),
-                        })
-                      }
-                      disabled={found.clip.pitchShift >= MAX_PITCH_SEMITONES}
-                      title="Subir un semitono"
-                      className="flex h-4 w-4 items-center justify-center rounded-full bg-white/10 text-[10px] leading-none text-white/70 hover:bg-white/20 disabled:opacity-30"
-                    >
-                      +
-                    </button>
-                    <span className="w-10 text-[10px] tabular-nums text-white/40">
-                      {found.clip.pitchShift > 0 ? "+" : ""}
-                      {found.clip.pitchShift} st
-                    </span>
-                  </div>
-                );
-              })()}
+              {/* Tono del clip (o de VARIOS): ver ClipTonePanel. Antes
+                  eran dos controles sueltos —"Pitch" en semitonos y un
+                  "Tono" que cambiaba la tonalidad DECLARADA, no la que
+                  suena— y armar una progresión con un mismo loop pedía
+                  saber que F son +5 semitonos. */}
+              <ClipTonePanel
+                clips={selectedPlacements().map((p) => p.clip)}
+                projectKey={projectKey}
+                onApply={applyClipUpdates}
+              />
               {/* BPM original del clip — solo tiene efecto en clips
                   "Loop" (playbackRateFor devuelve 1.0 para cualquier
                   otro tipo, ver esa función). Es lo que habilita el
@@ -4448,97 +4433,6 @@ export default function ArrangerPage() {
                       }
                       className="w-14 rounded-lg border border-white/15 bg-onyx-black px-2 py-1 text-[10px] text-white outline-none focus:border-neon-cyan"
                     />
-                  </div>
-                );
-              })()}
-              {/* Tonalidad del clip, y si ENTRA o no en la del
-                  proyecto. Es la respuesta a "¿este audio está en el
-                  tono del tema?", que antes no se podía contestar en
-                  ninguna pantalla: el dato del Banco se usaba al soltar
-                  el sample y se descartaba, y un archivo propio no lo
-                  tenía nunca. */}
-              {(() => {
-                const found = selectedClipId ? findClip(selectedClipId) : null;
-                if (!found) return null;
-                const clipKey = found.clip.sampleKey;
-                const shift = found.clip.pitchShift;
-                // ⚠️ Se juzga en qué tono SUENA, no en cuál se grabó.
-                // Un clip del Banco nace transpuesto, así que mirar su
-                // tonalidad original decía "no entra" de algo que
-                // entraba perfecto y ofrecía aplicar una transposición
-                // que YA estaba aplicada. Encontrado probándolo: un
-                // piano en G Minor con +2 st puestos automáticamente
-                // suena en A Minor, y el control insistía con
-                // "Adaptar +2 st".
-                const soundingKey = shift === 0 ? clipKey : (transposeKey(clipKey, shift) ?? clipKey);
-                const fits = keysAreCompatible(projectKey || null, soundingKey || null);
-                // Cuánto FALTA desde donde está ahora, no desde el
-                // original: si no, "Adaptar" volvería a contar desde
-                // cero y desharía lo que ya se aplicó.
-                const missing = transposeSemitonesFor(projectKey || null, soundingKey || null);
-                const canCompare = Boolean(projectKey && clipKey);
-                return (
-                  <div className="flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5">
-                    <span
-                      className="text-[10px] text-white/40"
-                      title="Tonalidad de este clip. Si el proyecto tiene tonalidad elegida, al lado dice si entra o no."
-                    >
-                      Tono
-                    </span>
-                    <select
-                      value={clipKey}
-                      onChange={(e) => updateClip(found.clip.id, { sampleKey: e.target.value })}
-                      className="rounded-lg border border-white/15 bg-onyx-black px-1.5 py-1 text-[10px] text-white outline-none focus:border-neon-cyan"
-                    >
-                      <option value="">—</option>
-                      {SAMPLE_KEYS.filter((k) => k !== "N/A").map((k) => (
-                        <option key={k} value={k}>
-                          {keyLabel(k)}
-                        </option>
-                      ))}
-                    </select>
-                    {/* Con transposición aplicada se muestran las DOS:
-                        de dónde salió y cómo suena. Mostrar solo una de
-                        las dos deja una pregunta sin responder. */}
-                    {clipKey && shift !== 0 && soundingKey && (
-                      <span className="text-[10px] text-white/50">
-                        → {keyLabel(soundingKey)} ({shift > 0 ? "+" : ""}
-                        {shift} st)
-                      </span>
-                    )}
-                    {canCompare &&
-                      (fits ? (
-                        // Verde y sin botón: no hay nada que hacer, y
-                        // ofrecer una acción acá invitaría a "arreglar"
-                        // algo que ya está bien.
-                        <span className="text-[10px] font-semibold text-emerald-400">
-                          entra en {keyLabel(projectKey)}
-                        </span>
-                      ) : (
-                        <>
-                          <span className="text-[10px] font-semibold text-amber-300">
-                            no entra en {keyLabel(projectKey)}
-                          </span>
-                          {missing !== 0 && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateClip(found.clip.id, { pitchShift: shift + missing })
-                              }
-                              title={`Mover ${missing > 0 ? "+" : ""}${missing} semitonos más (quedaría en ${shift + missing} st): es el desplazamiento más chico que lo vuelve compatible`}
-                              className="rounded-full border border-amber-300/40 px-2 py-0.5 text-[10px] text-amber-200 hover:border-amber-300"
-                            >
-                              Adaptar {missing > 0 ? "+" : ""}
-                              {missing} st
-                            </button>
-                          )}
-                        </>
-                      ))}
-                    {!projectKey && (
-                      <span className="text-[10px] text-white/30">
-                        elegí el tono del proyecto arriba para comparar
-                      </span>
-                    )}
                   </div>
                 );
               })()}
@@ -5188,13 +5082,28 @@ export default function ArrangerPage() {
                                 {Math.round(clip.originalBpm)}→{Math.round(projectTempoBpm)}
                               </span>
                             )}
-                            {clip.pitchShift !== 0 && (
+                            {/* En qué tono SUENA, a la vista en cada
+                                clip: en una progresión hecha con un mismo
+                                loop es lo que distingue a un clip del de
+                                al lado. Sin tonalidad conocida, quedan
+                                los semitonos de siempre. */}
+                            {(clip.pitchShift !== 0 || clip.sampleKey) && (
                               <span
-                                title="Pitch-shift aplicado a este clip (semitonos)"
-                                className="pointer-events-none absolute bottom-0.5 left-1 rounded bg-black/60 px-1 text-[8px] tabular-nums text-white/70"
+                                title={
+                                  clip.pitchShift !== 0
+                                    ? `Suena en ${keyLabel(soundingKeyOf(clip.sampleKey, clip.pitchShift)) ?? "?"} (${clip.pitchShift > 0 ? "+" : ""}${clip.pitchShift} semitonos)`
+                                    : "Tono del clip"
+                                }
+                                className={
+                                  clip.pitchShift !== 0
+                                    ? "pointer-events-none absolute bottom-0.5 left-1 rounded bg-neon-cyan/25 px-1 text-[9px] font-semibold tabular-nums text-neon-cyan"
+                                    : "pointer-events-none absolute bottom-0.5 left-1 rounded bg-black/60 px-1 text-[8px] tabular-nums text-white/60"
+                                }
                               >
-                                ♪ {clip.pitchShift > 0 ? "+" : ""}
-                                {clip.pitchShift}
+                                ♪{" "}
+                                {soundingKeyOf(clip.sampleKey, clip.pitchShift)
+                                  ? keyLabel(soundingKeyOf(clip.sampleKey, clip.pitchShift))
+                                  : `${clip.pitchShift > 0 ? "+" : ""}${clip.pitchShift}`}
                               </span>
                             )}
                             {/* Los tiradores de recorte y de fade solo
