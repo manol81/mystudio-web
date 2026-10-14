@@ -87,6 +87,23 @@ describe("writeClipInto aplica la curva sobre el AUDIO de origen", () => {
     expect(out[1800]).toBeCloseTo(1, 6); // segundo 2,8
   });
 
+  it("la capa de nivelación de la app se multiplica con la manual", () => {
+    const rate = 1000;
+    const data = new Float32Array(1000).fill(1);
+    const clip = manifestClipToMixdownClip(
+      {
+        startBeat: 0,
+        sampleRate: rate,
+        gainEnvelope: [[0, -6]],
+        levelEnvelope: [[0, 3]],
+      },
+      fakeBuffer(data, rate),
+    );
+    const out = new Float32Array(1000);
+    writeClipInto(out, clip, rate);
+    expect(out[500]).toBeCloseTo(dbToLinear(-3), 6);
+  });
+
   it("sin curva suena exactamente como antes", () => {
     const rate = 1000;
     const data = new Float32Array(500).fill(0.5);

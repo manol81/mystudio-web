@@ -73,15 +73,18 @@ export function scheduleClip(
   // La curva va en un nodo APARTE: sus rampas y las de los fades se
   // multiplican, igual que en el motor (volumen × curva × fade). En un
   // solo AudioParam se pisarían unas a otras.
-  if (clip.envelope) {
-    const envGain = ctx.createGain();
-    const sourceFrom = windowStart + intoClip;
-    scheduleEnvelope(envGain.gain, clip.envelope, sourceFrom, when, windowStart + windowDuration);
-    source.connect(envGain);
-    envGain.connect(clipGain);
-  } else {
-    source.connect(clipGain);
+  // Una GainNode por curva (la manual y la de nivelación de la app),
+  // encadenadas: se multiplican igual que en el motor.
+  let tail: AudioNode = source;
+  const sourceFrom = windowStart + intoClip;
+  for (const env of [clip.envelope, clip.levelEnvelope]) {
+    if (!env) continue;
+    const node = ctx.createGain();
+    scheduleEnvelope(node.gain, env, sourceFrom, when, windowStart + windowDuration);
+    tail.connect(node);
+    tail = node;
   }
+  tail.connect(clipGain);
 
   // offset y duration acotados a la ventana: sin `duration`, un clip
   // recortado seguiría sonando hasta el final del archivo.

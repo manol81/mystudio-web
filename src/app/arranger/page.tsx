@@ -330,6 +330,9 @@ interface ImportManifestClip {
   // buildImportedClip), así suena como en el teléfono y al guardar
   // vuelve con la curva ya aplicada adentro del WAV.
   gainEnvelope?: unknown;
+  // Capa de nivelación de la app (2026-10-14): se hornea igual que la
+  // curva manual.
+  levelEnvelope?: unknown;
   // Tono en el que SUENA el audio del clip (lo escribe este Arranger
   // desde el 2026-10-14). La app lo transporta sin usarlo.
   key?: string;
@@ -3362,7 +3365,8 @@ export default function ArrangerPage() {
     /// clip del mismo archivo, con otra curva). Sin curva, el mismo.
     function withBakedEnvelope(clip: ImportManifestClip, buffer: AudioBuffer): AudioBuffer {
       const env = parseManifestEnvelope(clip.gainEnvelope, clip.sampleRate);
-      if (!env) return buffer;
+      const level = parseManifestEnvelope(clip.levelEnvelope, clip.sampleRate);
+      if (!env && !level) return buffer;
       const copy = new AudioBuffer({
         length: buffer.length,
         numberOfChannels: buffer.numberOfChannels,
@@ -3377,6 +3381,7 @@ export default function ArrangerPage() {
       // está a SU tasa (la del contexto), y el índice / su tasa da el
       // mismo segundo.
       applyEnvelopeToChannels(channels, buffer.sampleRate, env);
+      applyEnvelopeToChannels(channels, buffer.sampleRate, level);
       channels.forEach((data, ch) => copy.copyToChannel(data, ch));
       return copy;
     }

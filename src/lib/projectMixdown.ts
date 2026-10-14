@@ -58,6 +58,9 @@ export interface MixdownClip {
   /// Curva de volumen del clip (formatVersion 4), en segundos del
   /// ARCHIVO — ver clipGainEnvelope.ts. Ausente = 0 dB en todo el clip.
   envelope?: ClipEnvelope;
+  /// Capa de NIVELACIÓN de la app (2026-10-14), aparte de la manual: se
+  /// multiplica con [envelope]. Ver clip_leveler.dart.
+  levelEnvelope?: ClipEnvelope;
 }
 
 /// Lo que un clip del `manifest.json` puede traer. Las claves del
@@ -76,6 +79,8 @@ export interface ManifestClipFields {
   fadeOutSeconds?: number;
   /// formatVersion 4: `[[frame, db], ...]` contra el archivo de origen.
   gainEnvelope?: unknown;
+  /// La capa de nivelación de la app, mismo formato.
+  levelEnvelope?: unknown;
 }
 
 /// Traduce un clip del manifiesto a un [MixdownClip]. Vive acá, y no
@@ -106,6 +111,7 @@ export function manifestClipToMixdownClip(
     fadeInSeconds: clip.fadeInSeconds,
     fadeOutSeconds: clip.fadeOutSeconds,
     envelope: parseManifestEnvelope(clip.gainEnvelope, rate),
+    levelEnvelope: parseManifestEnvelope(clip.levelEnvelope, rate),
   };
 }
 
@@ -169,10 +175,13 @@ export function writeClipInto(
   // está en el segundo (sourceStart + i) / sampleRate de origen.
   const envelopeAt = envelopeCursor(clip.envelope);
   const hasEnvelope = clip.envelope !== undefined;
+  const levelAt = envelopeCursor(clip.levelEnvelope);
+  const hasLevel = clip.levelEnvelope !== undefined;
 
   for (let i = 0; i < count; i++) {
     let g = gain;
     if (hasEnvelope) g *= envelopeAt((sourceStart + i) / sampleRate);
+    if (hasLevel) g *= levelAt((sourceStart + i) / sampleRate);
     if (fadeInFrames > 0 && i < fadeInFrames) g *= i / fadeInFrames;
     const framesFromEnd = windowFrames - i;
     if (fadeOutFrames > 0 && framesFromEnd < fadeOutFrames) {
