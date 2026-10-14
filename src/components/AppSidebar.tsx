@@ -30,7 +30,9 @@ import {
   X,
   LogOut,
 } from "lucide-react";
+import { ChevronsLeft } from "lucide-react";
 import { auth } from "@/lib/firebase";
+import { SideTab, useCollapsedPanel } from "@/components/SideTab";
 import { useAuth } from "@/context/AuthContext";
 import { useAdminCheck } from "@/lib/useAdminCheck";
 import { ProfileModal } from "@/components/ProfileModal";
@@ -283,13 +285,31 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
 export function AppSidebar() {
   const pathname = usePathname();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  // Plegable en escritorio (2026-10-14): plegado queda una pestaña
+  // angosta que lo trae de vuelta. Se recuerda por navegador.
+  const [collapsed, setCollapsed] = useCollapsedPanel("mystudio_sidebar_collapsed");
 
   return (
     <>
-      {/* Desktop — columna fija, siempre visible. */}
-      <aside className="hidden w-64 shrink-0 border-r border-white/10 bg-graphite lg:block">
-        <SidebarContent pathname={pathname} />
-      </aside>
+      {/* Desktop — columna fija, o la pestaña si está plegada. */}
+      {collapsed ? (
+        <div className="hidden lg:flex">
+          <SideTab icon={Menu} label="Menú" onOpen={() => setCollapsed(false)} />
+        </div>
+      ) : (
+        <aside className="relative hidden w-64 shrink-0 border-r border-white/10 bg-graphite lg:block">
+          <button
+            type="button"
+            onClick={() => setCollapsed(true)}
+            title="Ocultar el menú"
+            aria-label="Ocultar el menú"
+            className="absolute right-2 top-5 z-10 flex h-8 w-8 items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-white"
+          >
+            <ChevronsLeft size={18} />
+          </button>
+          <SidebarContent pathname={pathname} />
+        </aside>
+      )}
 
       {/* Mobile — botón de hamburguesa flotante + drawer superpuesto. */}
       <button

@@ -29,6 +29,8 @@
 // espíritu que sourceTrimStartFrame/sourceTrimDurationFrames del lado
 // Flutter, en segundos en vez de frames.
 
+import { ChevronsLeft, Library } from "lucide-react";
+import { SideTab, useCollapsedPanel } from "@/components/SideTab";
 import ClipTonePanel, { type ClipToneUpdate } from "@/components/ClipTonePanel";
 import { pitchToApplyFromManifest, soundingKeyOf } from "@/lib/clipTransposition";
 import { applyEnvelopeToChannels, parseManifestEnvelope } from "@/lib/clipGainEnvelope";
@@ -699,6 +701,7 @@ export default function ArrangerPage() {
   // ¿Hay cambios que todavía no están en la nube? Decide el cartelito
   // de la barra y el aviso antes de cerrar la pestaña.
   const [isDirty, setIsDirty] = useState(false);
+  const [bankCollapsed, setBankCollapsed] = useCollapsedPanel("mystudio_bank_collapsed");
   /// La nube tiene una versión más nueva que la que está abierta y acá
   /// hay cambios sin guardar: se pregunta qué hacer (ver el ?open=).
   const [newerCloudVersion, setNewerCloudVersion] = useState<
@@ -4720,7 +4723,22 @@ export default function ArrangerPage() {
 
       {/* ─── Cuerpo: sidebar + timeline ─── */}
       <div className="flex flex-1 overflow-hidden">
-        <div className="w-72 shrink-0 border-r border-white/10 bg-graphite p-4">
+        {/* Banco de Sonidos plegable (2026-10-14): plegado queda una
+            pestaña angosta a la izquierda y la línea de tiempo gana el
+            ancho. */}
+        {bankCollapsed ? (
+          <SideTab icon={Library} label="Banco de sonidos" onOpen={() => setBankCollapsed(false)} />
+        ) : (
+        <div className="relative w-72 shrink-0 border-r border-white/10 bg-graphite p-4">
+          <button
+            type="button"
+            onClick={() => setBankCollapsed(true)}
+            title="Ocultar el Banco de Sonidos"
+            aria-label="Ocultar el Banco de Sonidos"
+            className="absolute right-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-white"
+          >
+            <ChevronsLeft size={16} />
+          </button>
           <SampleBrowserPanel
             onAddSample={handleQuickAddSample}
             projectTempoBpm={projectTempoBpm}
@@ -4731,6 +4749,7 @@ export default function ArrangerPage() {
             getSyncContextTime={syncContextTime}
           />
         </div>
+        )}
 
         <div className="flex flex-1 flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
@@ -4763,8 +4782,9 @@ export default function ArrangerPage() {
               </div>
             ) : (
               <div style={{ width: HEADER_WIDTH + totalWidth }}>
-                {/* Regla de tiempo */}
-                <div className="flex" style={{ height: RULER_HEIGHT }}>
+                {/* Regla de tiempo — FIJA arriba (2026-10-14): con muchas
+                    pistas, scrollear hacia abajo no la saca de la vista. */}
+                <div className="sticky top-0 z-30 flex bg-onyx-black" style={{ height: RULER_HEIGHT }}>
                   <div
                     className="sticky left-0 z-20 shrink-0 border-b border-white/10 bg-onyx-black"
                     style={{ width: HEADER_WIDTH }}

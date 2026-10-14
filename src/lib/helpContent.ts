@@ -57,7 +57,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     title: "Editar y practicar",
     where: "App",
     items: [
-      "Tocá un clip para seleccionarlo: **Cortar**, **Copiar**, **Pegar**, borrar, y moverlo con el **Imán** (se ajusta al tiempo) o libre.",
+      "**Mantené apretado** un clip para seleccionarlo (y sin soltar, arrastralo para moverlo): **Cortar**, **Copiar**, **Pegar**, borrar, y moverlo con el **Imán** (se ajusta al tiempo) o libre. Un toque solo no agarra nada, así podés scrollear tranquilo.",
       "**Marcadores**: nombrá las partes del tema (Intro, Estribillo…) en la línea de tiempo.",
       "**Loop**: repite el clip seleccionado, el tramo entre marcadores o todo el proyecto. Mantené apretado para elegir el rango a mano. Ideal para ensayar una parte hasta que salga.",
       "**Deshacer** está arriba, por si algo salió mal.",
