@@ -699,6 +699,11 @@ export default function ArrangerPage() {
   // ¿Hay cambios que todavía no están en la nube? Decide el cartelito
   // de la barra y el aviso antes de cerrar la pestaña.
   const [isDirty, setIsDirty] = useState(false);
+  /// La nube tiene una versión más nueva que la que está abierta y acá
+  /// hay cambios sin guardar: se pregunta qué hacer (ver el ?open=).
+  const [newerCloudVersion, setNewerCloudVersion] = useState<
+    { openId: string; remoteVersion: number } | null
+  >(null);
 
   // Un borrador de una sesión ANTERIOR (recargaste o cerraste el
   // navegador). No se aplica solo: restaurar puede tardar (hay que
@@ -3559,6 +3564,47 @@ export default function ArrangerPage() {
     }
   }
 
+  /// Baja de la nube el proyecto [openId] y lo abre (reemplaza el
+  /// arreglo actual). Lo usan el ?open= de Mis Proyectos y el aviso de
+  /// "hay una versión más nueva en la nube".
+  async function downloadAndOpen(openId: string) {
+    if (!user) return;
+    setImportError(null);
+    setImportNotice(null);
+    setIsImporting(true);
+    setImportProgress(0);
+    setImportStage("Descargando proyecto...");
+    try {
+      const snap = await getDoc(doc(db, "users", user.uid, "projects", openId));
+      if (!snap.exists()) throw new Error("No se encontró el proyecto.");
+      const storagePath = snap.data().storagePath as string | undefined;
+      const openedVersion = (snap.data().cloudVersion as number | undefined) ?? null;
+      const openedKey = (snap.data().projectKey as string | undefined) ?? "";
+      if (!storagePath) throw new Error("El proyecto no tiene un archivo asociado.");
+      const downloadUrl = await getDownloadURL(ref(storage, storagePath));
+      const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`);
+      if (!response.ok) throw new Error(`No se pudo descargar el archivo (HTTP ${response.status}).`);
+      const bytes = await readResponseWithProgress(response, (f) => setImportProgress(f * 0.3));
+      await importProjectFromZipBytes(bytes);
+      // A partir de acá, guardar ACTUALIZA este proyecto en vez de
+      // crear uno nuevo al lado, y sabemos de qué versión partimos.
+      setCloudProjectId(openId);
+      setCloudBaseVersion(openedVersion);
+      pendingOpenedSnapshotRef.current = true;
+      // SILENT: la tonalidad venía guardada en el documento, no la
+      // acaba de elegir nadie. Con un commit normal, abrir un
+      // proyecto dejaba un "Deshacer: Cambiar la tonalidad" que no
+      // correspondía a ninguna acción del usuario — y deshacerlo
+      // borraba la tonalidad del proyecto que se acababa de abrir.
+      setProjectKey(openedKey, SILENT);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsImporting(false);
+      setImportStage(null);
+    }
+  }
+
   // Efecto único de montaje: dos orígenes posibles, SIEMPRE en este
   // orden (uno solo de los dos primeros pasos corre, según cómo se
   // llegó, pero el Paso 2 corre SIEMPRE después de que el Paso 1
@@ -3587,41 +3633,31 @@ export default function ArrangerPage() {
       // encolados desde /samples siguen teniendo que entrar (y
       // takeQueuedSamplesForArranger vacía la cola, así que si no se
       // llama quedan colgados hasta la próxima visita).
-      const alreadyOpen = !!openId && liveDraftRef.current?.cloudProjectId === openId;
+      const live = liveDraftRef.current;
+      const alreadyOpen = !!openId && live?.cloudProjectId === openId;
       if (openId && !alreadyOpen) {
-        setImportError(null);
-        setImportNotice(null);
-        setIsImporting(true);
-        setImportProgress(0);
-        setImportStage("Descargando proyecto...");
+        await downloadAndOpen(openId);
+      } else if (openId && live) {
+        // ⚠️ "Ya abierto" no quiere decir "al día" (reportado el
+        // 2026-10-14: un efecto agregado en la APP no aparecía en la
+        // web aunque se había sincronizado). La instantánea viva es del
+        // momento en que se abrió; si después la app subió una versión
+        // nueva, mostrarla tapaba lo de la nube sin ningún aviso.
         try {
           const snap = await getDoc(doc(db, "users", user.uid, "projects", openId));
-          if (!snap.exists()) throw new Error("No se encontró el proyecto.");
-          const storagePath = snap.data().storagePath as string | undefined;
-          const openedVersion = (snap.data().cloudVersion as number | undefined) ?? null;
-          const openedKey = (snap.data().projectKey as string | undefined) ?? "";
-          if (!storagePath) throw new Error("El proyecto no tiene un archivo asociado.");
-          const downloadUrl = await getDownloadURL(ref(storage, storagePath));
-          const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`);
-          if (!response.ok) throw new Error(`No se pudo descargar el archivo (HTTP ${response.status}).`);
-          const bytes = await readResponseWithProgress(response, (f) => setImportProgress(f * 0.3));
-          await importProjectFromZipBytes(bytes);
-          // A partir de acá, guardar ACTUALIZA este proyecto en vez de
-          // crear uno nuevo al lado, y sabemos de qué versión partimos.
-          setCloudProjectId(openId);
-          setCloudBaseVersion(openedVersion);
-          pendingOpenedSnapshotRef.current = true;
-          // SILENT: la tonalidad venía guardada en el documento, no la
-          // acaba de elegir nadie. Con un commit normal, abrir un
-          // proyecto dejaba un "Deshacer: Cambiar la tonalidad" que no
-          // correspondía a ninguna acción del usuario — y deshacerlo
-          // borraba la tonalidad del proyecto que se acababa de abrir.
-          setProjectKey(openedKey, SILENT);
-        } catch (err) {
-          setImportError(err instanceof Error ? err.message : String(err));
-        } finally {
-          setIsImporting(false);
-          setImportStage(null);
+          const remoteVersion = (snap.data()?.cloudVersion as number | undefined) ?? 0;
+          const base = live.cloudBaseVersion;
+          if (snap.exists() && (base === null || remoteVersion > base)) {
+            if (live.isDirty) {
+              // Hay trabajo de los dos lados: decide la persona.
+              setNewerCloudVersion({ openId, remoteVersion });
+            } else {
+              // Acá no se cambió nada: lo correcto es lo de la nube.
+              await downloadAndOpen(openId);
+            }
+          }
+        } catch {
+          // Sin conexión: se queda con lo que ya tenía.
         }
       }
 
@@ -4488,13 +4524,23 @@ export default function ArrangerPage() {
             // sin ninguna forma de guardar al caso más común de todos:
             // proyecto nuevo, unas pistas armadas, todavía sin clips.
             // Alcanza con que haya una pista.
-            disabled={isExporting || pendingDrops.length > 0 || tracks.length === 0}
+            // Con el proyecto ya en la nube y nada cambiado, no hay nada
+            // que guardar: el botón lo dice y se apaga (reportado el
+            // 2026-10-14: "nunca se deshabilita, aunque guarde").
+            disabled={
+              isExporting ||
+              pendingDrops.length > 0 ||
+              tracks.length === 0 ||
+              (cloudProjectId !== null && !isDirty)
+            }
             className="rounded-full border border-neon-cyan/40 bg-onyx-black px-5 py-2 font-display text-xs font-semibold text-neon-cyan transition-all duration-300 hover:border-neon-cyan hover:shadow-[0_0_18px_rgba(102,252,241,0.4)] disabled:opacity-40"
           >
             {isExporting
               ? `Exportando... ${Math.round(exportProgress * 100)}%`
               : cloudProjectId
-                ? "Guardar cambios"
+                ? isDirty
+                  ? "Guardar cambios"
+                  : "Guardado en la nube ✓"
                 : "Exportar y Sincronizar"}
           </button>
           {/* Estado del borrador. "Guardado" acá significa EN LA NUBE:
@@ -4540,6 +4586,35 @@ export default function ArrangerPage() {
         <p className="bg-red-900/30 px-4 py-1.5 text-xs text-red-300">
           No se pudo abrir el proyecto: {importError}
         </p>
+      )}
+      {/* La nube avanzó (la app subió algo) y acá hay cambios sin
+          guardar: los dos son trabajo real, así que decide la persona. */}
+      {newerCloudVersion && (
+        <div className="flex flex-wrap items-center gap-2 bg-amber-900/30 px-4 py-2 text-xs text-amber-100">
+          <span className="flex-1">
+            Hay una versión más nueva de este proyecto en la nube (guardada desde la app u otro
+            dispositivo), y acá tenés cambios sin guardar.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const { openId } = newerCloudVersion;
+              setNewerCloudVersion(null);
+              void downloadAndOpen(openId);
+            }}
+            className="rounded-full border border-amber-300/60 px-3 py-1 font-semibold text-amber-100 hover:border-amber-200"
+          >
+            Abrir la de la nube
+          </button>
+          <button
+            type="button"
+            onClick={() => setNewerCloudVersion(null)}
+            title="Al guardar te va a avisar que la nube cambió, antes de pisarla"
+            className="rounded-full border border-white/20 px-3 py-1 text-white/70 hover:border-white/50"
+          >
+            Seguir con lo mío
+          </button>
+        </div>
       )}
       {importNotice && (
         <p className="flex items-start gap-2 bg-amber-900/25 px-4 py-1.5 text-xs leading-relaxed text-amber-100">
