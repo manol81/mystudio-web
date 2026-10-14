@@ -47,6 +47,7 @@
 // Web Audio no tiene pause/resume nativo, así que "resumir" es crear
 // nodos nuevos arrancando en el offset correcto de cada clip.
 
+import { scheduleClip } from "@/lib/clipPlayback";
 import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
@@ -784,56 +785,10 @@ export function ProjectViewer({
       merger.connect(ctx.destination);
 
       for (const clip of track.clips) {
-        // Cuánto de este clip SUENA: su ventana recortada, no el
-        // archivo entero (formatVersion 3 del .mystudio).
-        const windowStart = Math.max(0, clip.sourceOffsetSeconds ?? 0);
-        const windowDuration = clipDurationSeconds(clip);
-        const clipEnd = clip.startSeconds + windowDuration;
-        if (clipEnd <= clamped) continue; // ya terminó antes del punto de reanudación
-
-        // Cuánto de la ventana ya pasó al reanudar desde `clamped`.
-        const intoClip = Math.max(0, clamped - clip.startSeconds);
-        const when = startContextTime + Math.max(0, clip.startSeconds - clamped);
-
-        const source = ctx.createBufferSource();
-        source.buffer = clip.buffer;
-
-        // Volumen y fades del CLIP, en su propio nodo: son distintos
-        // del volumen de la pista (que vive en gainL/gainR y el oyente
-        // puede mover con mute/solo sin rehacer nada).
-        const clipGain = ctx.createGain();
-        const gain = clip.gain ?? 1;
-        const fadeIn = Math.max(0, clip.fadeInSeconds ?? 0);
-        const fadeOut = Math.max(0, clip.fadeOutSeconds ?? 0);
-        // ⚠️ Rampas LINEALES, como renderBlock del motor nativo y como
-        // writeClipInto — no exponenciales, que además no pueden partir
-        // de 0 en Web Audio.
-        clipGain.gain.setValueAtTime(gain, when);
-        if (fadeIn > intoClip) {
-          // Entrando a mitad del fade-in: se arranca en el valor que la
-          // rampa ya tenía, no de cero.
-          clipGain.gain.setValueAtTime(gain * (intoClip / fadeIn), when);
-          clipGain.gain.linearRampToValueAtTime(gain, when + (fadeIn - intoClip));
-        } else if (fadeIn > 0) {
-          clipGain.gain.setValueAtTime(gain, when);
-        }
-        if (fadeOut > 0) {
-          const fadeOutStart = clip.startSeconds + windowDuration - fadeOut;
-          const at = startContextTime + Math.max(0, fadeOutStart - clamped);
-          clipGain.gain.setValueAtTime(
-            gain * Math.min(1, Math.max(0, (clipEnd - Math.max(clamped, fadeOutStart)) / fadeOut)),
-            at,
-          );
-          clipGain.gain.linearRampToValueAtTime(0, startContextTime + (clipEnd - clamped));
-        }
-        clipGain.connect(gainL);
-        clipGain.connect(gainR);
-        source.connect(clipGain);
-
-        // offset y duration acotados a la ventana: sin `duration`, un
-        // clip recortado seguiría sonando hasta el final del archivo.
-        source.start(when, windowStart + intoClip, windowDuration - intoClip);
-        sources.push(source);
+        // Recorte, volumen, fades y curva del clip: ver clipPlayback.ts,
+        // la MISMA función que usa el MP3 del feed.
+        const source = scheduleClip(ctx, clip, [gainL, gainR], startContextTime, clamped);
+        if (source) sources.push(source);
       }
     }
 

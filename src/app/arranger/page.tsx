@@ -29,6 +29,8 @@
 // espíritu que sourceTrimStartFrame/sourceTrimDurationFrames del lado
 // Flutter, en segundos en vez de frames.
 
+import { applyEnvelopeToChannels, parseManifestEnvelope } from "@/lib/clipGainEnvelope";
+import { clipGainToSlider, formatClipGainDb, sliderToClipGain } from "@/lib/clipGainSlider";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
@@ -144,8 +146,6 @@ const MIN_SOURCE_DURATION_SECONDS = 0.05;
 const MAX_PIXELS_PER_SECOND = 300;
 const TRIM_HANDLE_WIDTH = 8;
 const FADE_HANDLE_SIZE = 12;
-const MIN_CLIP_GAIN = 0;
-const MAX_CLIP_GAIN = 1.5;
 const MIN_PITCH_SEMITONES = -12;
 const MAX_PITCH_SEMITONES = 12;
 // Radio del "imán" al arrastrar un clip, en PÍXELES de pantalla (no
@@ -327,6 +327,12 @@ interface ImportManifestClip {
   volume?: number;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;
+  // formatVersion 4 (app, 2026-10-14): la curva de volumen del clip,
+  // `[[frame, db], ...]` contra el archivo de origen. El Arranger no
+  // edita curvas: la HORNEA en el audio al importar (ver
+  // buildImportedClip), así suena como en el teléfono y al guardar
+  // vuelve con la curva ya aplicada adentro del WAV.
+  gainEnvelope?: unknown;
 }
 
 interface ImportManifestTrack {
@@ -3315,9 +3321,33 @@ export default function ArrangerPage() {
         fadeInSeconds: clip.fadeInSeconds ?? 0,
         fadeOutSeconds: clip.fadeOutSeconds ?? 0,
         pitchShift: clip.pitchShift ?? 0,
-        buffer,
+        buffer: withBakedEnvelope(clip, buffer),
         peaks: new Float32Array(0),
       };
+    }
+
+    /// Si el clip trae curva de volumen, devuelve una COPIA del audio con
+    /// la curva aplicada (el buffer decodificado puede compartirlo otro
+    /// clip del mismo archivo, con otra curva). Sin curva, el mismo.
+    function withBakedEnvelope(clip: ImportManifestClip, buffer: AudioBuffer): AudioBuffer {
+      const env = parseManifestEnvelope(clip.gainEnvelope, clip.sampleRate);
+      if (!env) return buffer;
+      const copy = new AudioBuffer({
+        length: buffer.length,
+        numberOfChannels: buffer.numberOfChannels,
+        sampleRate: buffer.sampleRate,
+      });
+      const channels: Float32Array<ArrayBuffer>[] = [];
+      for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+        const data = new Float32Array(buffer.getChannelData(ch));
+        channels.push(data);
+      }
+      // Los segundos de la curva son del archivo de origen; el buffer
+      // está a SU tasa (la del contexto), y el índice / su tasa da el
+      // mismo segundo.
+      applyEnvelopeToChannels(channels, buffer.sampleRate, env);
+      channels.forEach((data, ch) => copy.copyToChannel(data, ch));
+      return copy;
     }
 
     stopAllSources();
@@ -4330,15 +4360,17 @@ export default function ArrangerPage() {
                     <span className="text-[10px] text-white/40">Vol. clip</span>
                     <input
                       type="range"
-                      min={MIN_CLIP_GAIN}
-                      max={MAX_CLIP_GAIN}
-                      step={0.01}
-                      value={found.clip.gain}
-                      onChange={(e) => updateClip(found.clip.id, { gain: Number(e.target.value) })}
+                      min={0}
+                      max={1}
+                      step={0.001}
+                      value={clipGainToSlider(found.clip.gain)}
+                      onChange={(e) =>
+                        updateClip(found.clip.id, { gain: sliderToClipGain(Number(e.target.value)) })
+                      }
                       className="h-1 w-16 accent-neon-cyan"
                     />
-                    <span className="w-8 text-[10px] tabular-nums text-white/40">
-                      {Math.round(found.clip.gain * 100)}%
+                    <span className="w-14 text-[10px] tabular-nums text-white/40">
+                      {formatClipGainDb(found.clip.gain)}
                     </span>
                   </div>
                 );

@@ -18,6 +18,7 @@
 // clips, igual que en el motor). Procesar clip por clip los
 // reiniciaría en cada uno y sonaría distinto.
 
+import { envelopeCursor, parseManifestEnvelope, type ClipEnvelope } from "@/lib/clipGainEnvelope";
 import { resampleLinear } from "@/lib/resample";
 import {
   applyTrackFxInPlace,
@@ -54,6 +55,9 @@ export interface MixdownClip {
   gain?: number;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;
+  /// Curva de volumen del clip (formatVersion 4), en segundos del
+  /// ARCHIVO — ver clipGainEnvelope.ts. Ausente = 0 dB en todo el clip.
+  envelope?: ClipEnvelope;
 }
 
 /// Lo que un clip del `manifest.json` puede traer. Las claves del
@@ -70,6 +74,8 @@ export interface ManifestClipFields {
   volume?: number;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;
+  /// formatVersion 4: `[[frame, db], ...]` contra el archivo de origen.
+  gainEnvelope?: unknown;
 }
 
 /// Traduce un clip del manifiesto a un [MixdownClip]. Vive acá, y no
@@ -99,6 +105,7 @@ export function manifestClipToMixdownClip(
     gain: typeof clip.volume === "number" ? clip.volume : undefined,
     fadeInSeconds: clip.fadeInSeconds,
     fadeOutSeconds: clip.fadeOutSeconds,
+    envelope: parseManifestEnvelope(clip.gainEnvelope, rate),
   };
 }
 
@@ -158,9 +165,14 @@ export function writeClipInto(
   const gain = clip.gain ?? 1;
   const fadeInFrames = Math.round(Math.max(0, clip.fadeInSeconds ?? 0) * sampleRate);
   const fadeOutFrames = Math.round(Math.max(0, clip.fadeOutSeconds ?? 0) * sampleRate);
+  // La curva va en segundos del ARCHIVO: la muestra `sourceStart + i`
+  // está en el segundo (sourceStart + i) / sampleRate de origen.
+  const envelopeAt = envelopeCursor(clip.envelope);
+  const hasEnvelope = clip.envelope !== undefined;
 
   for (let i = 0; i < count; i++) {
     let g = gain;
+    if (hasEnvelope) g *= envelopeAt((sourceStart + i) / sampleRate);
     if (fadeInFrames > 0 && i < fadeInFrames) g *= i / fadeInFrames;
     const framesFromEnd = windowFrames - i;
     if (fadeOutFrames > 0 && framesFromEnd < fadeOutFrames) {

@@ -21,6 +21,7 @@
 // a un servidor propio para codificarlo, que es exactamente lo que
 // este proyecto evita a propósito (ver CLAUDE.md, "100% local").
 
+import { scheduleClip } from "@/lib/clipPlayback";
 import JSZip from "jszip";
 import { Mp3Encoder } from "@breezystack/lamejs";
 import {
@@ -200,11 +201,9 @@ async function renderMixdown(
     merger.connect(offlineCtx.destination);
 
     for (const clip of track.clips) {
-      const source = offlineCtx.createBufferSource();
-      source.buffer = clip.buffer;
-      source.connect(gainL);
-      source.connect(gainR);
-      source.start(clip.startSeconds);
+      // Con su recorte, volumen, fades y curva (2026-10-14): antes este
+      // camino tocaba el WAV entero desde el principio.
+      scheduleClip(offlineCtx, clip, [gainL, gainR], 0, 0);
     }
   }
 
