@@ -56,6 +56,7 @@ import { auth, storage } from "@/lib/firebase";
 import { isProjectOwner } from "@/lib/projectOwnership";
 import {
   clipDurationSeconds,
+  assignCrossfades,
   manifestClipToMixdownClip,
   projectHasEffects,
   renderProjectMix,
@@ -417,19 +418,26 @@ export function ProjectViewer({
         // Play funcione — el cálculo de picos (waveform real) queda
         // para la fase 2, en segundo plano.
         const runtimeTracks: RuntimeTrack[] = [];
+        // Varios clips pueden compartir archivo (los lados de un corte, las
+        // partes elegidas de varias tomas): se decodifica una sola vez.
+        const decodedByName = new Map<string, AudioBuffer>();
         for (const track of manifest.tracks) {
           const decodedClips: DecodedClip[] = [];
           for (const clip of track.clips) {
             const audioFile = zip.file(clip.audioFileName);
             if (!audioFile) continue; // clip huérfano, mismo criterio que el export en Flutter
-            const arrayBuffer = await audioFile.async("arraybuffer");
-            const buffer = await ctx.decodeAudioData(arrayBuffer);
+            let buffer = decodedByName.get(clip.audioFileName);
+            if (!buffer) {
+              buffer = await ctx.decodeAudioData(await audioFile.async("arraybuffer"));
+              decodedByName.set(clip.audioFileName, buffer);
+            }
             // El WAV del ZIP es el archivo COMPLETO: el recorte, el
             // volumen y los fades viven en el manifiesto y hay que
             // aplicarlos, o se reproduce audio que la persona había
             // sacado a propósito.
             decodedClips.push({ ...manifestClipToMixdownClip(clip, buffer), peaks: null });
           }
+          assignCrossfades(decodedClips);
           runtimeTracks.push({
             name: track.name,
             volume: track.volume,

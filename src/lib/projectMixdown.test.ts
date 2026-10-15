@@ -10,10 +10,14 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  assignCrossfades,
   contentDurationSeconds,
+  crossfadeGainAt,
   manifestClipToMixdownClip,
+  writeClipInto,
   projectHasEffects,
   renderProjectMix,
+  type MixdownClip,
   type MixdownTrack,
 } from "@/lib/projectMixdown";
 import { DEFAULT_MASTER_FX, NO_TRACK_FX } from "@/lib/trackEffects";
@@ -309,5 +313,51 @@ describe("manifestClipToMixdownClip", () => {
     );
     expect(clip.sourceDurationSeconds).toBeUndefined();
     expect(contentDurationSeconds([track({ clips: [clip] })])).toBeCloseTo(3, 9);
+  });
+});
+
+describe("cruces automáticos entre clips superpuestos", () => {
+  it("el solape con el clip siguiente es el cruce de los dos", () => {
+    const a: MixdownClip = { startSeconds: 0, buffer: fakeBuffer(1, 0.5) };
+    const b: MixdownClip = { startSeconds: 0.98, buffer: fakeBuffer(1, 0.5) };
+    const c: MixdownClip = { startSeconds: 3, buffer: fakeBuffer(1, 0.5) };
+    assignCrossfades([c, b, a]);
+    expect(a.crossfadeOutSeconds).toBeCloseTo(0.02, 9);
+    expect(b.crossfadeInSeconds).toBeCloseTo(0.02, 9);
+    expect(b.crossfadeOutSeconds).toBe(0);
+    expect(c.crossfadeInSeconds).toBe(0);
+  });
+
+  it("un clip metido entero dentro de otro no cruza", () => {
+    const a: MixdownClip = { startSeconds: 0, buffer: fakeBuffer(4, 0.5) };
+    const b: MixdownClip = { startSeconds: 1, buffer: fakeBuffer(1, 0.5) };
+    assignCrossfades([a, b]);
+    expect(a.crossfadeOutSeconds).toBe(0);
+    expect(b.crossfadeInSeconds).toBe(0);
+  });
+
+  it("en la zona del cruce la potencia se mantiene (seno² + coseno² = 1)", () => {
+    const n = 882;
+    for (const k of [0, 100, 441, 881]) {
+      const out = crossfadeGainAt(10000 - n + k, 10000, 0, n);
+      const inn = crossfadeGainAt(k, 5000, n, 0);
+      expect(out * out + inn * inn).toBeCloseTo(1, 9);
+    }
+  });
+
+  it("dos clips iguales cruzados no hacen un pozo ni un pico en la junta", () => {
+    const a: MixdownClip = { startSeconds: 0, buffer: fakeBuffer(1, 0.5) };
+    const b: MixdownClip = { startSeconds: 0.98, buffer: fakeBuffer(1, 0.5) };
+    assignCrossfades([a, b]);
+    const into = new Float32Array(2 * FS);
+    writeClipInto(into, a, FS);
+    writeClipInto(into, b, FS);
+    // Señales iguales y en fase: la suma de amplitudes de un cruce de
+    // potencia constante sube hasta √2 en el medio y vuelve a 1 en los
+    // bordes — nunca baja del nivel de cada clip.
+    const mid = Math.round(0.99 * FS);
+    expect(into[mid] / 0.5).toBeCloseTo(Math.SQRT2, 2);
+    expect(into[Math.round(0.5 * FS)]).toBeCloseTo(0.5, 6);
+    expect(into[Math.round(1.5 * FS)]).toBeCloseTo(0.5, 6);
   });
 });

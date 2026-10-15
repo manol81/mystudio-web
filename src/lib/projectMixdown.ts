@@ -61,6 +61,56 @@ export interface MixdownClip {
   /// Capa de NIVELACIÓN de la app (2026-10-14), aparte de la manual: se
   /// multiplica con [envelope]. Ver clip_leveler.dart.
   levelEnvelope?: ClipEnvelope;
+  /// Cruce con el clip ANTERIOR / SIGUIENTE de la misma pista, en
+  /// segundos (2026-10-15). Lo pone [assignCrossfades], nunca el
+  /// manifiesto: se deduce de cómo se superponen los clips, igual que
+  /// el motor de la app (recomputeCrossfades en native_engine.cpp).
+  crossfadeInSeconds?: number;
+  crossfadeOutSeconds?: number;
+}
+
+/// Cruces automáticos (2026-10-15): la app deja dos clips de una pista
+/// superpuestos un poco (20 ms al soltar uno encima de otro, o entre las
+/// partes elegidas de varias tomas) y en esa zona el que se va baja y el
+/// que entra sube, con curvas de POTENCIA CONSTANTE (seno/coseno: la suma
+/// de los cuadrados da 1, sin el pozo de −3 dB de dos rampas lineales).
+/// La MISMA regla que el motor nativo: se ordena por inicio y solo cuenta
+/// el solape de cada clip con el siguiente cuando el siguiente termina
+/// DESPUÉS (uno metido entero dentro de otro suma sin cruce).
+export function assignCrossfades<T extends MixdownClip>(clips: T[]): T[] {
+  const order = clips
+    .map((c, i) => ({ c, i, start: c.startSeconds, end: c.startSeconds + clipDurationSeconds(c) }))
+    .sort((a, b) => a.start - b.start || a.i - b.i);
+  for (const o of order) {
+    o.c.crossfadeInSeconds = 0;
+    o.c.crossfadeOutSeconds = 0;
+  }
+  for (let k = 0; k + 1 < order.length; k++) {
+    const a = order[k];
+    const b = order[k + 1];
+    if (b.start >= a.end || b.end <= a.end) continue;
+    const overlap = a.end - b.start;
+    a.c.crossfadeOutSeconds = Math.max(a.c.crossfadeOutSeconds ?? 0, overlap);
+    b.c.crossfadeInSeconds = Math.max(b.c.crossfadeInSeconds ?? 0, overlap);
+  }
+  return clips;
+}
+
+/// Ganancia del cruce en [i] frames desde el inicio de la ventana, con
+/// [count] frames en total. Misma cuenta que el motor (muestra centrada).
+export function crossfadeGainAt(
+  i: number,
+  count: number,
+  inFrames: number,
+  outFrames: number,
+): number {
+  let g = 1;
+  if (inFrames > 0 && i < inFrames) g *= Math.sin((Math.PI / 2) * ((i + 0.5) / inFrames));
+  const fromEnd = count - i;
+  if (outFrames > 0 && fromEnd <= outFrames) {
+    g *= Math.cos((Math.PI / 2) * ((outFrames - fromEnd + 0.5) / outFrames));
+  }
+  return g;
 }
 
 /// Lo que un clip del `manifest.json` puede traer. Las claves del
@@ -177,6 +227,8 @@ export function writeClipInto(
   const hasEnvelope = clip.envelope !== undefined;
   const levelAt = envelopeCursor(clip.levelEnvelope);
   const hasLevel = clip.levelEnvelope !== undefined;
+  const xIn = Math.round(Math.max(0, clip.crossfadeInSeconds ?? 0) * sampleRate);
+  const xOut = Math.round(Math.max(0, clip.crossfadeOutSeconds ?? 0) * sampleRate);
 
   for (let i = 0; i < count; i++) {
     let g = gain;
@@ -187,6 +239,7 @@ export function writeClipInto(
     if (fadeOutFrames > 0 && framesFromEnd < fadeOutFrames) {
       g *= framesFromEnd / fadeOutFrames;
     }
+    if (xIn > 0 || xOut > 0) g *= crossfadeGainAt(i, windowFrames, xIn, xOut);
     into[offset + i] += data[sourceStart + i] * g;
   }
 }

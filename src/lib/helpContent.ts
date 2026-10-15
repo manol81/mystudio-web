@@ -39,7 +39,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
       "**Pre-cuenta**: el ícono del cronómetro te da uno o más compases de clic antes de que empiece la toma.",
       "**Usá auriculares con cable.** Con el parlante, lo que ya está grabado se filtra en la toma nueva; el Bluetooth agrega un retraso que no se puede corregir.",
       "**Calibrá una vez por teléfono** (ícono de perillas, arriba → **Medir automáticamente**). La app toca unos clics y mide cuánto tarda el micrófono en escucharlos, para que tus tomas caigan justo en el tiempo. Ahí mismo está **Ganancia del micrófono**, si tus tomas suenan bajas.",
-      "La toma empieza donde está el cursor: podés entrar a mitad de canción, sin volver a grabar todo desde el principio.",
+      "La toma empieza donde está el cursor: podés entrar a mitad de canción, sin volver a grabar todo desde el principio. Si grabás **encima** de algo, lo anterior no se pierde: queda como otra **toma**, y con **Tomas** (en la barra del clip) elegís qué parte de cada una queda.",
     ],
   },
   {

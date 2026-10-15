@@ -26,6 +26,7 @@ import JSZip from "jszip";
 import { Mp3Encoder } from "@breezystack/lamejs";
 import {
   contentDurationSeconds,
+  assignCrossfades,
   manifestClipToMixdownClip,
   projectHasEffects,
   renderProjectMix,
@@ -127,18 +128,25 @@ export async function loadDecodedTracks(
   const manifest: Manifest = JSON.parse(await manifestFile.async("string"));
 
   const tracks: DecodedTrack[] = [];
+  // Una sola decodificación por archivo: varios clips pueden compartirlo.
+  const decodedByName = new Map<string, AudioBuffer>();
   for (const track of manifest.tracks) {
     const clips: MixdownClip[] = [];
     for (const clip of track.clips) {
       const audioFile = zip.file(clip.audioFileName);
       if (!audioFile) continue; // clip huérfano, mismo criterio que ProjectViewer/Flutter
-      const buffer = await ctx.decodeAudioData(await audioFile.async("arraybuffer"));
+      let buffer = decodedByName.get(clip.audioFileName);
+      if (!buffer) {
+        buffer = await ctx.decodeAudioData(await audioFile.async("arraybuffer"));
+        decodedByName.set(clip.audioFileName, buffer);
+      }
       // El WAV del ZIP es el archivo COMPLETO: el recorte, el volumen y
       // los fades viven en el manifiesto y hay que aplicarlos. Sin
       // esto, el preview de la Comunidad y el paquete de pistas salían
       // con audio que la persona había sacado a propósito.
       clips.push(manifestClipToMixdownClip(clip, buffer));
     }
+    assignCrossfades(clips);
     tracks.push({
       name: track.name ?? "",
       volume: track.volume,

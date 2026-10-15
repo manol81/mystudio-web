@@ -84,10 +84,57 @@ export function scheduleClip(
     tail.connect(node);
     tail = node;
   }
+  // Cruces con los clips vecinos (assignCrossfades), en otro nodo más:
+  // curvas de potencia constante como el motor.
+  const xIn = Math.max(0, clip.crossfadeInSeconds ?? 0);
+  const xOut = Math.max(0, clip.crossfadeOutSeconds ?? 0);
+  if (xIn > intoClip || xOut > 0) {
+    const node = ctx.createGain();
+    scheduleCrossfade(node.gain, when, intoClip, windowDuration, xIn, xOut);
+    tail.connect(node);
+    tail = node;
+  }
   tail.connect(clipGain);
 
   // offset y duration acotados a la ventana: sin `duration`, un clip
   // recortado seguiría sonando hasta el final del archivo.
   source.start(when, windowStart + intoClip, windowDuration - intoClip);
   return source;
+}
+
+/// Programa las curvas del cruce en [param]: sube con seno en los
+/// primeros [xIn] segundos de la ventana y baja con coseno en los últimos
+/// [xOut]. [intoClip] es cuánto de la ventana ya pasó al arrancar.
+function scheduleCrossfade(
+  param: AudioParam,
+  when: number,
+  intoClip: number,
+  windowDuration: number,
+  xIn: number,
+  xOut: number,
+): void {
+  const steps = 32;
+  const curve = (from: number, to: number, f: (p: number) => number) => {
+    const out = new Float32Array(steps);
+    for (let k = 0; k < steps; k++) out[k] = f(from + ((to - from) * k) / (steps - 1));
+    return out;
+  };
+  param.setValueAtTime(1, when);
+  if (xIn > intoClip) {
+    const p0 = intoClip / xIn;
+    param.setValueCurveAtTime(
+      curve(p0, 1, (p) => Math.sin((Math.PI / 2) * p)),
+      when,
+      xIn - intoClip,
+    );
+  }
+  if (xOut > 0) {
+    const outStart = Math.max(intoClip, windowDuration - xOut);
+    const p0 = (outStart - (windowDuration - xOut)) / xOut;
+    const at = when + (outStart - intoClip);
+    const dur = windowDuration - outStart;
+    if (dur > 0) {
+      param.setValueCurveAtTime(curve(p0, 1, (p) => Math.cos((Math.PI / 2) * p)), at, dur);
+    }
+  }
 }
