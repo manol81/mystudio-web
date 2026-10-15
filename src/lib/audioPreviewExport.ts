@@ -23,6 +23,7 @@
 
 import { scheduleClip } from "@/lib/clipPlayback";
 import JSZip from "jszip";
+import { describeBrokenCloudProject } from "@/lib/zipDiagnostics";
 import { Mp3Encoder } from "@breezystack/lamejs";
 import {
   contentDurationSeconds,
@@ -121,7 +122,10 @@ export async function loadDecodedTracks(
   if (!response.ok) {
     throw new Error(`No se pudo descargar el proyecto (HTTP ${response.status}).`);
   }
-  const zip = await JSZip.loadAsync(await response.arrayBuffer());
+  const zipBytes = await response.arrayBuffer();
+  const broken = describeBrokenCloudProject(new Uint8Array(zipBytes));
+  if (broken) throw new Error(broken);
+  const zip = await JSZip.loadAsync(zipBytes);
 
   const manifestFile = zip.file("manifest.json");
   if (!manifestFile) throw new Error("El respaldo no tiene manifest.json — archivo inválido.");

@@ -50,6 +50,7 @@
 import { scheduleClip } from "@/lib/clipPlayback";
 import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
+import { describeBrokenCloudProject } from "@/lib/zipDiagnostics";
 import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
 import { ref, getDownloadURL } from "firebase/storage";
 import { auth, storage } from "@/lib/firebase";
@@ -403,6 +404,10 @@ export function ProjectViewer({
           throw new Error(`No se pudo descargar el archivo (HTTP ${response.status}).`);
         }
         const bytes = await response.arrayBuffer();
+        // Un .mystudio que quedó guardado cortado en la nube: decirlo con
+        // palabras, no con el "Corrupted zip" de JSZip.
+        const broken = describeBrokenCloudProject(new Uint8Array(bytes));
+        if (broken) throw new Error(broken);
         const zip = await JSZip.loadAsync(bytes);
 
         const manifestFile = zip.file("manifest.json");

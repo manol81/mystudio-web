@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { describeBrokenArchive, looksLikeZip } from "./zipDiagnostics";
+import {
+  describeBrokenArchive,
+  describeBrokenCloudProject,
+  hasEndOfCentralDirectory,
+  looksLikeZip,
+} from "./zipDiagnostics";
 
 function bytesOf(text: string): Uint8Array {
   const out = new Uint8Array(text.length);
@@ -92,5 +97,33 @@ describe("describeBrokenArchive", () => {
   it("el nombre del archivo aparece solo si se pasó", () => {
     expect(describeBrokenArchive(zipBytes(), "x.mystudio")).toContain("«x.mystudio»");
     expect(describeBrokenArchive(zipBytes())).not.toContain("«");
+  });
+});
+
+describe("proyecto de la nube guardado incompleto", () => {
+  // Un ZIP mínimo de verdad: una entrada local y el índice al final.
+  function zipWithEnd(totalBytes: number): Uint8Array {
+    const b = new Uint8Array(totalBytes);
+    b.set([0x50, 0x4b, 0x03, 0x04], 0);
+    b.set([0x50, 0x4b, 0x05, 0x06], totalBytes - 22);
+    return b;
+  }
+
+  it("un ZIP entero tiene su índice al final y no se queja", () => {
+    const whole = zipWithEnd(200_000);
+    expect(hasEndOfCentralDirectory(whole)).toBe(true);
+    expect(describeBrokenCloudProject(whole, 200_000)).toBeNull();
+  });
+
+  it("cortado (como sweety mar, 8 MiB de 13,7 MB) lo dice y explica cómo arreglarlo", () => {
+    const cut = zipWithEnd(200_000).slice(0, 120_000);
+    expect(hasEndOfCentralDirectory(cut)).toBe(false);
+    const msg = describeBrokenCloudProject(cut, 200_000);
+    expect(msg).toContain("incompleto");
+    expect(msg).toContain("Sincronizar a la nube");
+  });
+
+  it("más corto de lo que dice el documento, aunque parezca entero", () => {
+    expect(describeBrokenCloudProject(zipWithEnd(1000), 5000)).toContain("incompleto");
   });
 });

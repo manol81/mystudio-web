@@ -112,3 +112,42 @@ export function describeBrokenArchive(bytes: Uint8Array, fileName?: string): str
 
   return `El archivo ${name}no es un proyecto .mystudio válido (${size}). Un proyecto se exporta desde la app con «Exportar proyecto» o se baja del Dashboard de la web.`;
 }
+
+/// true si el ZIP termina con su índice (el registro "end of central
+/// directory", PK, en los últimos 64 KB + 22 bytes). Un archivo
+/// cortado conserva el principio intacto y lo pierde: es lo que JSZip
+/// llama "Corrupted zip: can't find end of central directory".
+export function hasEndOfCentralDirectory(bytes: Uint8Array): boolean {
+  const from = Math.max(0, bytes.length - (0xffff + 22));
+  for (let i = bytes.length - 22; i >= from; i--) {
+    if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * El caso de un proyecto de la NUBE que quedó guardado incompleto
+ * (2026-10-15, "sweety mar": 8 MiB de 13,7 MB): la subida desde el
+ * teléfono se cortó y el documento igual quedó anotado. Devuelve un
+ * mensaje que dice qué pasó y cómo se arregla, o `null` si el archivo
+ * está entero. [expectedBytes] es el `sizeBytes` del documento, si se
+ * tiene.
+ */
+export function describeBrokenCloudProject(
+  bytes: Uint8Array,
+  expectedBytes?: number | null,
+): string | null {
+  const short = expectedBytes != null && expectedBytes > 0 && bytes.byteLength < expectedBytes;
+  if (!short && (!looksLikeZip(bytes) || hasEndOfCentralDirectory(bytes))) return null;
+  if (!looksLikeZip(bytes)) return describeBrokenArchive(bytes);
+  const got = formatSize(bytes.byteLength);
+  const of = short ? ` de ${formatSize(expectedBytes!)}` : "";
+  return (
+    `El archivo de este proyecto en la nube está incompleto: se guardaron ${got}${of}, ` +
+    `porque la subida desde el teléfono se cortó. La copia del teléfono no se tocó: ` +
+    `abrí la app y en Proyectos tocá ⋮ → «Sincronizar a la nube» en este proyecto ` +
+    `para volver a subirlo entero.`
+  );
+}

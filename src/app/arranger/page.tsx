@@ -57,7 +57,7 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { db, storage } from "@/lib/firebase";
 import { MasterFxPanel, TrackFxPanel } from "@/components/FxPanel";
-import { describeBrokenArchive } from "@/lib/zipDiagnostics";
+import { describeBrokenArchive, describeBrokenCloudProject } from "@/lib/zipDiagnostics";
 import { arrangerOpened, projectSaved } from "@/lib/analytics";
 import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
 import {
@@ -3144,6 +3144,15 @@ export default function ArrangerPage() {
           resolve,
         );
       });
+      // Lo que quedó en la nube tiene que ser TODO lo que se mandó antes de
+      // anotarlo como guardado (2026-10-15: un proyecto quedó cortado en
+      // 8 MiB y el documento decía que estaba entero).
+      const uploadedSize = uploadTask.snapshot.metadata?.size;
+      if (uploadedSize != null && uploadedSize !== zipBytes.length) {
+        throw new Error(
+          `La subida quedó incompleta (${uploadedSize} de ${zipBytes.length} bytes). Volvé a guardar.`,
+        );
+      }
 
       // 5. Metadata en Firestore — MISMOS campos que escribe
       // CloudSyncService, para que ProjectsScreen lo detecte como
@@ -3593,6 +3602,11 @@ export default function ArrangerPage() {
       const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(downloadUrl)}`);
       if (!response.ok) throw new Error(`No se pudo descargar el archivo (HTTP ${response.status}).`);
       const bytes = await readResponseWithProgress(response, (f) => setImportProgress(f * 0.3));
+      const broken = describeBrokenCloudProject(
+        new Uint8Array(bytes),
+        (snap.data().sizeBytes as number | undefined) ?? null,
+      );
+      if (broken) throw new Error(broken);
       await importProjectFromZipBytes(bytes);
       // A partir de acá, guardar ACTUALIZA este proyecto en vez de
       // crear uno nuevo al lado, y sabemos de qué versión partimos.
