@@ -14,7 +14,27 @@
 // armar un tema entero en la computadora y no se podía mezclar ahí.
 
 import { X } from "lucide-react";
-import { DEFAULT_MASTER_FX, NO_TRACK_FX, type MasterFx, type TrackFx } from "@/lib/trackEffects";
+import {
+  DEFAULT_EQ_MID_HZ,
+  DEFAULT_MASTER_FX,
+  NO_TRACK_FX,
+  isTrackFxActive,
+  type MasterFx,
+  type TrackFx,
+} from "@/lib/trackEffects";
+import {
+  LOW_CUT_STEPS_HZ,
+  MASTER_EQ_PRESETS,
+  TRACK_FX_PRESETS,
+  applyMasterPreset,
+  applyTrackPreset,
+  formatHz,
+  lowCutStepIndex,
+  matchingMasterEqPreset,
+  matchingTrackPreset,
+  midHzToSlider,
+  sliderToMidHz,
+} from "@/lib/fxPresets";
 
 function Slider({
   label,
@@ -58,6 +78,54 @@ function percent(value: number): string {
   return `${Math.round(value * 100)} %`;
 }
 
+/// Selector de preset: muestra lo que suena ahora (un preset,
+/// "Personalizado" o "Ninguno") y aplica el elegido. (2026-10-16)
+function PresetSelect({
+  current,
+  options,
+  onSelect,
+}: {
+  current: string;
+  options: { id: string; name: string }[];
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-3 text-xs">
+      <span className="w-28 shrink-0 text-white/60">Preset</span>
+      <select
+        value=""
+        onChange={(e) => {
+          if (e.target.value) onSelect(e.target.value);
+        }}
+        className="flex-1 rounded-lg border border-neon-cyan/40 bg-white/5 px-2 py-1.5 text-white"
+      >
+        <option value="" className="bg-graphite">
+          {current}
+        </option>
+        {options.map((o) => (
+          <option key={o.id} value={o.id} className="bg-graphite">
+            {o.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function MidFreqSlider({ hz, onChange }: { hz: number; onChange: (hz: number) => void }) {
+  return (
+    <Slider
+      label="Frec. medios"
+      value={midHzToSlider(hz ?? DEFAULT_EQ_MID_HZ)}
+      min={0}
+      max={1}
+      step={0.01}
+      display={formatHz(hz ?? DEFAULT_EQ_MID_HZ)}
+      onChange={(t) => onChange(sliderToMidHz(t))}
+    />
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-4 first:mt-0">
@@ -81,10 +149,34 @@ export function TrackFxPanel({
   onClose: () => void;
 }) {
   const set = (patch: Partial<TrackFx>) => onChange({ ...fx, ...patch });
+  const preset = matchingTrackPreset(fx);
+  const hpf = fx.hpfHz ?? 0;
 
   return (
     <Sheet title={`Efectos — ${trackName || "Pista"}`} onClose={onClose}>
+      <div className="mt-4">
+        <PresetSelect
+          current={preset ? preset.name : isTrackFxActive(fx) ? "Personalizado" : "Ninguno"}
+          options={TRACK_FX_PRESETS}
+          onSelect={(id) => {
+            const p = TRACK_FX_PRESETS.find((x) => x.id === id);
+            if (p) onChange(applyTrackPreset(p, fx));
+          }}
+        />
+        <p className="mt-1 text-[11px] leading-relaxed text-white/35">
+          Un preset es un punto de partida: después ajustá lo que quieras.
+        </p>
+      </div>
       <Section title="Ecualizador">
+        <Slider
+          label="Corte graves"
+          value={lowCutStepIndex(hpf)}
+          min={0}
+          max={LOW_CUT_STEPS_HZ.length - 1}
+          step={1}
+          display={hpf > 0 ? formatHz(hpf) : "Apagado"}
+          onChange={(v) => set({ hpfHz: LOW_CUT_STEPS_HZ[v] })}
+        />
         <Slider
           label="Graves"
           value={fx.eqLowDb}
@@ -103,6 +195,7 @@ export function TrackFxPanel({
           display={db(fx.eqMidDb)}
           onChange={(v) => set({ eqMidDb: v })}
         />
+        <MidFreqSlider hz={fx.eqMidHz} onChange={(hz) => set({ eqMidHz: hz })} />
         <Slider
           label="Agudos"
           value={fx.eqHighDb}
@@ -190,9 +283,52 @@ export function MasterFxPanel({
   onClose: () => void;
 }) {
   const set = (patch: Partial<MasterFx>) => onChange({ ...fx, ...patch });
+  const preset = matchingMasterEqPreset(fx);
 
   return (
     <Sheet title="Máster" onClose={onClose}>
+      <Section title="Ecualizador">
+        <PresetSelect
+          current={preset ? preset.name : "Personalizado"}
+          options={MASTER_EQ_PRESETS}
+          onSelect={(id) => {
+            const p = MASTER_EQ_PRESETS.find((x) => x.id === id);
+            if (p) onChange(applyMasterPreset(p, fx));
+          }}
+        />
+        <Slider
+          label="Graves"
+          value={fx.eqLowDb ?? 0}
+          min={-12}
+          max={12}
+          step={0.5}
+          display={db(fx.eqLowDb ?? 0)}
+          onChange={(v) => set({ eqLowDb: v })}
+        />
+        <Slider
+          label="Medios"
+          value={fx.eqMidDb ?? 0}
+          min={-12}
+          max={12}
+          step={0.5}
+          display={db(fx.eqMidDb ?? 0)}
+          onChange={(v) => set({ eqMidDb: v })}
+        />
+        <MidFreqSlider hz={fx.eqMidHz} onChange={(hz) => set({ eqMidHz: hz })} />
+        <Slider
+          label="Agudos"
+          value={fx.eqHighDb ?? 0}
+          min={-12}
+          max={12}
+          step={0.5}
+          display={db(fx.eqHighDb ?? 0)}
+          onChange={(v) => set({ eqHighDb: v })}
+        />
+        <p className="text-[11px] leading-relaxed text-white/35">
+          Actúa sobre la mezcla entera, antes del limitador.
+        </p>
+      </Section>
+
       <Section title="Reverb">
         <Slider
           label="Tamaño de sala"

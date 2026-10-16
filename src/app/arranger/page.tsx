@@ -3960,7 +3960,7 @@ export default function ArrangerPage() {
           peaks: computePeaks(buffer, PEAK_BUCKETS),
         });
       }
-      restored.push({ ...track, clips });
+      restored.push({ ...track, fx: parseTrackFx(track.fx), clips });
     }
 
     loadArrangement({
@@ -3970,7 +3970,8 @@ export default function ArrangerPage() {
       projectKey: stored.projectKey ?? "",
       timeSignatureNumerator: stored.timeSignatureNumerator,
       timeSignatureDenominator: stored.timeSignatureDenominator,
-      masterFx: stored.masterFx,
+      // parse: un borrador anterior al EQ del máster no trae sus campos.
+      masterFx: parseMasterFx(stored.masterFx),
       // ?? [] porque puede venir de un borrador anterior a este campo.
       markers: stored.markers ?? [],
       tracks: restored,

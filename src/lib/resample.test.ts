@@ -6,7 +6,9 @@ import { DEFAULT_MASTER_FX, type TrackFx } from "./trackEffects";
 const NEUTRAL_FX: TrackFx = {
   eqLowDb: 0,
   eqMidDb: 0,
+  eqMidHz: 1000,
   eqHighDb: 0,
+  hpfHz: 0,
   compEnabled: false,
   compThresholdDb: 0,
   compRatio: 1,

@@ -22,6 +22,7 @@ import { envelopeCursor, parseManifestEnvelope, type ClipEnvelope } from "@/lib/
 import { resampleLinear } from "@/lib/resample";
 import {
   applyTrackFxInPlace,
+  isMasterEqActive,
   isTrackFxActive,
   mixTracks,
   type MasterFx,
@@ -257,15 +258,16 @@ export interface MixdownTrack {
 /// efectos, o el máster tiene el limitador encendido con algo que
 /// limitar. Un proyecto sin nada de esto suena idéntico por el camino
 /// de siempre.
-export function projectHasEffects(tracks: MixdownTrack[]): boolean {
+export function projectHasEffects(tracks: MixdownTrack[], master?: MasterFx): boolean {
   const anySolo = tracks.some((t) => t.isSolo);
-  return tracks.some(
-    (t) =>
-      !t.isMuted &&
-      (!anySolo || t.isSolo) &&
-      t.clips.length > 0 &&
-      isTrackFxActive(t.fx),
+  const audible = tracks.filter(
+    (t) => !t.isMuted && (!anySolo || t.isSolo) && t.clips.length > 0,
   );
+  if (audible.length === 0) return false;
+  // El EQ del máster cambia el sonido de TODO, aunque ninguna pista
+  // tenga efectos propios (2026-10-16).
+  if (master && isMasterEqActive(master)) return true;
+  return audible.some((t) => isTrackFxActive(t.fx));
 }
 
 export function contentDurationSeconds(tracks: MixdownTrack[]): number {

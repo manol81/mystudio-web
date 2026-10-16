@@ -482,7 +482,7 @@ export function ProjectViewer({
         }));
         masterFxRef.current = master;
         let mix: AudioBuffer | null = null;
-        if (projectHasEffects(mixdownTracks)) {
+        if (projectHasEffects(mixdownTracks, master)) {
           const rendered = renderProjectMix(mixdownTracks, master, ctx.sampleRate);
           mix = toAudioBuffer(rendered, ctx, ctx.sampleRate);
         }

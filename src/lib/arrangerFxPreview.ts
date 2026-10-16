@@ -143,6 +143,10 @@ export function mixSignature(tracks: PreviewTrack[], master: MasterFx): string {
     master.reverbDamping,
     master.reverbWet,
     master.limiterEnabled,
+    master.eqLowDb,
+    master.eqMidDb,
+    master.eqMidHz,
+    master.eqHighDb,
   ];
   for (const track of tracks) {
     parts.push(
@@ -153,7 +157,9 @@ export function mixSignature(tracks: PreviewTrack[], master: MasterFx): string {
       track.isSolo,
       track.fx.eqLowDb,
       track.fx.eqMidDb,
+      track.fx.eqMidHz,
       track.fx.eqHighDb,
+      track.fx.hpfHz,
       track.fx.compEnabled,
       track.fx.compThresholdDb,
       track.fx.compRatio,

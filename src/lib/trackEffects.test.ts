@@ -69,6 +69,50 @@ describe("EQ de 3 bandas", () => {
   });
 });
 
+describe("corte de graves y medios movibles (2026-10-16)", () => {
+  it("el corte a 100 Hz saca los graves (12 dB/oct) y deja pasar los medios", () => {
+    expect(gainAtDb(100, { hpfHz: 100 })).toBeCloseTo(-3, 0);
+    expect(gainAtDb(25, { hpfHz: 100 })).toBeLessThan(-22);
+    expect(gainAtDb(1000, { hpfHz: 100 })).toBeCloseTo(0, 1);
+  });
+
+  it("apagado (0 Hz) no toca nada", () => {
+    expect(gainAtDb(30, { hpfHz: 0 })).toBeCloseTo(0, 4);
+  });
+
+  it("la campana se mueve a la frecuencia elegida", () => {
+    expect(gainAtDb(300, { eqMidDb: -6, eqMidHz: 300 })).toBeCloseTo(-6, 1);
+    expect(gainAtDb(3000, { eqMidDb: -6, eqMidHz: 300 })).toBeGreaterThan(-1);
+  });
+
+  it("isTrackFxActive cuenta el corte de graves", () => {
+    expect(isTrackFxActive({ ...NO_TRACK_FX, hpfHz: 80 })).toBe(true);
+    expect(isTrackFxActive({ ...NO_TRACK_FX, eqMidHz: 300 })).toBe(false);
+  });
+
+  it("un JSON de antes abre sin corte, con medios en 1 kHz y máster plano", () => {
+    const fx = parseTrackFx({ eqMidDb: 2 });
+    expect(fx.hpfHz).toBe(0);
+    expect(fx.eqMidHz).toBe(1000);
+    const m = parseMasterFx({ reverbWet: 0.2 });
+    expect([m.eqLowDb, m.eqMidDb, m.eqMidHz, m.eqHighDb]).toEqual([0, 0, 1000, 0]);
+  });
+});
+
+describe("EQ del máster", () => {
+  it("baja los graves de TODA la mezcla, en los dos canales", () => {
+    const n = FS * 2;
+    const samples = new Float32Array(n);
+    for (let i = 0; i < n; i++) samples[i] = 0.5 * Math.sin((2 * Math.PI * 30 * i) / FS);
+    const track = { samples, volume: 1, pan: 0, fx: NO_TRACK_FX };
+    const flat = mixTracks([track], NO_LIMITER, FS, n);
+    const cut = mixTracks([track], { ...NO_LIMITER, eqLowDb: -6 }, FS, n);
+    const peak = (a: Float32Array) => a.slice(FS).reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+    expect(20 * Math.log10(peak(cut.left) / peak(flat.left))).toBeCloseTo(-6, 0);
+    expect(20 * Math.log10(peak(cut.right) / peak(flat.right))).toBeCloseTo(-6, 0);
+  });
+});
+
 describe("compresor", () => {
   /// Pico de salida de un seno a 0 dBFS pasado por el compresor.
   function peakDb(thresholdDb: number, ratio: number, makeupDb = 0): number {
@@ -236,7 +280,9 @@ describe("parseo de parámetros", () => {
     const fx = parseTrackFx({
       eqLowDb: 3,
       eqMidDb: -2,
+      eqMidHz: 350,
       eqHighDb: 1,
+      hpfHz: 80,
       compEnabled: true,
       compThresholdDb: -24,
       compRatio: 6,
@@ -246,7 +292,9 @@ describe("parseo de parámetros", () => {
     expect(fx).toEqual({
       eqLowDb: 3,
       eqMidDb: -2,
+      eqMidHz: 350,
       eqHighDb: 1,
+      hpfHz: 80,
       compEnabled: true,
       compThresholdDb: -24,
       compRatio: 6,

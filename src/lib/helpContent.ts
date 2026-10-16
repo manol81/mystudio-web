@@ -48,8 +48,8 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     where: "App",
     items: [
       "Cada pista tiene volumen, paneo, **M** (silenciar) y **S** (solo).",
-      "**FX** en cada pista: ecualizador de graves/medios/agudos, compresor, y cuánto manda a la reverb. El botón se pone violeta cuando hay algo activo.",
-      "**Máster** (ícono de ecualizador arriba): el tamaño de la reverb y el limitador, que evita que la mezcla distorsione. Dejalo prendido.",
+      "**FX** en cada pista: un **preset** para empezar (Voz, Guitarra acústica, Bajo, Batería…), corte de graves, ecualizador de graves/medios/agudos con la frecuencia de los medios movible, compresor, y cuánto manda a la reverb. El botón se pone violeta cuando hay algo activo.",
+      "**Máster** (ícono de ecualizador arriba): un ecualizador para toda la mezcla con sus presets (Cálido, Brillante, Parlantes chicos…), el tamaño de la reverb y el limitador, que evita que la mezcla distorsione. Dejalo prendido.",
     ],
   },
   {

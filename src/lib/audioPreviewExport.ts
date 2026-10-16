@@ -185,7 +185,7 @@ async function renderMixdown(
   // reverb y limitador. Se hace con el DSP propio (ver
   // projectMixdown.ts) en vez del grafo de Web Audio porque los nodos
   // del navegador no son los mismos algoritmos.
-  if (projectHasEffects(tracks)) {
+  if (projectHasEffects(tracks, master)) {
     const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * rate), rate);
     const mix = renderProjectMix(tracks, master, rate);
     return {

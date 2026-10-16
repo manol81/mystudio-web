@@ -27,7 +27,12 @@
 export interface TrackFx {
   eqLowDb: number;
   eqMidDb: number;
+  /// Frecuencia de la campana de medios, 200..5000 Hz (2026-10-16; antes
+  /// fija en 1 kHz, que sigue siendo el default).
+  eqMidHz: number;
   eqHighDb: number;
+  /// Corte de graves (pasa-altos 12 dB/oct) en Hz; 0 = apagado.
+  hpfHz: number;
   compEnabled: boolean;
   compThresholdDb: number;
   compRatio: number;
@@ -40,12 +45,22 @@ export interface MasterFx {
   reverbDamping: number;
   reverbWet: number;
   limiterEnabled: boolean;
+  /// EQ del máster (2026-10-16): mismas bandas que una pista, sobre la
+  /// mezcla entera y antes del limitador.
+  eqLowDb: number;
+  eqMidDb: number;
+  eqMidHz: number;
+  eqHighDb: number;
 }
+
+export const DEFAULT_EQ_MID_HZ = 1000;
 
 export const NO_TRACK_FX: TrackFx = {
   eqLowDb: 0,
   eqMidDb: 0,
+  eqMidHz: 1000,
   eqHighDb: 0,
+  hpfHz: 0,
   compEnabled: false,
   compThresholdDb: -18,
   compRatio: 3,
@@ -58,6 +73,10 @@ export const DEFAULT_MASTER_FX: MasterFx = {
   reverbDamping: 0.5,
   reverbWet: 0.35,
   limiterEnabled: true,
+  eqLowDb: 0,
+  eqMidDb: 0,
+  eqMidHz: 1000,
+  eqHighDb: 0,
 };
 
 /// Tolerante igual que TrackFxSettings.fromJson en Dart: un respaldo
@@ -70,7 +89,9 @@ export function parseTrackFx(json: unknown): TrackFx {
   return {
     eqLowDb: num("eqLowDb", 0),
     eqMidDb: num("eqMidDb", 0),
+    eqMidHz: num("eqMidHz", DEFAULT_EQ_MID_HZ),
     eqHighDb: num("eqHighDb", 0),
+    hpfHz: num("hpfHz", 0),
     compEnabled: o.compEnabled === true,
     compThresholdDb: num("compThresholdDb", -18),
     compRatio: num("compRatio", 3),
@@ -89,7 +110,16 @@ export function parseMasterFx(json: unknown): MasterFx {
     reverbDamping: num("reverbDamping", DEFAULT_MASTER_FX.reverbDamping),
     reverbWet: num("reverbWet", DEFAULT_MASTER_FX.reverbWet),
     limiterEnabled: o.limiterEnabled !== false,
+    eqLowDb: num("eqLowDb", 0),
+    eqMidDb: num("eqMidDb", 0),
+    eqMidHz: num("eqMidHz", DEFAULT_EQ_MID_HZ),
+    eqHighDb: num("eqHighDb", 0),
   };
+}
+
+/// true si el EQ del máster cambia algo.
+export function isMasterEqActive(master: MasterFx): boolean {
+  return (master.eqLowDb ?? 0) !== 0 || (master.eqMidDb ?? 0) !== 0 || (master.eqHighDb ?? 0) !== 0;
 }
 
 /// Mismo criterio que TrackFxSettings.isActive: si nada se movió de su
@@ -99,6 +129,7 @@ export function isTrackFxActive(fx: TrackFx): boolean {
     fx.eqLowDb !== 0 ||
     fx.eqMidDb !== 0 ||
     fx.eqHighDb !== 0 ||
+    (fx.hpfHz ?? 0) > 0 ||
     fx.compEnabled ||
     fx.reverbSend > 0
   );
@@ -106,7 +137,15 @@ export function isTrackFxActive(fx: TrackFx): boolean {
 
 // ─── Biquad RBJ — idéntico a dsp::Biquad ────────────────────────────────
 
-type BiquadType = "lowShelf" | "peak" | "highShelf";
+type BiquadType = "lowShelf" | "peak" | "highShelf" | "highPass";
+
+/// Mismos topes que setTrackEq/setMasterEq del motor.
+function clampMidHz(hz: number | undefined): number {
+  return Math.max(200, Math.min(5000, hz ?? DEFAULT_EQ_MID_HZ));
+}
+function clampHpfHz(hz: number | undefined): number {
+  return !hz || hz <= 0 ? 0 : Math.max(20, Math.min(500, hz));
+}
 
 class Biquad {
   private b0 = 1;
@@ -142,6 +181,15 @@ class Biquad {
       a0 = A + 1 - (A - 1) * cw + s;
       a1 = 2 * (A - 1 - (A + 1) * cw);
       a2 = A + 1 - (A - 1) * cw - s;
+    } else if (type === "highPass") {
+      // Pasa-altos de 2.º orden (12 dB/oct); gainDb no se usa.
+      const alpha = sw / (2 * q);
+      b0 = (1 + cw) / 2;
+      b1 = -(1 + cw);
+      b2 = (1 + cw) / 2;
+      a0 = 1 + alpha;
+      a1 = -2 * cw;
+      a2 = 1 - alpha;
     } else {
       const alpha = sw / (2 * q);
       b0 = 1 + alpha * A;
@@ -344,11 +392,16 @@ export function applyTrackFxInPlace(
   fx: TrackFx,
   sampleRate: number,
 ): Float32Array {
+  // El corte de graves va PRIMERO, como en el motor.
+  const hpf = clampHpfHz(fx.hpfHz);
+  if (hpf > 0) {
+    new Biquad("highPass", hpf, 0, sampleRate, 0.7071).processInPlace(samples);
+  }
   if (fx.eqLowDb !== 0) {
     new Biquad("lowShelf", 100, fx.eqLowDb, sampleRate).processInPlace(samples);
   }
   if (fx.eqMidDb !== 0) {
-    new Biquad("peak", 1000, fx.eqMidDb, sampleRate, 1).processInPlace(samples);
+    new Biquad("peak", clampMidHz(fx.eqMidHz), fx.eqMidDb, sampleRate, 1).processInPlace(samples);
   }
   if (fx.eqHighDb !== 0) {
     new Biquad("highShelf", 8000, fx.eqHighDb, sampleRate).processInPlace(samples);
@@ -433,7 +486,29 @@ export function mixTracks(
     }
   }
 
+  applyMasterEqInPlace(left, right, master, sampleRate);
   if (master.limiterEnabled) applyLimiterInPlace(left, right, sampleRate);
 
   return { left, right };
+}
+
+/// EQ del máster sobre los dos canales (cada uno con su propia memoria
+/// de filtro), después de la reverb y antes del limitador — el paso 7
+/// de renderBlock.
+export function applyMasterEqInPlace(
+  left: Float32Array,
+  right: Float32Array,
+  master: MasterFx,
+  sampleRate: number,
+): void {
+  const bands: [BiquadType, number, number][] = [
+    ["lowShelf", 100, master.eqLowDb ?? 0],
+    ["peak", clampMidHz(master.eqMidHz), master.eqMidDb ?? 0],
+    ["highShelf", 8000, master.eqHighDb ?? 0],
+  ];
+  for (const [type, freq, gain] of bands) {
+    if (gain === 0) continue;
+    new Biquad(type, freq, gain, sampleRate, 1).processInPlace(left);
+    new Biquad(type, freq, gain, sampleRate, 1).processInPlace(right);
+  }
 }
