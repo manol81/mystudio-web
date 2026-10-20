@@ -4,7 +4,8 @@
 // "eliminación de cuenta" (Data Safety). Funciona en tres estados:
 //   - invitado: explica qué se borra y ofrece iniciar sesión (o el
 //     email de contacto si ya no puede entrar);
-//   - logueado: contraseña + casilla de confirmación + botón;
+//   - logueado: contraseña (o Google, si la cuenta es de Google) +
+//     casilla de confirmación + botón;
 //   - listo: confirmación.
 // La lógica real vive en AccountDeletionService.ts (espejo de la app).
 
@@ -15,8 +16,11 @@ import {
   ACCOUNT_DELETION_STEP_LABELS,
   WrongPasswordError,
   deleteAccount,
+  hasGoogleProvider,
+  hasPasswordProvider,
   type AccountDeletionStep,
 } from "@/lib/AccountDeletionService";
+import { googleErrorMessage } from "@/lib/googleAuth";
 
 const SUPPORT_EMAIL = "manolocenter@gmail.com";
 
@@ -38,13 +42,22 @@ export function DeleteAccountPanel() {
     setStatus("working");
     setErrorMessage(null);
     try {
-      await deleteAccount(user, password, setStep);
+      // Con contraseña escrita se usa esa; si no, Google.
+      const deleted = await deleteAccount(user, password.length > 0 ? password : null, setStep);
+      if (!deleted) {
+        setStep(null);
+        setStatus("idle");
+        return;
+      }
       setStatus("done");
     } catch (err) {
       setStep(null);
       setStatus("error");
+      const googleMessage = googleErrorMessage((err as { code?: string }).code);
       if (err instanceof WrongPasswordError) {
         setErrorMessage(err.message);
+      } else if (googleMessage) {
+        setErrorMessage(googleMessage);
       } else if ((err as { code?: string }).code === "auth/network-request-failed") {
         setErrorMessage("Sin conexión. Revisá tu red y volvé a intentarlo.");
       } else {
@@ -57,7 +70,7 @@ export function DeleteAccountPanel() {
 
   const whatIsDeleted = (
     <ul className="mt-4 list-disc space-y-1.5 pl-5 text-sm text-white/70">
-      <li>Tu cuenta (email y contraseña) y tu perfil con el apodo.</li>
+      <li>Tu cuenta (email y contraseña, o el acceso con Google) y tu perfil con el apodo.</li>
       <li>Los proyectos que sincronizaste a la nube (archivos de audio incluidos).</li>
       <li>Todas tus publicaciones en la Comunidad, con sus previews, likes y comentarios.</li>
       <li>Tus comentarios en publicaciones de otras personas y tu lista de usuarios bloqueados.</li>
@@ -101,8 +114,8 @@ export function DeleteAccountPanel() {
       ) : !user ? (
         <div>
           <p className="text-sm text-white/70">
-            Para eliminar tu cuenta, primero iniciá sesión con el mismo email y contraseña que
-            usás en la app.
+            Para eliminar tu cuenta, primero iniciá sesión con la misma cuenta que usás en la app
+            (Google, o email y contraseña).
           </p>
           <button
             type="button"
@@ -126,21 +139,30 @@ export function DeleteAccountPanel() {
             Sesión iniciada como <span className="font-medium text-white">{user.email}</span>.
             Esta acción es permanente y no se puede deshacer.
           </p>
-          <div>
-            <label htmlFor="delete-password" className="mb-1.5 block text-xs text-white/60">
-              Contraseña (para confirmar que sos vos)
-            </label>
-            <input
-              id="delete-password"
-              type="password"
-              required
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={status === "working"}
-              className={inputClasses}
-            />
-          </div>
+          {hasGoogleProvider(user) && (
+            <p className="text-xs text-white/55">
+              {hasPasswordProvider(user)
+                ? "Si preferís, dejá la contraseña vacía y confirmá con tu cuenta de Google."
+                : "Para confirmar que sos vos, te vamos a pedir que elijas tu cuenta de Google."}
+            </p>
+          )}
+          {hasPasswordProvider(user) && (
+            <div>
+              <label htmlFor="delete-password" className="mb-1.5 block text-xs text-white/60">
+                Contraseña (para confirmar que sos vos)
+              </label>
+              <input
+                id="delete-password"
+                type="password"
+                required={!hasGoogleProvider(user)}
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={status === "working"}
+                className={inputClasses}
+              />
+            </div>
+          )}
           <label className="flex items-start gap-3 text-sm text-white/70">
             <input
               type="checkbox"
@@ -167,7 +189,11 @@ export function DeleteAccountPanel() {
           <div className="mt-2 flex justify-end">
             <button
               type="submit"
-              disabled={status === "working" || !confirmed || password.length === 0}
+              disabled={
+                status === "working" ||
+                !confirmed ||
+                (password.length === 0 && !hasGoogleProvider(user))
+              }
               className="rounded-full border border-red-500/50 bg-red-950/60 px-6 py-2 font-display text-sm font-semibold text-red-300 transition-all duration-300 hover:border-red-400 hover:shadow-[0_0_18px_rgba(248,113,113,0.35)] disabled:cursor-not-allowed disabled:opacity-40"
             >
               {status === "working" ? "Eliminando…" : "Eliminar definitivamente"}

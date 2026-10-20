@@ -6,6 +6,10 @@
 // errores de Firebase Auth a mensajes en español, para que la
 // experiencia sea consistente entre la app y la web.
 //
+// Arriba de todo, "Continuar con Google" (2026-10-19): con Google no hay
+// registrarse aparte de entrar — si la cuenta no existe, Firebase la
+// crea. Mismo botón que _SignInDialog de la app.
+//
 // Al crear cuenta: pide la contraseña dos veces (valida que coincidan
 // ANTES de llamar a Firebase, sin gastar un intento) y manda el email
 // de verificación (sendEmailVerification) — ver EmailVerificationGate
@@ -19,8 +23,11 @@ import {
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
   sendEmailVerification,
+  signInWithPopup,
+  getAdditionalUserInfo,
   AuthError,
 } from "firebase/auth";
+import { googleErrorMessage, googleProvider, isGoogleDismissed } from "@/lib/googleAuth";
 import { auth } from "@/lib/firebase";
 
 function authErrorMessage(error: AuthError): string {
@@ -35,14 +42,14 @@ function authErrorMessage(error: AuthError): string {
       return "No hay ninguna cuenta con ese email.";
     case "auth/wrong-password":
     case "auth/invalid-credential":
-      return "Email o contraseña incorrectos.";
+      return "Email o contraseña incorrectos. Si creaste la cuenta con Google, usá «Continuar con Google».";
     case "auth/network-request-failed":
       return "Error de conexión. Probá de nuevo.";
     case "auth/configuration-not-found":
     case "auth/operation-not-allowed":
-      return "La autenticación por Email/Contraseña no está habilitada en este proyecto de Firebase todavía (Firebase Console → Authentication → Sign-in method).";
+      return "Este método de inicio de sesión todavía no está habilitado en el proyecto de Firebase (Firebase Console → Authentication → Sign-in method).";
     default:
-      return "No se pudo completar la acción. Probá de nuevo.";
+      return googleErrorMessage(error.code) ?? "No se pudo completar la acción. Probá de nuevo.";
   }
 }
 
@@ -77,6 +84,29 @@ export function LoginModal({
     setMode(next);
     setError(null);
     setResetEmailSent(false);
+  }
+
+  async function handleGoogle() {
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      const credential = await signInWithPopup(auth, googleProvider());
+      // La verificación por email no hace falta: Google ya la da por
+      // hecha (emailVerified = true), así que EmailVerificationGate no
+      // frena a estas cuentas.
+      if (getAdditionalUserInfo(credential)?.isNewUser) {
+        signupCompleted();
+      } else {
+        signinCompleted();
+      }
+      onClose();
+    } catch (err) {
+      if (!isGoogleDismissed((err as AuthError).code)) {
+        setError(authErrorMessage(err as AuthError));
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -169,6 +199,25 @@ export function LoginModal({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
+            {mode !== "reset" && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleGoogle}
+                  disabled={isSubmitting}
+                  className="flex w-full items-center justify-center gap-3 rounded-full bg-white px-4 py-2.5 text-sm font-medium text-[#1f1f1f] transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  <span className="text-base font-bold text-[#4285F4]" aria-hidden="true">
+                    G
+                  </span>
+                  Continuar con Google
+                </button>
+                <div className="flex items-center gap-3 text-xs text-white/40">
+                  <span className="h-px flex-1 bg-white/10" />o con tu email
+                  <span className="h-px flex-1 bg-white/10" />
+                </div>
+              </>
+            )}
             <div>
               <label htmlFor="login-email" className="mb-1.5 block text-xs text-white/60">
                 Email

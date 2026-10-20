@@ -8,8 +8,9 @@
 //
 // Todo del lado del cliente con las reglas de Firestore/Storage (no hay
 // Cloud Functions en el proyecto). Orden deliberado:
-//   1. Re-autenticar con la contraseña (Firebase exige login reciente
-//      para deleteUser, y de paso frena el clic accidental).
+//   1. Re-autenticar con la contraseña, o con Google si la cuenta es de
+//      Google y no tiene contraseña (2026-10-19). Firebase exige login
+//      reciente para deleteUser, y de paso frena el clic accidental.
 //   2. Borrar TODO lo que dejó el uid en la nube ANTES de borrar el
 //      usuario de Auth — después ya no hay credenciales que pasen las
 //      reglas y los datos quedarían huérfanos para siempre.
@@ -27,10 +28,13 @@
 
 import {
   EmailAuthProvider,
+  GoogleAuthProvider,
   deleteUser,
   reauthenticateWithCredential,
+  reauthenticateWithPopup,
   type User,
 } from "firebase/auth";
+import { googleProvider, isGoogleDismissed } from "@/lib/googleAuth";
 import {
   collection,
   collectionGroup,
@@ -74,27 +78,47 @@ export class WrongPasswordError extends Error {
   }
 }
 
+export function hasPasswordProvider(user: User): boolean {
+  return user.providerData.some((p) => p.providerId === EmailAuthProvider.PROVIDER_ID);
+}
+
+export function hasGoogleProvider(user: User): boolean {
+  return user.providerData.some((p) => p.providerId === GoogleAuthProvider.PROVIDER_ID);
+}
+
+/// Con `password` re-autentica con la contraseña; con `null`, con Google
+/// (una cuenta de Google no tiene contraseña). Devuelve false si la
+/// persona cerró la ventana de Google: no se borró nada.
 export async function deleteAccount(
   user: User,
-  password: string,
+  password: string | null,
   onProgress?: (step: AccountDeletionStep) => void,
-): Promise<void> {
-  if (!user.email) throw new Error("La cuenta no tiene email asociado.");
+): Promise<boolean> {
   const uid = user.uid;
 
   onProgress?.("reauthenticating");
-  try {
-    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
-  } catch (err) {
-    const code = (err as { code?: string }).code ?? "";
-    if (
-      code === "auth/wrong-password" ||
-      code === "auth/invalid-credential" ||
-      code === "auth/user-mismatch"
-    ) {
-      throw new WrongPasswordError();
+  if (password === null) {
+    try {
+      await reauthenticateWithPopup(user, googleProvider());
+    } catch (err) {
+      if (isGoogleDismissed((err as { code?: string }).code)) return false;
+      throw err;
     }
-    throw err;
+  } else {
+    if (!user.email) throw new Error("La cuenta no tiene email asociado.");
+    try {
+      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? "";
+      if (
+        code === "auth/wrong-password" ||
+        code === "auth/invalid-credential" ||
+        code === "auth/user-mismatch"
+      ) {
+        throw new WrongPasswordError();
+      }
+      throw err;
+    }
   }
 
   onProgress?.("deletingCommunity");
@@ -115,6 +139,7 @@ export async function deleteAccount(
 
   onProgress?.("deletingAuthUser");
   await deleteUser(user);
+  return true;
 }
 
 /// Conversaciones privadas de esta persona, con sus mensajes adentro.

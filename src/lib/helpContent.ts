@@ -79,7 +79,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     title: "Tu cuenta y la nube",
     where: "App + Web",
     items: [
-      "La cuenta es **opcional**: sin cuenta, todo funciona en tu teléfono.",
+      "La cuenta es **opcional**: sin cuenta, todo funciona en tu teléfono. Para crearla alcanza con **Continuar con Google**, o con email y contraseña.",
       "Con cuenta, **Sincronizar a la nube** (menú del proyecto) lo sube, y lo ves en la web en **Mis Proyectos**.",
       "Si lo cambiaste en la web, la tarjeta del proyecto en la app avisa **Hay cambios nuevos en la nube** → **Actualizar desde la nube**.",
       "Si lo cambiaste en los dos lados, MY STUDIO te pregunta antes de pisar nada: **Bajar los cambios** o **Subir igual**. Nunca mezcla dos versiones por su cuenta.",
