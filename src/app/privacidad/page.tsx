@@ -23,9 +23,9 @@ export const metadata: Metadata = {
   alternates: { canonical: `${SITE_URL}/privacidad` },
 };
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, id, children }: { title: string; id?: string; children: React.ReactNode }) {
   return (
-    <section className="mt-8">
+    <section id={id} className="mt-8 scroll-mt-6">
       <h2 className="font-display text-lg font-semibold text-white">{title}</h2>
       <div className="mt-3 flex flex-col gap-3 text-sm leading-relaxed text-white/65">{children}</div>
     </section>
@@ -207,7 +207,9 @@ export default function PrivacyPage() {
         </p>
       </Section>
 
-      <Section title="Eliminación de tus datos">
+      {/* El ancla es la que se declara en Play Console → Data safety como
+          link para borrar datos SIN borrar la cuenta. */}
+      <Section title="Eliminación de tus datos" id="eliminar-datos">
         <p>
           Podés eliminar tu cuenta y todos sus datos en la nube cuando quieras, desde la app
           (Cuenta → &ldquo;Eliminar mi cuenta&rdquo;) o desde{" "}
