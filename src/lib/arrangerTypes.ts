@@ -5,6 +5,7 @@
 // archivo de 2800 líneas ni convertir la página en un módulo del que
 // otros dependen.
 
+import type { ClipPassthrough, ImportedTake } from "@/lib/importPassthrough";
 import type { TrackFx } from "@/lib/trackEffects";
 
 /**
@@ -92,6 +93,12 @@ export interface ArrangerClip {
   buffer: AudioBuffer;
   /** Picos sobre el buffer COMPLETO — se recorta la porción visible al dibujar (ver slicePeaksForWindow). */
   peaks: Float32Array;
+  /**
+   * Solo en clips que vinieron de un .mystudio: de qué archivo y entrada
+   * del manifiesto salió y cómo estaba. Si al guardar sigue igual, viaja
+   * tal cual vino en vez de re-renderizarse (ver importPassthrough.ts).
+   */
+  passthrough?: ClipPassthrough;
 }
 
 export interface ArrangerTrack {
@@ -109,4 +116,8 @@ export interface ArrangerTrack {
   // esto, editar un arreglo en la web borraba silenciosamente el
   // trabajo de mezcla hecho en el teléfono.
   fx: TrackFx;
+  // Tomas de la app (grabaciones encimadas, ver take_comp.dart). El
+  // Arranger no las muestra: las devuelve al guardar, con sus archivos,
+  // para que un viaje por la web no las borre (ver importPassthrough.ts).
+  importedTakes?: ImportedTake[];
 }

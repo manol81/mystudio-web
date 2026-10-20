@@ -76,6 +76,14 @@ import { getOrProcessBuffer } from "@/lib/audioDsp";
 import { getCachedBuffer, loadAndCacheBuffer, setCachedBuffer } from "@/lib/sampleBufferCache";
 import type { ArrangerClip, ArrangerTrack } from "@/lib/arrangerTypes";
 import {
+  PassthroughFiles,
+  beginImport,
+  isPassthroughIntact,
+  rememberImportedFile,
+  snapshotOf,
+  type ImportedTake,
+} from "@/lib/importPassthrough";
+import {
   nextBarContextTime,
   secondsPerBar,
   secondsPerBeat,
@@ -346,6 +354,9 @@ interface ImportManifestTrack {
   isSolo: boolean;
   clips: ImportManifestClip[];
   fx?: unknown;
+  // Tomas de la app (2026-10-15). El Arranger no las usa: las devuelve
+  // al guardar (ver importPassthrough.ts).
+  takes?: Record<string, unknown>[];
 }
 
 interface ImportManifest {
@@ -2889,6 +2900,10 @@ export default function ArrangerPage() {
       /** Un archivo del .mystudio: un clip suelto, o una cadena solapada aplanada. */
       interface ExportUnit {
         key: string;
+        /// Cadena de clips importados que siguen intactos: viajan tal cual
+        /// vinieron, cada uno con su entrada, sin renderizar (incluidos
+        /// sus solapes, que el motor de la app cruza solo desde la +34).
+        passthroughClips?: ArrangerClip[];
         startSeconds: number;
         pitchShift: number;
         soundingKey: string;
@@ -2913,7 +2928,9 @@ export default function ArrangerPage() {
           }));
           const startSeconds = Math.min(...chain.map((c) => c.startSeconds));
           const endSeconds = Math.max(...chain.map((c) => c.startSeconds + c.displayDuration));
+          const intact = chain.every((entry) => isPassthroughIntact(entry.clip));
           return {
+            passthroughClips: intact ? chain.map((entry) => entry.clip) : undefined,
             // La posición RELATIVA de cada clip dentro de la cadena
             // entra en la clave: dos cadenas con los mismos clips pero
             // distinto solape son audios distintos.
@@ -2935,7 +2952,10 @@ export default function ArrangerPage() {
 
       const uniqueUnits = new Map<string, ExportUnit>();
       for (const units of unitsByTrack) {
-        for (const unit of units) if (!uniqueUnits.has(unit.key)) uniqueUnits.set(unit.key, unit);
+        for (const unit of units) {
+          if (unit.passthroughClips) continue;
+          if (!uniqueUnits.has(unit.key)) uniqueUnits.set(unit.key, unit);
+        }
       }
 
       const renderedByKey = new Map<
@@ -2997,6 +3017,9 @@ export default function ArrangerPage() {
       for (const rendered of renderedByKey.values()) {
         zip.file(rendered.fileName, rendered.bytes);
       }
+      // Lo que viaja sin renderizar: un archivo por original, aunque lo
+      // nombren varios clips y tomas.
+      const passthroughFiles = new PassthroughFiles();
 
       const manifest = {
         // 3 desde que el manifest lleva el recorte, el volumen y los
@@ -3004,7 +3027,10 @@ export default function ArrangerPage() {
         // project_backup_service.dart). El Arranger no edita ni los
         // efectos del máster ni los marcadores, pero los devuelve
         // intactos, así que exporta la misma versión que la app.
-        formatVersion: 3,
+        // 4 desde el 2026-10-20: los clips intactos vuelven con sus
+        // curvas de volumen (gainEnvelope/levelEnvelope) y las pistas con
+        // sus tomas, que son claves de la versión 4 de la app.
+        formatVersion: 4,
         project: {
           title: projectTitle.trim() || "Arreglo sin título",
           tempoBpm: projectTempoBpm,
@@ -3028,11 +3054,29 @@ export default function ArrangerPage() {
           isMuted: track.isMuted,
           isSolo: track.isSolo,
           fx: track.fx,
+          // Tomas de la app, devueltas con sus archivos.
+          ...(() => {
+            const takes = (track.importedTakes ?? []).flatMap((t) => {
+              const name = passthroughFiles.nameFor(t.fileKey);
+              return name ? [{ ...t.take, audioFileName: name }] : [];
+            });
+            return takes.length > 0 ? { takes } : {};
+          })(),
           // Una entrada por UNIDAD, no por clip: una cadena solapada ya
-          // viajó aplanada en un solo WAV (ver más arriba).
-          clips: unitsByTrack[trackIndex].map((unit) => {
+          // viajó aplanada en un solo WAV (ver más arriba). Las cadenas
+          // intactas, en cambio, vuelven clip por clip como vinieron.
+          clips: unitsByTrack[trackIndex].flatMap((unit) => {
+            if (unit.passthroughClips) {
+              return unit.passthroughClips.map((clip) => ({
+                ...clip.passthrough!.manifestClip,
+                audioFileName: passthroughFiles.nameFor(clip.passthrough!.fileKey)!,
+                // La tonalidad se puede corregir en el Arranger sin tocar
+                // el audio ("Original"): esa corrección sí viaja.
+                ...(clip.sampleKey ? { key: clip.sampleKey } : {}),
+              }));
+            }
             const rendered = renderedByKey.get(unit.key)!;
-            return {
+            return [{
               audioFileName: rendered.fileName,
               // REGLA CRÍTICA (Paso 4): `startBeat` es, para
               // project_backup_service.dart, un offset de tiempo en
@@ -3072,10 +3116,11 @@ export default function ArrangerPage() {
               volume: 1,
               fadeInSeconds: 0,
               fadeOutSeconds: 0,
-            };
+            }];
           }),
         })),
       };
+      for (const { name, bytes } of passthroughFiles.entries()) zip.file(name, bytes);
       zip.file("manifest.json", JSON.stringify(manifest));
 
       const zipBytes = await zip.generateAsync({ type: "uint8array" }, (metadata) => {
@@ -3278,6 +3323,11 @@ export default function ArrangerPage() {
     if (!ctx) throw new Error("El motor de audio todavía no está listo.");
 
     setImportProgress(0.35);
+    // Solo un .mystudio de verdad trae archivos que puedan volver tal
+    // cual al guardar; el paquete de pistas no (ver importPassthrough.ts).
+    const importId = beginImport();
+    const isMystudio = Boolean(manifestFile);
+    const fileKeyOf = (fileName: string) => `${importId}/${fileName}`;
     const uniqueFileNames = [
       ...new Set(manifest.tracks.flatMap((track) => track.clips.map((clip) => clip.audioFileName))),
     ];
@@ -3288,6 +3338,9 @@ export default function ArrangerPage() {
       const audioFile = zip.file(fileName);
       if (audioFile) {
         const arrayBuffer = await audioFile.async("arraybuffer");
+        // Copia ANTES de decodificar: decodeAudioData se queda con el
+        // ArrayBuffer (lo deja vacío).
+        if (isMystudio) rememberImportedFile(fileKeyOf(fileName), new Uint8Array(arrayBuffer.slice(0)));
         const buffer = await ctx.decodeAudioData(arrayBuffer);
         bufferByFileName.set(fileName, buffer);
         // Paso 3 — hidrata la caché GLOBAL (sampleBufferCache): cualquier
@@ -3296,6 +3349,30 @@ export default function ArrangerPage() {
         setCachedBuffer(`imported:${fileName}`, buffer);
       } // si no hay match: clip huérfano — mismo criterio que Flutter/ProjectViewer, se omite en silencio
       setImportProgress(0.35 + ((i + 1) / uniqueFileNames.length) * 0.35);
+    }
+
+    // Los archivos de las tomas que no suena ningún clip: no hace falta
+    // decodificarlos, solo guardarlos para devolverlos.
+    const takesByTrack: (ImportedTake[] | undefined)[] = [];
+    for (const track of manifest.tracks) {
+      if (!isMystudio || !Array.isArray(track.takes)) {
+        takesByTrack.push(undefined);
+        continue;
+      }
+      const kept: ImportedTake[] = [];
+      for (const take of track.takes) {
+        const fileName = take?.audioFileName;
+        if (typeof fileName !== "string") continue;
+        const audioFile = zip.file(fileName);
+        if (!audioFile) continue;
+        if (!uniqueFileNames.includes(fileName)) {
+          rememberImportedFile(fileKeyOf(fileName), await audioFile.async("uint8array"));
+        }
+        const rest = { ...take };
+        delete rest.audioFileName;
+        kept.push({ fileKey: fileKeyOf(fileName), take: rest });
+      }
+      takesByTrack.push(kept.length > 0 ? kept : undefined);
     }
 
     // Construye el clip SIN los picos reales todavía (peaks vacío = "en
@@ -3314,6 +3391,21 @@ export default function ArrangerPage() {
     }
 
     function buildImportedClip(clip: ImportManifestClip, buffer: AudioBuffer): ArrangerClip {
+      const built = buildImportedClipBase(clip, buffer);
+      if (!isMystudio) return built;
+      const manifestClip: Record<string, unknown> = { ...clip };
+      delete manifestClip.audioFileName;
+      return {
+        ...built,
+        passthrough: {
+          fileKey: fileKeyOf(clip.audioFileName),
+          manifestClip,
+          snapshot: snapshotOf(built),
+        },
+      };
+    }
+
+    function buildImportedClipBase(clip: ImportManifestClip, buffer: AudioBuffer): ArrangerClip {
       return {
         id: newId(),
         sampleId: `imported:${clip.audioFileName}`,
@@ -3455,6 +3547,7 @@ export default function ArrangerPage() {
         // Se conservan tal cual vinieron: el Arranger no los edita ni
         // los reproduce, solo evita que un round-trip los borre.
         fx: parseTrackFx(track.fx),
+        importedTakes: takesByTrack[ti],
       };
       // SILENT: las pistas se revelan de a una para que se vean
       // aparecer, pero eso es UNA importación, no N acciones del
