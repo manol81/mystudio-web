@@ -249,6 +249,16 @@ export function VisitorHero({
           ))}
         </dl>
       </div>
+
+      <p className="border-t border-white/10 pt-6 text-xs text-white/35">
+        <Link href="/privacidad" className="hover:text-white/60 hover:underline">
+          Política de privacidad
+        </Link>
+        {" · "}
+        <Link href="/cuenta/eliminar" className="hover:text-white/60 hover:underline">
+          Eliminar mi cuenta
+        </Link>
+      </p>
     </section>
   );
 }

@@ -33,14 +33,9 @@ export default function DeleteAccountPage() {
 
       <p className="mt-8 text-xs text-white/35">
         Más detalles sobre qué datos guardamos y por qué, en la{" "}
-        <a
-          href="https://sites.google.com/view/mystudiopocket-privacidad/home"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-white/60 underline-offset-2 hover:underline"
-        >
+        <Link href="/privacidad" className="text-white/60 underline-offset-2 hover:underline">
           política de privacidad
-        </a>
+        </Link>
         . <Link href="/" className="text-white/60 underline-offset-2 hover:underline">Volver al inicio</Link>.
       </p>
     </div>

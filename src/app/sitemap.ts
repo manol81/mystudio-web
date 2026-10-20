@@ -28,6 +28,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       priority: 0.8,
     })),
     { url: `${SITE_URL}/cuenta/eliminar`, changeFrequency: "yearly", priority: 0.2 },
+    { url: `${SITE_URL}/privacidad`, changeFrequency: "yearly", priority: 0.2 },
   ];
 
   let postRoutes: MetadataRoute.Sitemap = [];
