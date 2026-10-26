@@ -12,6 +12,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
+import { PostAppCta } from "@/components/PostAppCta";
 import { PostCard } from "@/components/PostCard";
 import {
   fetchCommentCounts,
@@ -69,9 +70,13 @@ export function PostPermalink({ postId }: { postId: string }) {
       )}
 
       {status === "missing" && (
-        <div className="rounded-2xl border border-white/10 bg-graphite p-10 text-center">
-          <p className="text-sm text-white/60">Esta publicación ya no está disponible.</p>
-        </div>
+        <>
+          <div className="rounded-2xl border border-white/10 bg-graphite p-10 text-center">
+            <p className="text-sm text-white/60">Esta publicación ya no está disponible.</p>
+          </div>
+          {/* Un link viejo también puede traer a alguien nuevo. */}
+          <PostAppCta authorId={null} authorName="" wantedRoles={[]} />
+        </>
       )}
 
       {status === "error" && (
@@ -97,6 +102,17 @@ export function PostPermalink({ postId }: { postId: string }) {
           // Acá la publicación ES la página: al borrarla queda el
           // mismo cartel que ve cualquiera que llegue a un link viejo.
           onDeleted={() => setStatus("missing")}
+        />
+      )}
+
+      {/* Invitación a la app (2026-10-26): quien llega por un link
+          compartido casi nunca conoce MY STUDIO. */}
+      {status === "ready" && post && (
+        <PostAppCta
+          authorId={post.authorId || null}
+          authorName={post.authorName}
+          // Solo si quien mira no es el autor: a uno mismo no le sirve.
+          wantedRoles={uid === post.authorId ? [] : post.wantedRoles}
         />
       )}
 

@@ -21,6 +21,8 @@ export interface PublicPostSummary {
   authorName: string;
   genre: string;
   description: string;
+  /// El MP3 público de la publicación (puede faltar en las viejas).
+  audioPreviewUrl: string;
   createdAt: Date | null;
 }
 
@@ -48,6 +50,7 @@ function toSummary(docu: FirestoreDocument): PublicPostSummary {
     authorName: str(docu.fields, "authorName") || "Usuario",
     genre: str(docu.fields, "genre"),
     description: str(docu.fields, "description"),
+    audioPreviewUrl: str(docu.fields, "audioPreviewUrl"),
     createdAt: ts ? new Date(ts) : null,
   };
 }

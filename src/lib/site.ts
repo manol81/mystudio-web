@@ -26,6 +26,16 @@ export const SITE_DESCRIPTION =
 export const PLAY_STORE_URL =
   "https://play.google.com/store/apps/details?id=com.aquiles.mystudio.pocket";
 
+/// El link a Play con el ORIGEN adentro (2026-10-26). Play lee el
+/// parámetro `referrer` y lo muestra en Play Console → Statistics /
+/// Acquisition como utm_source/utm_medium: así se ve cuántas
+/// INSTALACIONES (no solo clicks, que ya mide GA4) vienen de la web y de
+/// qué parte. `medium` es el mismo `source` de play_store_click.
+export function playStoreUrlFrom(medium: string): string {
+  const referrer = `utm_source=mystudio_web&utm_medium=${medium}`;
+  return `${PLAY_STORE_URL}&referrer=${encodeURIComponent(referrer)}`;
+}
+
 // Proyecto de Firebase — misma config pública que src/lib/firebase.ts.
 // Se usa desde el SERVIDOR (generateMetadata de /p/[postId]) vía la
 // API REST de Firestore, que respeta las mismas reglas (lectura pública

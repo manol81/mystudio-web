@@ -32,7 +32,18 @@ export async function generateMetadata({ params }: PageProps<"/p/[postId]">): Pr
     title,
     description,
     alternates: { canonical: url },
-    openGraph: { type: "music.song", title, description, url, siteName: SITE_NAME },
+    openGraph: {
+      type: "music.song",
+      title,
+      description,
+      url,
+      siteName: SITE_NAME,
+      // El audio de la canción en la vista previa (2026-10-26): Facebook
+      // y Discord lo pueden reproducir sin entrar. WhatsApp lo ignora.
+      ...(post.audioPreviewUrl
+        ? { audio: [{ url: post.audioPreviewUrl, type: "audio/mpeg" }] }
+        : {}),
+    },
     twitter: { card: "summary_large_image", title, description },
   };
 }

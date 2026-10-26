@@ -14,7 +14,7 @@
 // cumpliendo su función.
 
 import { playStoreClicked, type ClickSource } from "@/lib/analytics";
-import { PLAY_STORE_URL } from "@/lib/site";
+import { playStoreUrlFrom } from "@/lib/site";
 
 export function PlayStoreLink({
   source,
@@ -27,7 +27,7 @@ export function PlayStoreLink({
 }) {
   return (
     <a
-      href={PLAY_STORE_URL}
+      href={playStoreUrlFrom(source)}
       target="_blank"
       rel="noopener noreferrer"
       // Sin preventDefault ni espera: el evento sale por el mismo
