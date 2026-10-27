@@ -22,6 +22,8 @@ import { envelopeCursor, parseManifestEnvelope, type ClipEnvelope } from "@/lib/
 import { resampleLinear } from "@/lib/resample";
 import {
   applyTrackFxInPlace,
+  FX_TAIL_SECONDS,
+  hasFxTail,
   isMasterEqActive,
   isTrackFxActive,
   mixTracks,
@@ -295,12 +297,21 @@ export function renderProjectMix(
   tracks: MixdownTrack[],
   master: MasterFx,
   sampleRate: number,
+  /// Tempo del proyecto (negras por minuto), para el eco a tempo.
+  bpm = 120,
 ): RenderedMix {
+  const anySolo = tracks.some((t) => t.isSolo);
+  // El eco y el chorus siguen sonando después del último audio: la
+  // pista se alarga FX_TAIL_SECONDS (el motor hace lo mismo al exportar).
+  const anyTail = tracks.some(
+    (t) => !t.isMuted && (!anySolo || t.isSolo) && t.clips.length > 0 && hasFxTail(t.fx),
+  );
   const contentFrames = Math.max(
     1,
-    Math.ceil(contentDurationSeconds(tracks) * sampleRate),
+    Math.ceil(
+      (contentDurationSeconds(tracks) + (anyTail ? FX_TAIL_SECONDS : 0)) * sampleRate,
+    ),
   );
-  const anySolo = tracks.some((t) => t.isSolo);
 
   const mixTracksInput: MixTrack[] = [];
   for (const track of tracks) {
@@ -312,7 +323,7 @@ export function renderProjectMix(
     const samples = new Float32Array(contentFrames);
     for (const clip of track.clips) writeClipInto(samples, clip, sampleRate);
 
-    applyTrackFxInPlace(samples, track.fx, sampleRate);
+    applyTrackFxInPlace(samples, track.fx, sampleRate, bpm);
     mixTracksInput.push({
       samples,
       volume: track.volume,

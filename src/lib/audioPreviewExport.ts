@@ -57,7 +57,7 @@ interface ManifestTrack {
 }
 
 interface Manifest {
-  project?: { masterFx?: unknown };
+  project?: { masterFx?: unknown; tempoBpm?: number };
   tracks: ManifestTrack[];
 }
 
@@ -68,6 +68,8 @@ type DecodedTrack = MixdownTrack & { name: string };
 interface DecodedProject {
   tracks: DecodedTrack[];
   master: MasterFx;
+  /// Tempo del proyecto (negras por minuto): lo usa el eco a tempo.
+  tempoBpm: number;
 }
 
 export interface MixdownResult {
@@ -167,7 +169,11 @@ export async function loadDecodedTracks(
   const master = manifest.project?.masterFx
     ? parseMasterFx(manifest.project.masterFx)
     : DEFAULT_MASTER_FX;
-  return { tracks, master };
+  const tempoBpm =
+    typeof manifest.project?.tempoBpm === "number" && manifest.project.tempoBpm > 0
+      ? manifest.project.tempoBpm
+      : 120;
+  return { tracks, master, tempoBpm };
 }
 
 async function renderMixdown(
@@ -187,7 +193,7 @@ async function renderMixdown(
   // del navegador no son los mismos algoritmos.
   if (projectHasEffects(tracks, master)) {
     const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSeconds * rate), rate);
-    const mix = renderProjectMix(tracks, master, rate);
+    const mix = renderProjectMix(tracks, master, rate, project.tempoBpm);
     return {
       buffer: toAudioBuffer(mix, offlineCtx, rate),
       durationSeconds: mix.durationSeconds,

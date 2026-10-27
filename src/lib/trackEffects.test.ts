@@ -18,9 +18,12 @@ import {
   NO_TRACK_FX,
   parseMasterFx,
   parseTrackFx,
+  renderChorus,
   renderReverb,
+  delayDivisionSeconds,
   type TrackFx,
 } from "@/lib/trackEffects";
+import { renderProjectMix } from "@/lib/projectMixdown";
 
 const FS = 44100;
 const NO_LIMITER = { ...DEFAULT_MASTER_FX, limiterEnabled: false };
@@ -288,6 +291,15 @@ describe("parseo de parámetros", () => {
       compRatio: 6,
       compMakeupDb: 2,
       reverbSend: 0.4,
+      gateThresholdDb: -45,
+      satDrive: 0.6,
+      satToneHz: 4000,
+      satMix: 0.8,
+      delayDiv: 4,
+      delayFeedback: 0.4,
+      delayMix: 0.25,
+      chorusDepth: 0.7,
+      chorusMix: 0.5,
     });
     expect(fx).toEqual({
       eqLowDb: 3,
@@ -300,7 +312,21 @@ describe("parseo de parámetros", () => {
       compRatio: 6,
       compMakeupDb: 2,
       reverbSend: 0.4,
+      gateThresholdDb: -45,
+      satDrive: 0.6,
+      satToneHz: 4000,
+      satMix: 0.8,
+      delayDiv: 4,
+      delayFeedback: 0.4,
+      delayMix: 0.25,
+      chorusDepth: 0.7,
+      chorusMix: 0.5,
     });
+    // Un respaldo anterior al paquete 1 abre con todo apagado.
+    const old = parseTrackFx({ eqLowDb: 3 });
+    expect(isTrackFxActive({ ...old, eqLowDb: 0 })).toBe(false);
+    expect(old.delayDiv).toBe(0);
+    expect(old.chorusMix).toBe(0);
   });
 
   it("el limitador del máster queda encendido salvo que se apague explícitamente", () => {
@@ -313,5 +339,102 @@ describe("parseo de parámetros", () => {
     expect(isTrackFxActive({ ...NO_TRACK_FX, eqLowDb: 1 })).toBe(true);
     expect(isTrackFxActive({ ...NO_TRACK_FX, compEnabled: true })).toBe(true);
     expect(isTrackFxActive({ ...NO_TRACK_FX, reverbSend: 0.1 })).toBe(true);
+  });
+});
+
+// ─── Paquete 1 de efectos (2026-10-27) ──────────────────────────────────
+
+const rms = (x: Float32Array, from = 0, to = x.length) => {
+  let s = 0;
+  for (let i = from; i < to; i++) s += x[i] * x[i];
+  return Math.sqrt(s / Math.max(1, to - from));
+};
+
+/// Energía de [x] en [freq] (correlación con seno y coseno).
+function toneLevel(x: Float32Array, freq: number, from: number): number {
+  let re = 0;
+  let im = 0;
+  for (let i = from; i < x.length; i++) {
+    re += x[i] * Math.cos((2 * Math.PI * freq * i) / FS);
+    im += x[i] * Math.sin((2 * Math.PI * freq * i) / FS);
+  }
+  return Math.sqrt(re * re + im * im) / (x.length - from);
+}
+
+describe("paquete 1 de efectos", () => {
+  it("la puerta baja el ruido flojo unos 40 dB y deja pasar lo fuerte", () => {
+    const n = FS * 2;
+    const x = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const loud = i >= FS; // un segundo de ruido flojo, uno de seno fuerte
+      x[i] = loud ? 0.5 * Math.sin((2 * Math.PI * 440 * i) / FS) : 0.001 * (((i * 7919) % 200) / 100 - 1);
+    }
+    const before = rms(x, FS / 2, FS);
+    applyTrackFxInPlace(x, { ...NO_TRACK_FX, gateThresholdDb: -40 }, FS);
+    expect(20 * Math.log10(rms(x, FS / 2, FS) / before)).toBeLessThan(-35);
+    expect(rms(x, FS + FS / 10, n)).toBeGreaterThan(0.34);
+  });
+
+  it("la saturación agrega armónicos, no deja continua y apagada no toca nada", () => {
+    const make = () => {
+      const x = new Float32Array(FS);
+      for (let i = 0; i < FS; i++) x[i] = 0.3 * Math.sin((2 * Math.PI * 500 * i) / FS);
+      return x;
+    };
+    const dry = make();
+    const off = make();
+    applyTrackFxInPlace(off, { ...NO_TRACK_FX, satDrive: 0 }, FS);
+    expect(off).toEqual(dry);
+    const wet = make();
+    applyTrackFxInPlace(wet, { ...NO_TRACK_FX, satDrive: 0.7, satToneHz: 16000, satMix: 1 }, FS);
+    const third = toneLevel(wet, 1500, FS / 4) / toneLevel(wet, 500, FS / 4);
+    expect(third).toBeGreaterThan(0.05); // armónico impar marcado
+    let mean = 0;
+    for (let i = FS / 4; i < FS; i++) mean += wet[i];
+    expect(Math.abs(mean / (FS * 0.75))).toBeLessThan(0.005);
+    expect(Math.max(...wet.map(Math.abs))).toBeLessThan(1);
+  });
+
+  it("el eco repite a tempo, con el nivel pedido, y apaga cada repetición", () => {
+    expect(delayDivisionSeconds(3, 120)).toBeCloseTo(0.25, 9); // 1/8 a 120
+    expect(delayDivisionSeconds(4, 100)).toBeCloseTo(0.45, 9); // 1/8 con puntillo a 100
+    expect(delayDivisionSeconds(1, 60)).toBeCloseTo(0.09, 9); // slapback fijo
+    const x = new Float32Array(FS * 2);
+    x[0] = 1;
+    applyTrackFxInPlace(x, { ...NO_TRACK_FX, delayDiv: 3, delayFeedback: 0.5, delayMix: 0.4 }, FS, 120);
+    const d = Math.floor(0.25 * FS);
+    expect(x[0]).toBe(1);
+    expect(Math.abs(x[d])).toBeCloseTo(0.4, 6); // primera repetición, sin filtrar
+    // La segunda pasa por el lazo filtrado: más baja que 0,4 × 0,5.
+    let second = 0;
+    for (let i = 2 * d - 50; i < 2 * d + 50; i++) second = Math.max(second, Math.abs(x[i]));
+    expect(second).toBeGreaterThan(0);
+    expect(second).toBeLessThan(0.2);
+  });
+
+  it("el chorus abre a los dos lados y llega 14/21 ms tarde", () => {
+    const x = new Float32Array(FS);
+    x[0] = 1;
+    const { left, right } = renderChorus(x, 0, 1, FS);
+    const peakAt = (y: Float32Array) => y.reduce((best, v, i) => (Math.abs(v) > Math.abs(y[best]) ? i : best), 0);
+    expect(peakAt(left) / FS).toBeCloseTo(0.0145, 3);
+    expect(peakAt(right) / FS).toBeCloseTo(0.0215, 3);
+  });
+
+  it("la mezcla deja sonar las repeticiones del eco después del último clip", () => {
+    const buffer = { duration: 1, sampleRate: FS, numberOfChannels: 1, getChannelData: () => {
+      const d = new Float32Array(FS);
+      d[FS - 1] = 0.5;
+      return d;
+    } } as unknown as AudioBuffer;
+    const track = {
+      volume: 1, pan: 0, isMuted: false, isSolo: false,
+      fx: { ...NO_TRACK_FX, delayDiv: 5, delayFeedback: 0.3, delayMix: 0.5 },
+      clips: [{ startSeconds: 0, buffer }],
+    };
+    const dry = renderProjectMix([{ ...track, fx: NO_TRACK_FX }], NO_LIMITER, FS, 120);
+    const mix = renderProjectMix([track], NO_LIMITER, FS, 120);
+    expect(mix.durationSeconds - dry.durationSeconds).toBeCloseTo(3, 2);
+    expect(rms(mix.left, FS + FS / 4, FS * 2)).toBeGreaterThan(0); // la repetición a 1/4
   });
 });

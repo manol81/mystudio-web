@@ -85,6 +85,8 @@ export async function renderArrangementWithFx(
   tracks: PreviewTrack[],
   master: MasterFx,
   sampleRate = PREVIEW_SAMPLE_RATE,
+  /// Tempo del proyecto, para el eco a tempo.
+  tempoBpm = 120,
 ): Promise<{
   // <ArrayBuffer> explícito: es lo que exige AudioBuffer.copyToChannel,
   // así la mezcla llega hasta el reproductor sin una copia intermedia
@@ -121,7 +123,7 @@ export async function renderArrangementWithFx(
     });
   }
 
-  const mix = renderProjectMix(mixdownTracks, master, sampleRate);
+  const mix = renderProjectMix(mixdownTracks, master, sampleRate, tempoBpm);
   return { left: mix.left, right: mix.right, durationSeconds: mix.durationSeconds };
 }
 
@@ -137,8 +139,9 @@ export async function renderArrangementWithFx(
  * de hashear): va su identidad por `sampleId`/duración, que es lo que
  * cambia cuando se reemplaza el audio.
  */
-export function mixSignature(tracks: PreviewTrack[], master: MasterFx): string {
-  const parts: (string | number | boolean)[] = [
+export function mixSignature(tracks: PreviewTrack[], master: MasterFx, tempoBpm = 120): string {
+  const parts: (string | number | boolean | undefined)[] = [
+    tempoBpm, // el eco va a tempo
     master.reverbRoomSize,
     master.reverbDamping,
     master.reverbWet,
@@ -165,6 +168,15 @@ export function mixSignature(tracks: PreviewTrack[], master: MasterFx): string {
       track.fx.compRatio,
       track.fx.compMakeupDb,
       track.fx.reverbSend,
+      track.fx.gateThresholdDb,
+      track.fx.satDrive,
+      track.fx.satToneHz,
+      track.fx.satMix,
+      track.fx.delayDiv,
+      track.fx.delayFeedback,
+      track.fx.delayMix,
+      track.fx.chorusDepth,
+      track.fx.chorusMix,
     );
     for (const clip of track.clips) {
       parts.push(

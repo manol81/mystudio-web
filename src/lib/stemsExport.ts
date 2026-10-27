@@ -32,7 +32,14 @@ import {
   SAMPLE_RATE,
   type DecodedProject,
 } from "@/lib/audioPreviewExport";
-import { applyTrackFxInPlace, constantPowerGains } from "@/lib/trackEffects";
+import {
+  applyTrackFxInPlace,
+  chorusOn,
+  constantPowerGains,
+  FX_TAIL_SECONDS,
+  hasFxTail,
+  renderChorus,
+} from "@/lib/trackEffects";
 import { contentDurationSeconds, writeClipInto } from "@/lib/projectMixdown";
 
 /// Nombre del manifiesto dentro del ZIP.
@@ -84,7 +91,10 @@ async function renderStems(
     (t) => !t.isMuted && (!anySolo || t.isSolo) && t.clips.length > 0,
   );
 
-  const durationSeconds = Math.max(0.1, contentDurationSeconds(tracks));
+  // Eco y chorus siguen sonando después del último audio (3 s, como el
+  // motor al exportar).
+  const tail = audible.some((t) => hasFxTail(t.fx)) ? FX_TAIL_SECONDS : 0;
+  const durationSeconds = Math.max(0.1, contentDurationSeconds(tracks) + tail);
   const totalFrames = Math.ceil(durationSeconds * SAMPLE_RATE);
 
   const zip = new JSZip();
@@ -103,7 +113,10 @@ async function renderStems(
     // exactamente cómo el paquete de pistas se quedó sin el recorte
     // cuando la mezcla sí lo tenía.
     for (const clip of track.clips) writeClipInto(mono, clip, SAMPLE_RATE);
-    applyTrackFxInPlace(mono, track.fx, SAMPLE_RATE);
+    applyTrackFxInPlace(mono, track.fx, SAMPLE_RATE, project.tempoBpm);
+    const chorus = chorusOn(track.fx)
+      ? renderChorus(mono, track.fx.chorusDepth ?? 0.3, track.fx.chorusMix ?? 0, SAMPLE_RATE)
+      : null;
 
     // Volumen y paneo ya aplicados: así el oyente escucha cada pista
     // en el lugar del estéreo donde la puso el autor, y sumarlas
@@ -113,8 +126,8 @@ async function renderStems(
     const left = buffer.getChannelData(0);
     const right = buffer.getChannelData(1);
     for (let n = 0; n < totalFrames; n++) {
-      left[n] = mono[n] * lg;
-      right[n] = mono[n] * rg;
+      left[n] = (mono[n] + (chorus ? chorus.left[n] : 0)) * lg;
+      right[n] = (mono[n] + (chorus ? chorus.right[n] : 0)) * rg;
     }
 
     const file = `stem_${i}.mp3`;

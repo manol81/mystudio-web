@@ -1666,10 +1666,15 @@ export default function ArrangerPage() {
     setFxPreviewState("rendering");
     try {
       const previewTracks = await buildPreviewTracks();
-      const signature = mixSignature(previewTracks, importedMasterFx);
+      const signature = mixSignature(previewTracks, importedMasterFx, projectTempoBpm);
       let rendered = fxPreviewRef.current;
       if (!rendered || rendered.signature !== signature) {
-        const mix = await renderArrangementWithFx(previewTracks, importedMasterFx, ctx.sampleRate);
+        const mix = await renderArrangementWithFx(
+          previewTracks,
+          importedMasterFx,
+          ctx.sampleRate,
+          projectTempoBpm,
+        );
         const buffer = ctx.createBuffer(2, Math.max(1, mix.left.length), ctx.sampleRate);
         buffer.copyToChannel(mix.left, 0);
         buffer.copyToChannel(mix.right, 1);
@@ -5058,7 +5063,7 @@ export default function ArrangerPage() {
                         <button
                           type="button"
                           onClick={() => setFxPanelTrackId(track.id)}
-                          title="Efectos de la pista: ecualizador, compresor y envío a la reverb"
+                          title="Efectos de la pista: ecualizador, compresor, puerta, saturación, eco, chorus y reverb"
                           className={`h-5 rounded px-1.5 text-[10px] font-bold ${
                             isTrackFxActive(track.fx)
                               ? "bg-violet-400 text-black"

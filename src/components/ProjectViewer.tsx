@@ -318,6 +318,8 @@ export function ProjectViewer({
   // Efectos del máster del proyecto, para poder rehacer la mezcla
   // cuando el oyente silencia una pista.
   const masterFxRef = useRef<MasterFx>(DEFAULT_MASTER_FX);
+  // Tempo del proyecto, para el eco a tempo (2026-10-27).
+  const tempoBpmRef = useRef(120);
   // Segundo donde retomar después de rehacer la mezcla: playFrom lee
   // renderedMix del estado, que en ese mismo tick todavía es el viejo.
   const pendingResumeRef = useRef<number | null>(null);
@@ -481,9 +483,18 @@ export function ProjectViewer({
           clips: t.clips,
         }));
         masterFxRef.current = master;
+        tempoBpmRef.current =
+          typeof manifest.project.tempoBpm === "number" && manifest.project.tempoBpm > 0
+            ? manifest.project.tempoBpm
+            : 120;
         let mix: AudioBuffer | null = null;
         if (projectHasEffects(mixdownTracks, master)) {
-          const rendered = renderProjectMix(mixdownTracks, master, ctx.sampleRate);
+          const rendered = renderProjectMix(
+            mixdownTracks,
+            master,
+            ctx.sampleRate,
+            tempoBpmRef.current,
+          );
           mix = toAudioBuffer(rendered, ctx, ctx.sampleRate);
         }
 
@@ -728,7 +739,12 @@ export function ProjectViewer({
         fx: t.fx,
         clips: t.clips, // ver la nota de arriba: no reconstruir el clip
       }));
-      const rendered = renderProjectMix(mixdownTracks, masterFxRef.current, ctx.sampleRate);
+      const rendered = renderProjectMix(
+        mixdownTracks,
+        masterFxRef.current,
+        ctx.sampleRate,
+        tempoBpmRef.current,
+      );
       const buffer = toAudioBuffer(rendered, ctx, ctx.sampleRate);
       setRenderedMix(buffer);
       if (wasPlaying) {

@@ -38,7 +38,23 @@ export interface TrackFx {
   compRatio: number;
   compMakeupDb: number;
   reverbSend: number;
+  /// Paquete 1 de efectos (2026-10-27). Cada uno se apaga con su valor
+  /// neutro: puerta en -80 dB, saturación con drive 0, eco con división
+  /// 0, chorus con mezcla 0. Ausentes en proyectos anteriores.
+  gateThresholdDb?: number;
+  satDrive?: number;
+  satToneHz?: number;
+  satMix?: number;
+  /// 0 apagado, 1 slapback, 2 1/16, 3 1/8, 4 1/8 con puntillo, 5 1/4, 6 1/2.
+  delayDiv?: number;
+  delayFeedback?: number;
+  delayMix?: number;
+  chorusDepth?: number;
+  chorusMix?: number;
 }
+
+export const GATE_OFF_DB = -80;
+export const DEFAULT_SAT_TONE_HZ = 8000;
 
 export interface MasterFx {
   reverbRoomSize: number;
@@ -66,6 +82,15 @@ export const NO_TRACK_FX: TrackFx = {
   compRatio: 3,
   compMakeupDb: 0,
   reverbSend: 0,
+  gateThresholdDb: GATE_OFF_DB,
+  satDrive: 0,
+  satToneHz: DEFAULT_SAT_TONE_HZ,
+  satMix: 1,
+  delayDiv: 0,
+  delayFeedback: 0.3,
+  delayMix: 0.3,
+  chorusDepth: 0.3,
+  chorusMix: 0,
 };
 
 export const DEFAULT_MASTER_FX: MasterFx = {
@@ -97,8 +122,24 @@ export function parseTrackFx(json: unknown): TrackFx {
     compRatio: num("compRatio", 3),
     compMakeupDb: num("compMakeupDb", 0),
     reverbSend: num("reverbSend", 0),
+    gateThresholdDb: num("gateThresholdDb", GATE_OFF_DB),
+    satDrive: num("satDrive", 0),
+    satToneHz: num("satToneHz", DEFAULT_SAT_TONE_HZ),
+    satMix: num("satMix", 1),
+    delayDiv: Math.round(num("delayDiv", 0)),
+    delayFeedback: num("delayFeedback", 0.3),
+    delayMix: num("delayMix", 0.3),
+    chorusDepth: num("chorusDepth", 0.3),
+    chorusMix: num("chorusMix", 0),
   };
 }
+
+export const gateOn = (fx: TrackFx) => (fx.gateThresholdDb ?? GATE_OFF_DB) > GATE_OFF_DB;
+export const saturationOn = (fx: TrackFx) => (fx.satDrive ?? 0) > 0;
+export const delayOn = (fx: TrackFx) => (fx.delayDiv ?? 0) > 0 && (fx.delayMix ?? 0.3) > 0;
+export const chorusOn = (fx: TrackFx) => (fx.chorusMix ?? 0) > 0;
+/// Eco o chorus siguen sonando después del último audio de la pista.
+export const hasFxTail = (fx: TrackFx) => (fx.delayDiv ?? 0) > 0 || chorusOn(fx);
 
 export function parseMasterFx(json: unknown): MasterFx {
   if (!json || typeof json !== "object") return DEFAULT_MASTER_FX;
@@ -131,13 +172,17 @@ export function isTrackFxActive(fx: TrackFx): boolean {
     fx.eqHighDb !== 0 ||
     (fx.hpfHz ?? 0) > 0 ||
     fx.compEnabled ||
-    fx.reverbSend > 0
+    fx.reverbSend > 0 ||
+    gateOn(fx) ||
+    saturationOn(fx) ||
+    delayOn(fx) ||
+    chorusOn(fx)
   );
 }
 
 // ─── Biquad RBJ — idéntico a dsp::Biquad ────────────────────────────────
 
-type BiquadType = "lowShelf" | "peak" | "highShelf" | "highPass";
+type BiquadType = "lowShelf" | "peak" | "highShelf" | "highPass" | "lowPass";
 
 /// Mismos topes que setTrackEq/setMasterEq del motor.
 function clampMidHz(hz: number | undefined): number {
@@ -181,6 +226,15 @@ class Biquad {
       a0 = A + 1 - (A - 1) * cw + s;
       a1 = 2 * (A - 1 - (A + 1) * cw);
       a2 = A + 1 - (A - 1) * cw - s;
+    } else if (type === "lowPass") {
+      // Pasa-bajos de 2.º orden (tono de la saturación, 2026-10-27).
+      const alpha = sw / (2 * q);
+      b0 = (1 - cw) / 2;
+      b1 = 1 - cw;
+      b2 = (1 - cw) / 2;
+      a0 = 1 + alpha;
+      a1 = -2 * cw;
+      a2 = 1 - alpha;
     } else if (type === "highPass") {
       // Pasa-altos de 2.º orden (12 dB/oct); gainDb no se usa.
       const alpha = sw / (2 * q);
@@ -205,6 +259,14 @@ class Biquad {
     this.b2 = b2 / a0;
     this.a1 = a1 / a0;
     this.a2 = a2 / a0;
+  }
+
+  /// Una muestra (forma directa II transpuesta).
+  process(x: number): number {
+    const y = this.b0 * x + this.z1;
+    this.z1 = this.b1 * x - this.a1 * y + this.z2;
+    this.z2 = this.b2 * x - this.a2 * y;
+    return y;
   }
 
   /// Forma directa II transpuesta, igual que el motor.
@@ -379,6 +441,176 @@ export function applyLimiterInPlace(
   }
 }
 
+// ─── Paquete 1 de efectos (2026-10-27) — idéntico a dsp::Gate,
+// dsp::Saturator, dsp::Delay y dsp::Chorus del motor ─────────────────────
+//
+// Los coeficientes salen de las MISMAS constantes de tiempo que en el
+// motor, contra la tasa real del buffer (como el compresor): a 44,1 kHz
+// son los mismos números.
+
+/// Puerta de ruido: abre al pasar el umbral, cierra 4 dB por debajo
+/// después de 50 ms; abre en 1 ms, cierra en 80 ms hasta -40 dB.
+function gateInPlace(samples: Float32Array, thresholdDb: number, sampleRate: number): void {
+  const thr = dbToLin(thresholdDb);
+  const envRelease = Math.exp(-1 / (0.05 * sampleRate));
+  const openCoef = 1 - Math.exp(-1 / (0.001 * sampleRate));
+  const closeCoef = 1 - Math.exp(-1 / (0.08 * sampleRate));
+  const holdFrames = Math.round(0.05 * sampleRate);
+  let env = 0;
+  let gain = 1;
+  let open = false;
+  let hold = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const x = samples[i];
+    const level = Math.abs(x);
+    env = level > env ? level : env * envRelease;
+    if (env >= thr) {
+      open = true;
+      hold = holdFrames;
+    } else if (env < thr * 0.631) {
+      if (hold > 0) hold--;
+      else open = false;
+    }
+    const target = open ? 1 : 0.01;
+    gain += (target - gain) * (target > gain ? openCoef : closeCoef);
+    samples[i] = x * gain;
+  }
+}
+
+function logCosh(u: number): number {
+  const a = Math.abs(u);
+  return a + Math.log1p(Math.exp(-2 * a)) - 0.69314718;
+}
+
+/// Saturación tanh asimétrica con antialiasing por antiderivada, bloqueo
+/// de continua, tono (pasa-bajos) y mezcla con lo seco.
+function saturateInPlace(
+  samples: Float32Array,
+  drive: number,
+  toneHz: number,
+  mix: number,
+  sampleRate: number,
+): void {
+  const g = dbToLin(drive * 36);
+  const bias = 0.15 * drive;
+  const makeup = Math.pow(g, -0.6);
+  const tb = Math.tanh(bias);
+  const dcR = Math.exp((-2 * Math.PI * 3.5) / sampleRate);
+  const tone = new Biquad("lowPass", Math.max(1000, Math.min(16000, toneHz)), 0, sampleRate, 0.7071);
+  let prevU = 0;
+  let dcX1 = 0;
+  let dcY1 = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const x = samples[i];
+    const u = g * x + bias;
+    const du = u - prevU;
+    const y = Math.abs(du) > 1e-5 ? (logCosh(u) - logCosh(prevU)) / du : Math.tanh(0.5 * (u + prevU));
+    prevU = u;
+    const wet = (y - tb) * makeup;
+    const dc = wet - dcX1 + dcR * dcY1;
+    dcX1 = wet;
+    dcY1 = dc;
+    samples[i] = x * (1 - mix) + tone.process(dc) * mix;
+  }
+}
+
+/// Segundos de cada división del eco a [bpm] negras por minuto.
+export function delayDivisionSeconds(div: number, bpm: number): number {
+  const beat = 60 / Math.max(20, bpm);
+  switch (div) {
+    case 1: return 0.09; // slapback (fijo)
+    case 2: return beat * 0.25;
+    case 3: return beat * 0.5;
+    case 4: return beat * 0.75;
+    case 5: return beat;
+    case 6: return beat * 2;
+    default: return 0;
+  }
+}
+
+/// Eco con realimentación filtrada (pasa-bajos 4,5 kHz y pasa-altos
+/// 100 Hz dentro del lazo). Lo seco pasa entero; [mix] es el nivel de
+/// las repeticiones. Tope de 2 s, como el motor.
+function delayInPlace(
+  samples: Float32Array,
+  div: number,
+  feedback: number,
+  mix: number,
+  bpm: number,
+  sampleRate: number,
+): void {
+  const maxFrames = Math.round(2 * sampleRate) + 1;
+  const frames = Math.max(
+    1,
+    Math.floor(Math.min(delayDivisionSeconds(div, bpm) * sampleRate, maxFrames - 1)),
+  );
+  // Un anillo de frames+1 lee exactamente lo mismo que el de 2 s del
+  // motor: la muestra escrita hace `frames` pasos.
+  const size = frames + 1;
+  const buf = new Float32Array(size);
+  const lpCoef = 1 - Math.exp((-2 * Math.PI * 4500) / sampleRate);
+  const hpCoef = 1 - Math.exp((-2 * Math.PI * 100) / sampleRate);
+  let w = 0;
+  let lp = 0;
+  let hpLow = 0;
+  for (let i = 0; i < samples.length; i++) {
+    let r = w - frames;
+    if (r < 0) r += size;
+    const echo = buf[r];
+    lp += lpCoef * (echo - lp);
+    hpLow += hpCoef * (lp - hpLow);
+    const x = samples[i];
+    buf[w] = x + (lp - hpLow) * feedback;
+    if (++w >= size) w = 0;
+    samples[i] = x + echo * mix;
+  }
+}
+
+/// Doble / chorus: dos voces (14 y 21 ms) moduladas por dos LFO lentos,
+/// una a cada lado. Devuelve el húmedo YA multiplicado por la mezcla; se
+/// suma con las ganancias del paneo de la pista (ver mixTracks).
+export function renderChorus(
+  samples: Float32Array,
+  depth: number,
+  mix: number,
+  sampleRate: number,
+): { left: Float32Array; right: Float32Array } {
+  const size = Math.max(2048, Math.ceil(0.03 * sampleRate) + 2);
+  const buf = new Float32Array(size);
+  const modFrames = (0.0005 + depth * 0.0025) * sampleRate;
+  const baseL = 0.014 * sampleRate;
+  const baseR = 0.021 * sampleRate;
+  const incL = (2 * Math.PI * 0.37) / sampleRate;
+  const incR = (2 * Math.PI * 0.53) / sampleRate;
+  let phaseL = 0;
+  let phaseR = Math.PI / 2;
+  let w = 0;
+  const read = (delay: number) => {
+    let pos = w - delay;
+    while (pos < 0) pos += size;
+    const i0 = Math.floor(pos);
+    const frac = pos - i0;
+    return buf[i0 % size] * (1 - frac) + buf[(i0 + 1) % size] * frac;
+  };
+  const left = new Float32Array(samples.length);
+  const right = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    buf[w] = samples[i];
+    left[i] = read(baseL + modFrames * Math.sin(phaseL)) * mix;
+    right[i] = read(baseR + modFrames * Math.sin(phaseR)) * mix;
+    phaseL += incL;
+    if (phaseL > 2 * Math.PI) phaseL -= 2 * Math.PI;
+    phaseR += incR;
+    if (phaseR > 2 * Math.PI) phaseR -= 2 * Math.PI;
+    if (++w >= size) w = 0;
+  }
+  return { left, right };
+}
+
+/// Segundos que una pista sigue sonando después de su último audio (las
+/// repeticiones del eco, la cola del chorus) — los mismos 3 s del motor.
+export const FX_TAIL_SECONDS = 3;
+
 // ─── Cadena por pista ───────────────────────────────────────────────────
 
 /// EQ de 3 bandas → compresor, sobre la pista ENTERA (no clip por
@@ -391,11 +623,17 @@ export function applyTrackFxInPlace(
   samples: Float32Array,
   fx: TrackFx,
   sampleRate: number,
+  /// Tempo del proyecto (negras por minuto), para el eco.
+  bpm = 120,
 ): Float32Array {
   // El corte de graves va PRIMERO, como en el motor.
   const hpf = clampHpfHz(fx.hpfHz);
   if (hpf > 0) {
     new Biquad("highPass", hpf, 0, sampleRate, 0.7071).processInPlace(samples);
+  }
+  // Puerta de ruido: después del corte, antes de todo lo que suma nivel.
+  if (gateOn(fx)) {
+    gateInPlace(samples, Math.max(-80, Math.min(-20, fx.gateThresholdDb ?? GATE_OFF_DB)), sampleRate);
   }
   if (fx.eqLowDb !== 0) {
     new Biquad("lowShelf", 100, fx.eqLowDb, sampleRate).processInPlace(samples);
@@ -406,8 +644,30 @@ export function applyTrackFxInPlace(
   if (fx.eqHighDb !== 0) {
     new Biquad("highShelf", 8000, fx.eqHighDb, sampleRate).processInPlace(samples);
   }
+  // Saturación después del EQ, como el motor.
+  if (saturationOn(fx)) {
+    saturateInPlace(
+      samples,
+      Math.min(1, fx.satDrive ?? 0),
+      fx.satToneHz ?? DEFAULT_SAT_TONE_HZ,
+      Math.max(0, Math.min(1, fx.satMix ?? 1)),
+      sampleRate,
+    );
+  }
   if (fx.compEnabled) {
     compressInPlace(samples, fx.compThresholdDb, fx.compRatio, fx.compMakeupDb, sampleRate);
+  }
+  // Eco después del compresor (si no, las repeticiones lo harían bombear).
+  const div = Math.max(0, Math.min(6, Math.round(fx.delayDiv ?? 0)));
+  if (div > 0) {
+    delayInPlace(
+      samples,
+      div,
+      Math.max(0, Math.min(0.9, fx.delayFeedback ?? 0.3)),
+      Math.max(0, Math.min(1, fx.delayMix ?? 0.3)),
+      bpm,
+      sampleRate,
+    );
   }
   return samples;
 }
@@ -474,6 +734,19 @@ export function mixTracks(
       if (bus !== null && send > 0) bus[i] += s * sendGain;
       left[i] += s * lg;
       right[i] += s * rg;
+    }
+    // Doble / chorus: cada voz a su lado, con las ganancias del paneo.
+    if (chorusOn(track.fx)) {
+      const wet = renderChorus(
+        track.samples.subarray(0, n),
+        Math.max(0, Math.min(1, track.fx.chorusDepth ?? 0.3)),
+        Math.min(1, track.fx.chorusMix ?? 0),
+        sampleRate,
+      );
+      for (let i = 0; i < n; i++) {
+        left[i] += wet.left[i] * lg;
+        right[i] += wet.right[i] * rg;
+      }
     }
   }
 

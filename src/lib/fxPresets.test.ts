@@ -8,6 +8,7 @@ import {
   LOW_CUT_STEPS_HZ,
   MASTER_EQ_PRESETS,
   TRACK_FX_PRESETS,
+  TRACK_FX_PRESET_GROUPS,
   applyMasterPreset,
   applyTrackPreset,
   formatHz,
@@ -32,8 +33,13 @@ describe("presets de pista", () => {
   it("los ids y valores son los de la app", () => {
     expect(TRACK_FX_PRESETS.map((p) => p.id)).toEqual([
       "vocals", "acousticGuitar", "electricGuitar", "bass", "drums", "keys",
-      "removeMud", "softenHarshness", "lofi",
+      "doubleVocals", "vocalEcho", "stadiumVocals", "distortedVocals", "oldRadio", "megaphone",
+      "slapback", "crunchGuitar", "chorusGuitar", "drivenBass",
+      "removeMud", "softenHarshness", "cleanNoise", "lofi",
     ]);
+    const grouped = TRACK_FX_PRESET_GROUPS.flatMap((g) => g.ids);
+    expect(new Set(grouped)).toEqual(new Set(TRACK_FX_PRESETS.map((p) => p.id)));
+    expect(grouped.length).toBe(TRACK_FX_PRESETS.length);
     expect(MASTER_EQ_PRESETS.map((p) => p.id)).toEqual([
       "flat", "warm", "bright", "lessMud", "smallSpeakers",
     ]);
@@ -47,9 +53,22 @@ describe("presets de pista", () => {
     expect(harsh.hpfHz).toBe(120);
   });
 
+  it("pasar de Voz con eco a Voz saca el eco; Limpiar ruido solo prende la puerta", () => {
+    const find = (id: string) => TRACK_FX_PRESETS.find((p) => p.id === id)!;
+    const eco = applyTrackPreset(find("vocalEcho"), NO_TRACK_FX);
+    expect(eco.delayDiv).toBe(3);
+    const voz = applyTrackPreset(find("vocals"), eco);
+    expect(voz.delayDiv).toBe(0);
+    expect(matchingTrackPreset(voz)?.id).toBe("vocals");
+    const dist = applyTrackPreset(find("distortedVocals"), NO_TRACK_FX);
+    const clean = applyTrackPreset(find("cleanNoise"), dist);
+    expect(clean.gateThresholdDb).toBe(-50);
+    expect(clean.satDrive).toBe(dist.satDrive);
+  });
+
   it("mover un slider pasa a Personalizado", () => {
     const fx = applyTrackPreset(TRACK_FX_PRESETS[0], NO_TRACK_FX);
-    expect(matchingTrackPreset({ ...fx, eqHighDb: fx.eqHighDb + 1 })).toBeNull();
+    expect(matchingTrackPreset({ ...fx, eqHighDb: (fx.eqHighDb ?? 0) + 1 })).toBeNull();
   });
 });
 

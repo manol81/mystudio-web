@@ -17,8 +17,13 @@ import { X } from "lucide-react";
 import {
   DEFAULT_EQ_MID_HZ,
   DEFAULT_MASTER_FX,
+  DEFAULT_SAT_TONE_HZ,
+  GATE_OFF_DB,
   NO_TRACK_FX,
+  chorusOn,
+  gateOn,
   isTrackFxActive,
+  saturationOn,
   type MasterFx,
   type TrackFx,
 } from "@/lib/trackEffects";
@@ -26,6 +31,7 @@ import {
   LOW_CUT_STEPS_HZ,
   MASTER_EQ_PRESETS,
   TRACK_FX_PRESETS,
+  TRACK_FX_PRESET_GROUPS,
   applyMasterPreset,
   applyTrackPreset,
   formatHz,
@@ -33,7 +39,9 @@ import {
   matchingMasterEqPreset,
   matchingTrackPreset,
   midHzToSlider,
+  satToneToSlider,
   sliderToMidHz,
+  sliderToSatTone,
 } from "@/lib/fxPresets";
 
 function Slider({
@@ -83,12 +91,16 @@ function percent(value: number): string {
 function PresetSelect({
   current,
   options,
+  groups,
   onSelect,
 }: {
   current: string;
   options: { id: string; name: string }[];
+  /// Opcional: la lista separada en grupos (los presets de pista).
+  groups?: { name: string; ids: string[] }[];
   onSelect: (id: string) => void;
 }) {
+  const nameOf = (id: string) => options.find((o) => o.id === id)?.name ?? id;
   return (
     <label className="flex items-center gap-3 text-xs">
       <span className="w-28 shrink-0 text-white/60">Preset</span>
@@ -102,11 +114,21 @@ function PresetSelect({
         <option value="" className="bg-graphite">
           {current}
         </option>
-        {options.map((o) => (
-          <option key={o.id} value={o.id} className="bg-graphite">
-            {o.name}
-          </option>
-        ))}
+        {groups
+          ? groups.map((g) => (
+              <optgroup key={g.name} label={g.name} className="bg-graphite">
+                {g.ids.map((id) => (
+                  <option key={id} value={id} className="bg-graphite">
+                    {nameOf(id)}
+                  </option>
+                ))}
+              </optgroup>
+            ))
+          : options.map((o) => (
+              <option key={o.id} value={o.id} className="bg-graphite">
+                {o.name}
+              </option>
+            ))}
       </select>
     </label>
   );
@@ -124,6 +146,34 @@ function MidFreqSlider({ hz, onChange }: { hz: number; onChange: (hz: number) =>
       onChange={(t) => onChange(sliderToMidHz(t))}
     />
   );
+}
+
+/// Divisiones del eco: mismos números que DelayDivision en la app.
+const DELAY_DIVISIONS = [
+  { value: 1, label: "Slapback" },
+  { value: 2, label: "1/16" },
+  { value: 3, label: "1/8" },
+  { value: 4, label: "1/8 con puntillo" },
+  { value: 5, label: "1/4" },
+  { value: 6, label: "1/2" },
+];
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-xs text-white/60">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="accent-neon-cyan"
+      />
+      Activado
+    </label>
+  );
+}
+
+function Hint({ children }: { children: React.ReactNode }) {
+  return <p className="text-[11px] leading-relaxed text-white/35">{children}</p>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -158,6 +208,7 @@ export function TrackFxPanel({
         <PresetSelect
           current={preset ? preset.name : isTrackFxActive(fx) ? "Personalizado" : "Ninguno"}
           options={TRACK_FX_PRESETS}
+          groups={TRACK_FX_PRESET_GROUPS}
           onSelect={(id) => {
             const p = TRACK_FX_PRESETS.find((x) => x.id === id);
             if (p) onChange(applyTrackPreset(p, fx));
@@ -244,6 +295,128 @@ export function TrackFxPanel({
           display={db(fx.compMakeupDb)}
           onChange={(v) => set({ compMakeupDb: v })}
         />
+      </Section>
+
+      <Section title="Puerta de ruido">
+        <Toggle checked={gateOn(fx)} onChange={(on) => set({ gateThresholdDb: on ? -50 : GATE_OFF_DB })} />
+        {gateOn(fx) && (
+          <Slider
+            label="Umbral"
+            value={Math.max(-70, fx.gateThresholdDb ?? -50)}
+            min={-70}
+            max={-20}
+            step={1}
+            display={`${(fx.gateThresholdDb ?? -50).toFixed(0)} dB`}
+            onChange={(v) => set({ gateThresholdDb: v })}
+          />
+        )}
+        <Hint>Silencia lo que queda por debajo del umbral: ruido de fondo y respiraciones entre frases.</Hint>
+      </Section>
+
+      <Section title="Saturación">
+        <Toggle checked={saturationOn(fx)} onChange={(on) => set({ satDrive: on ? 0.3 : 0 })} />
+        {saturationOn(fx) && (
+          <>
+            <Slider
+              label="Intensidad"
+              value={fx.satDrive ?? 0}
+              min={0.01}
+              max={1}
+              step={0.01}
+              display={percent(fx.satDrive ?? 0)}
+              onChange={(v) => set({ satDrive: v })}
+            />
+            <Slider
+              label="Tono"
+              value={satToneToSlider(fx.satToneHz ?? DEFAULT_SAT_TONE_HZ)}
+              min={0}
+              max={1}
+              step={0.01}
+              display={formatHz(fx.satToneHz ?? DEFAULT_SAT_TONE_HZ)}
+              onChange={(t) => set({ satToneHz: sliderToSatTone(t) })}
+            />
+            <Slider
+              label="Mezcla"
+              value={fx.satMix ?? 1}
+              min={0}
+              max={1}
+              step={0.05}
+              display={percent(fx.satMix ?? 1)}
+              onChange={(v) => set({ satMix: v })}
+            />
+          </>
+        )}
+      </Section>
+
+      <Section title="Eco">
+        <Toggle
+          checked={(fx.delayDiv ?? 0) > 0}
+          onChange={(on) => set({ delayDiv: on ? 3 : 0 })}
+        />
+        {(fx.delayDiv ?? 0) > 0 && (
+          <>
+            <label className="flex items-center gap-3 text-xs">
+              <span className="w-28 shrink-0 text-white/60">Tiempo</span>
+              <select
+                value={fx.delayDiv}
+                onChange={(e) => set({ delayDiv: Number(e.target.value) })}
+                className="flex-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-white"
+              >
+                {DELAY_DIVISIONS.map((d) => (
+                  <option key={d.value} value={d.value} className="bg-graphite">
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Slider
+              label="Repeticiones"
+              value={fx.delayFeedback ?? 0.3}
+              min={0}
+              max={0.9}
+              step={0.05}
+              display={percent(fx.delayFeedback ?? 0.3)}
+              onChange={(v) => set({ delayFeedback: v })}
+            />
+            <Slider
+              label="Nivel"
+              value={fx.delayMix ?? 0.3}
+              min={0}
+              max={1}
+              step={0.05}
+              display={percent(fx.delayMix ?? 0.3)}
+              onChange={(v) => set({ delayMix: v })}
+            />
+          </>
+        )}
+        <Hint>Va al tempo del proyecto, salvo el slapback (un eco corto y fijo).</Hint>
+      </Section>
+
+      <Section title="Doble / chorus">
+        <Toggle checked={chorusOn(fx)} onChange={(on) => set({ chorusMix: on ? 0.5 : 0 })} />
+        {chorusOn(fx) && (
+          <>
+            <Slider
+              label="Profundidad"
+              value={fx.chorusDepth ?? 0.3}
+              min={0}
+              max={1}
+              step={0.05}
+              display={percent(fx.chorusDepth ?? 0.3)}
+              onChange={(v) => set({ chorusDepth: v })}
+            />
+            <Slider
+              label="Mezcla"
+              value={fx.chorusMix ?? 0.5}
+              min={0.05}
+              max={1}
+              step={0.05}
+              display={percent(fx.chorusMix ?? 0.5)}
+              onChange={(v) => set({ chorusMix: v })}
+            />
+          </>
+        )}
+        <Hint>Con poca profundidad suena a la misma toma grabada dos veces; con mucha, a chorus.</Hint>
       </Section>
 
       <Section title="Reverb">
