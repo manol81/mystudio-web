@@ -40,7 +40,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
       "**Usá auriculares con cable.** Con el parlante, lo que ya está grabado se filtra en la toma nueva; el Bluetooth agrega un retraso que no se puede corregir.",
       "**Calibrá una vez por teléfono** (ícono de perillas, arriba → **Medir automáticamente**). La app toca unos clics y mide cuánto tarda el micrófono en escucharlos, para que tus tomas caigan justo en el tiempo. Ahí mismo está **Ganancia del micrófono**, si tus tomas suenan bajas.",
       "La toma empieza donde está el cursor: podés entrar a mitad de canción, sin volver a grabar todo desde el principio. Si grabás **encima** de algo, lo anterior no se pierde: queda como otra **toma**, y con **Tomas** (en la barra del clip) elegís qué parte de cada una queda.",
-      "**Placa de sonido USB** (por ejemplo una Focusrite Scarlett): conectala con un cable a USB-C o un adaptador OTG. Cada pista muestra **E1 / E2** para elegir de qué entrada graba, y podés armar dos pistas para grabar voz y guitarra a la vez, cada una en su pista. La placa se calibra aparte del teléfono.",
+      "**Placa de sonido USB** (por ejemplo una Focusrite Scarlett): conectala con un cable a USB-C o un adaptador OTG. Cada pista muestra **E1 / E2** para elegir de qué entrada graba, y podés armar dos pistas para grabar voz y guitarra a la vez, cada una en su pista. Con la placa se graba en **24 bit**, con margen para dejar los picos lejos del máximo. La placa se calibra aparte del teléfono.",
     ],
   },
   {
