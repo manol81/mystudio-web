@@ -49,7 +49,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     where: "App",
     items: [
       "Cada pista tiene volumen, paneo, **M** (silenciar) y **S** (solo).",
-      "**FX** en cada pista: un **preset** para empezar (Voz, Guitarra, Bajo… y con carácter: Doble voz, Voz con eco, Voz de estadio, Voz distorsionada, Radio vieja, Megáfono, Guitarra crunch…), corte de graves, ecualizador de graves/medios/agudos con la frecuencia de los medios movible, compresor, **puerta de ruido**, **saturación**, **eco** al tempo del proyecto, **doble / chorus** y cuánto manda a la reverb. El botón se pone violeta cuando hay algo activo.",
+      "**FX** en cada pista: un **preset** para empezar (Voz, Guitarra, Bajo… y con carácter: Doble voz, Voz con eco, Voz de estadio, Voz distorsionada, Radio vieja, Megáfono, Guitarra crunch…), corte de graves, ecualizador de graves/medios/agudos con la frecuencia de los medios movible, compresor, **puerta de ruido**, **saturación**, **eco** al tempo del proyecto, **doble / chorus** y cuánto manda a la reverb. El botón se pone violeta cuando hay algo activo. Si la pista tiene audio, al final están las **voces extra**: **Armonía** (una pista nueva con la toma a otra distancia, por ejemplo una quinta arriba) y **Coro** (dos o cuatro copias a los costados, como varias personas cantando lo mismo).",
       "**Máster** (ícono de ecualizador arriba): un ecualizador para toda la mezcla con sus presets (Cálido, Brillante, Parlantes chicos…), el tamaño de la reverb y el limitador, que evita que la mezcla distorsione. Dejalo prendido.",
     ],
   },
