@@ -70,7 +70,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     title: "Exportar y respaldar",
     where: "App",
     items: [
-      "**Exportar y compartir**: **MP3** gratis, para WhatsApp, mail o redes; **WAV 24 bit**, máxima calidad para llevar a otro programa (PRO, o gratis viendo un video); y **Pistas por separado (stems)**, un WAV por pista (PRO). Con **Volumen como en Spotify** prendido, la mezcla sale al nivel de las plataformas (−14 LUFS) sin saturar.",
+      "**Exportar y compartir**: **MP3** gratis, para WhatsApp, mail o redes; **WAV 24 bit**, máxima calidad para llevar a otro programa (PRO, o gratis viendo un video); y **Pistas por separado (stems)**, un WAV por pista (PRO). Con **Volumen como en Spotify** prendido, la mezcla sale al nivel de las plataformas (−14 LUFS) sin saturar. **Video para redes**: un video vertical o cuadrado con la onda animada, el título y tu nombre, para Reels, TikTok o Stories (15, 30 o 60 s); el texto para la publicación queda copiado.",
       "**Exportar respaldo** (menú del proyecto): guarda el proyecto COMPLETO en un archivo `.mystudio`. Para restaurarlo, **Importar proyecto**.",
       "**MY STUDIO PRO** es un pago único, para siempre: pistas ilimitadas (la versión gratis tiene 4 por proyecto) y las exportaciones de calidad. Sin PRO, al llegar al límite podés **ver un video** a cambio de una pista más en ese proyecto, cuantas veces quieras.",
     ],
