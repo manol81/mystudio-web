@@ -41,6 +41,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
       "**Calibrá una vez por teléfono** (ícono de perillas, arriba → **Medir automáticamente**). La app toca unos clics y mide cuánto tarda el micrófono en escucharlos, para que tus tomas caigan justo en el tiempo. Ahí mismo está **Ganancia del micrófono**, si tus tomas suenan bajas.",
       "La toma empieza donde está el cursor: podés entrar a mitad de canción, sin volver a grabar todo desde el principio. Si grabás **encima** de algo, lo anterior no se pierde: queda como otra **toma**, y con **Tomas** (en la barra del clip) elegís qué parte de cada una queda.",
       "**Placa de sonido USB** (por ejemplo una Focusrite Scarlett): conectala con un cable a USB-C o un adaptador OTG. Cada pista muestra **E1 / E2** para elegir de qué entrada graba, y podés armar dos pistas para grabar voz y guitarra a la vez, cada una en su pista. Con la placa se graba en **24 bit**, con margen para dejar los picos lejos del máximo. La placa se calibra aparte del teléfono.",
+      "**Batería automática** (en **Agregar pista**): elegí un estilo —Rock, Pop, Balada, Cumbia, Reggaetón o Shuffle— y se arma una pista de batería al tempo del proyecto, del largo de la canción y con un redoble cada 8 compases. Sirve para grabar encima sin metrónomo; después es una pista más.",
     ],
   },
   {
@@ -49,7 +50,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     where: "App",
     items: [
       "Cada pista tiene volumen, paneo, **M** (silenciar) y **S** (solo).",
-      "**FX** en cada pista: un **preset** para empezar (Voz, Guitarra, Bajo… y con carácter: Doble voz, Voz con eco, Voz de estadio, Voz distorsionada, Radio vieja, Megáfono, Guitarra crunch…), corte de graves, ecualizador de graves/medios/agudos con la frecuencia de los medios movible, compresor, **puerta de ruido**, **saturación**, **eco** al tempo del proyecto, **doble / chorus** y cuánto manda a la reverb. El botón se pone violeta cuando hay algo activo. Si la pista tiene audio, al final están las **voces extra**: **Armonía** (una pista nueva con la toma a otra distancia, por ejemplo una quinta arriba) y **Coro** (dos o cuatro copias a los costados, como varias personas cantando lo mismo).",
+      "**FX** en cada pista: un **preset** para empezar (Voz, Guitarra, Bajo… y con carácter: Doble voz, Voz con eco, Voz de estadio, Voz distorsionada, Radio vieja, Megáfono, Guitarra crunch…), corte de graves, ecualizador de graves/medios/agudos con la frecuencia de los medios movible, compresor, **puerta de ruido**, **saturación**, **eco** al tempo del proyecto, **doble / chorus** y cuánto manda a la reverb. El botón se pone violeta cuando hay algo activo. Si la pista tiene audio, al final están las **voces extra**: **Armonía** (una pista nueva con la toma a otra altura: siguiendo la escala del tema, como un coro de verdad, o a distancia fija, por ejemplo una quinta arriba) y **Coro** (dos o cuatro copias a los costados, como varias personas cantando lo mismo).",
       "**Máster** (ícono de ecualizador arriba): un ecualizador para toda la mezcla con sus presets (Cálido, Brillante, Parlantes chicos…), el tamaño de la reverb y el limitador, que evita que la mezcla distorsione. Dejalo prendido.",
     ],
   },
@@ -63,6 +64,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
       "**Loop**: repite el clip seleccionado, el tramo entre marcadores o todo el proyecto. Mantené apretado para elegir el rango a mano. Ideal para ensayar una parte hasta que salga.",
       "**Deshacer** está arriba, por si algo salió mal.",
       "**Importar audio**: sumá un MP3 o WAV de tu teléfono como pista nueva. También podés compartir un audio desde WhatsApp o el mail directo a MY STUDIO.",
+      "**Afinar** (en la barra del clip seleccionado): la app encuentra las notas de una voz o de un instrumento de una nota a la vez y las lleva a la escala que elijas (o que detecta). **Natural** corrige cada nota entera y respeta el vibrato; **Robot** es el efecto de autotune. Cada nota se puede arrastrar a otra. El original no se toca: **Quitar afinación** vuelve a como lo grabaste.",
     ],
   },
   {
