@@ -120,9 +120,9 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     id: "colaborar",
     title: "Comunidad y colaboraciones",
     where: "App + Web",
-    intro: "Publicar se hace desde la web; grabar tu parte, desde la app.",
+    intro: "Publicar se puede desde la app o la web; grabar tu parte, desde la app.",
     items: [
-      "**Comunidad** (web): publicá un tema, escuchá, comentá y dale me gusta a lo de otros. Al publicar podés marcar **qué instrumentos te faltan**.",
+      "**Comunidad**: publicá un tema desde la app (en el mezclador, **Publicar en la Comunidad**) o desde la web; escuchá, comentá y dale me gusta a lo de otros en la web. Al publicar podés marcar **qué instrumentos te faltan**.",
       "**Buscan músicos** (web): temas que necesitan a alguien. Filtrá por tu instrumento y pedí sumarte.",
       "**Si sos el autor**: aceptás o rechazás los pedidos (en la web o en el ícono de apretón de manos de la app).",
       "**Si te aceptaron:**",
