@@ -34,7 +34,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
     title: "Grabar tu primera toma",
     where: "App",
     items: [
-      "Tocá **Nuevo Proyecto**, ponele nombre y tempo (BPM).",
+      "Tocá **Nuevo Proyecto**, ponele nombre y tempo (BPM). El tempo se cambia después desde **Tempo** arriba (o tocándolo al ritmo), y **tocando el reloj** de arriba la línea de tiempo se cuenta en **compases** en vez de minutos.",
       "**Agregar primera pista** → **Grabar pista nueva**. Armala con el botón **R** y tocá **Grabar**.",
       "**Pre-cuenta**: el ícono del cronómetro te da uno o más compases de clic antes de que empiece la toma.",
       "**Usá auriculares con cable.** Con el parlante, lo que ya está grabado se filtra en la toma nueva; el Bluetooth agrega un retraso que no se puede corregir.",
