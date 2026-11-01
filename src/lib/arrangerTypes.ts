@@ -120,4 +120,9 @@ export interface ArrangerTrack {
   // Arranger no las muestra: las devuelve al guardar, con sus archivos,
   // para que un viaje por la web no las borre (ver importPassthrough.ts).
   importedTakes?: ImportedTake[];
+  // Las recetas de la app (batería por patrones y pistas de notas). Tampoco
+  // se editan acá: sin devolverlas, guardar en la web le sacaba a la pista
+  // la opción de seguir editándola en el teléfono.
+  beatSequence?: string;
+  midiPart?: string;
 }

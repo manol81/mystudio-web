@@ -357,6 +357,8 @@ interface ImportManifestTrack {
   // Tomas de la app (2026-10-15). El Arranger no las usa: las devuelve
   // al guardar (ver importPassthrough.ts).
   takes?: Record<string, unknown>[];
+  beatSequence?: unknown;
+  midiPart?: unknown;
 }
 
 interface ImportManifest {
@@ -3059,6 +3061,8 @@ export default function ArrangerPage() {
           isMuted: track.isMuted,
           isSolo: track.isSolo,
           fx: track.fx,
+          ...(track.beatSequence ? { beatSequence: track.beatSequence } : {}),
+          ...(track.midiPart ? { midiPart: track.midiPart } : {}),
           // Tomas de la app, devueltas con sus archivos.
           ...(() => {
             const takes = (track.importedTakes ?? []).flatMap((t) => {
@@ -3553,6 +3557,8 @@ export default function ArrangerPage() {
         // los reproduce, solo evita que un round-trip los borre.
         fx: parseTrackFx(track.fx),
         importedTakes: takesByTrack[ti],
+        ...(typeof track.beatSequence === "string" ? { beatSequence: track.beatSequence } : {}),
+        ...(typeof track.midiPart === "string" ? { midiPart: track.midiPart } : {}),
       };
       // SILENT: las pistas se revelan de a una para que se vean
       // aparecer, pero eso es UNA importación, no N acciones del
