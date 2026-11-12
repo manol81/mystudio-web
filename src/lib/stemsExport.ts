@@ -41,6 +41,7 @@ import {
   renderChorus,
 } from "@/lib/trackEffects";
 import { contentDurationSeconds, writeClipInto } from "@/lib/projectMixdown";
+import { hasAutomation, laneValueAt, volumeGainAt } from "@/lib/trackAutomation";
 
 /// Nombre del manifiesto dentro del ZIP.
 export const STEMS_MANIFEST = "stems.json";
@@ -121,13 +122,29 @@ async function renderStems(
     // Volumen y paneo ya aplicados: así el oyente escucha cada pista
     // en el lugar del estéreo donde la puso el autor, y sumarlas
     // reproduce la mezcla.
-    const { left: lg, right: rg } = constantPowerGains(track.volume, track.pan);
     const buffer = offline.createBuffer(2, totalFrames, SAMPLE_RATE);
     const left = buffer.getChannelData(0);
     const right = buffer.getChannelData(1);
-    for (let n = 0; n < totalFrames; n++) {
-      left[n] = (mono[n] + (chorus ? chorus.left[n] : 0)) * lg;
-      right[n] = (mono[n] + (chorus ? chorus.right[n] : 0)) * rg;
+    const auto = hasAutomation(track.automation) ? track.automation! : null;
+    if (auto === null) {
+      const { left: lg, right: rg } = constantPowerGains(track.volume, track.pan);
+      for (let n = 0; n < totalFrames; n++) {
+        left[n] = (mono[n] + (chorus ? chorus.left[n] : 0)) * lg;
+        right[n] = (mono[n] + (chorus ? chorus.right[n] : 0)) * rg;
+      }
+    } else {
+      // Automatización (app +70): volumen y paneo que cambian en el tiempo,
+      // recalculados cada 64 muestras como en la mezcla.
+      for (let start = 0; start < totalFrames; start += 64) {
+        const t = start / SAMPLE_RATE;
+        const vol = track.volume * (auto.volume.length ? volumeGainAt(auto.volume, t) : 1);
+        const { left: lg, right: rg } = constantPowerGains(vol, laneValueAt(auto.pan, t) ?? track.pan);
+        const end = Math.min(totalFrames, start + 64);
+        for (let n = start; n < end; n++) {
+          left[n] = (mono[n] + (chorus ? chorus.left[n] : 0)) * lg;
+          right[n] = (mono[n] + (chorus ? chorus.right[n] : 0)) * rg;
+        }
+      }
     }
 
     const file = `stem_${i}.mp3`;

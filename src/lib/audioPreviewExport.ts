@@ -37,6 +37,7 @@ import {
   type MixdownTrack,
 } from "@/lib/projectMixdown";
 import { DEFAULT_MASTER_FX, parseMasterFx, parseTrackFx, type MasterFx } from "@/lib/trackEffects";
+import { parseTrackAutomation } from "@/lib/trackAutomation";
 
 // El recorte, el volumen y los fades del clip (formatVersion 3) los
 // describe ManifestClipFields, en projectMixdown.ts — compartido con
@@ -54,6 +55,7 @@ interface ManifestTrack {
   isSolo: boolean;
   clips: ManifestClip[];
   fx?: unknown;
+  automation?: unknown;
 }
 
 interface Manifest {
@@ -161,6 +163,7 @@ export async function loadDecodedTracks(
       isSolo: track.isSolo,
       // Ausente en respaldos anteriores a los efectos → todo neutro.
       fx: parseTrackFx(track.fx),
+      automation: parseTrackAutomation(track.automation),
       clips,
     });
   }

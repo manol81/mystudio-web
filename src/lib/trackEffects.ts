@@ -22,6 +22,8 @@
 //
 // Si se toca el DSP del motor, hay que tocar esto en el mismo commit.
 
+import { hasAutomation, laneValueAt, volumeGainAt, type TrackAutomation } from "./trackAutomation";
+
 // ─── Parámetros (mismas claves que TrackFxSettings/MasterFxSettings) ────
 
 export interface TrackFx {
@@ -690,7 +692,14 @@ export interface MixTrack {
   volume: number;
   pan: number;
   fx: TrackFx;
+  /// Volumen, paneo y envío a lo largo de la canción (app +70, ver
+  /// trackAutomation.ts). null = los valores fijos de arriba.
+  automation?: TrackAutomation | null;
 }
+
+/// Cada cuántas muestras se recalculan las ganancias de la automatización
+/// (en el medio, una recta), como el motor por bloque.
+const AUTOMATION_STEP = 64;
 
 /// Cola que se deja sonar después del último envío para no cortar la
 /// reverb — los mismos 4 segundos que reserva el motor
@@ -714,7 +723,9 @@ export function mixTracks(
   sampleRate: number,
   contentFrames: number,
 ): { left: Float32Array<ArrayBuffer>; right: Float32Array<ArrayBuffer> } {
-  const anySend = tracks.some((t) => t.fx.reverbSend > 0);
+  const anySend = tracks.some(
+    (t) => t.fx.reverbSend > 0 || (t.automation?.send.some((p) => p.value > 0) ?? false),
+  );
   const useReverb = anySend && master.reverbWet > 0;
   const totalFrames = useReverb
     ? contentFrames + Math.round(REVERB_TAIL_SECONDS * sampleRate)
@@ -725,27 +736,62 @@ export function mixTracks(
   const bus = useReverb ? new Float32Array(totalFrames) : null;
 
   for (const track of tracks) {
-    const { left: lg, right: rg } = constantPowerGains(track.volume, track.pan);
-    const send = track.fx.reverbSend;
-    const sendGain = send * track.volume;
     const n = Math.min(totalFrames, track.samples.length);
-    for (let i = 0; i < n; i++) {
-      const s = track.samples[i];
-      if (bus !== null && send > 0) bus[i] += s * sendGain;
-      left[i] += s * lg;
-      right[i] += s * rg;
-    }
-    // Doble / chorus: cada voz a su lado, con las ganancias del paneo.
-    if (chorusOn(track.fx)) {
-      const wet = renderChorus(
-        track.samples.subarray(0, n),
-        Math.max(0, Math.min(1, track.fx.chorusDepth ?? 0.3)),
-        Math.min(1, track.fx.chorusMix ?? 0),
-        sampleRate,
-      );
+    const wet = chorusOn(track.fx)
+      ? renderChorus(
+          track.samples.subarray(0, n),
+          Math.max(0, Math.min(1, track.fx.chorusDepth ?? 0.3)),
+          Math.min(1, track.fx.chorusMix ?? 0),
+          sampleRate,
+        )
+      : null;
+    const auto = hasAutomation(track.automation) ? track.automation! : null;
+    if (auto === null) {
+      const { left: lg, right: rg } = constantPowerGains(track.volume, track.pan);
+      const send = track.fx.reverbSend;
+      const sendGain = send * track.volume;
       for (let i = 0; i < n; i++) {
-        left[i] += wet.left[i] * lg;
-        right[i] += wet.right[i] * rg;
+        const s = track.samples[i];
+        if (bus !== null && send > 0) bus[i] += s * sendGain;
+        left[i] += s * lg;
+        right[i] += s * rg;
+      }
+      // Doble / chorus: cada voz a su lado, con las ganancias del paneo.
+      if (wet !== null) {
+        for (let i = 0; i < n; i++) {
+          left[i] += wet.left[i] * lg;
+          right[i] += wet.right[i] * rg;
+        }
+      }
+      continue;
+    }
+    // Con automatización: las ganancias al principio y al final de cada
+    // tramo de AUTOMATION_STEP muestras, y una recta en el medio (lo mismo
+    // que hace renderBlock por bloque).
+    const gainsAt = (frame: number) => {
+      const t = frame / sampleRate;
+      const vol = track.volume * (auto.volume.length ? volumeGainAt(auto.volume, t) : 1);
+      const pan = laneValueAt(auto.pan, t) ?? track.pan;
+      const send = laneValueAt(auto.send, t) ?? track.fx.reverbSend;
+      const g = constantPowerGains(vol, pan);
+      return { l: g.left, r: g.right, s: send * vol };
+    };
+    for (let start = 0; start < n; start += AUTOMATION_STEP) {
+      const end = Math.min(n, start + AUTOMATION_STEP);
+      const a = gainsAt(start);
+      const b = gainsAt(start + AUTOMATION_STEP);
+      for (let i = start; i < end; i++) {
+        const f = (i - start) / AUTOMATION_STEP;
+        const lg = a.l + (b.l - a.l) * f;
+        const rg = a.r + (b.r - a.r) * f;
+        const s = track.samples[i];
+        if (bus !== null) bus[i] += s * (a.s + (b.s - a.s) * f);
+        left[i] += s * lg;
+        right[i] += s * rg;
+        if (wet !== null) {
+          left[i] += wet.left[i] * lg;
+          right[i] += wet.right[i] * rg;
+        }
       }
     }
   }

@@ -20,6 +20,7 @@
 
 import { envelopeCursor, parseManifestEnvelope, type ClipEnvelope } from "@/lib/clipGainEnvelope";
 import { resampleLinear } from "@/lib/resample";
+import { hasAutomation, type TrackAutomation } from "@/lib/trackAutomation";
 import {
   applyTrackFxInPlace,
   FX_TAIL_SECONDS,
@@ -254,6 +255,8 @@ export interface MixdownTrack {
   isSolo: boolean;
   fx: TrackFx;
   clips: MixdownClip[];
+  /// Volumen, paneo y envío a lo largo de la canción (app +70).
+  automation?: TrackAutomation | null;
 }
 
 /// true si vale la pena pasar por el DSP: alguna pista audible tiene
@@ -269,6 +272,9 @@ export function projectHasEffects(tracks: MixdownTrack[], master?: MasterFx): bo
   // El EQ del máster cambia el sonido de TODO, aunque ninguna pista
   // tenga efectos propios (2026-10-16).
   if (master && isMasterEqActive(master)) return true;
+  // La automatización (app +70) solo la aplica la mezcla con DSP: el camino
+  // de nodos sueltos no la conoce.
+  if (audible.some((t) => hasAutomation(t.automation))) return true;
   return audible.some((t) => isTrackFxActive(t.fx));
 }
 
@@ -329,6 +335,7 @@ export function renderProjectMix(
       volume: track.volume,
       pan: track.pan,
       fx: track.fx,
+      automation: track.automation ?? null,
     });
   }
 

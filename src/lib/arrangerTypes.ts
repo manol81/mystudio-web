@@ -125,4 +125,7 @@ export interface ArrangerTrack {
   // la opción de seguir editándola en el teléfono.
   beatSequence?: string;
   midiPart?: string;
+  // La automatización de la app (+70): volumen, paneo y envío en el tiempo.
+  // El Arranger no la edita ni la reproduce; la devuelve al guardar.
+  automation?: string;
 }

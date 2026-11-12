@@ -74,6 +74,7 @@ import {
   type MasterFx,
   type TrackFx,
 } from "@/lib/trackEffects";
+import { parseTrackAutomation, type TrackAutomation } from "@/lib/trackAutomation";
 
 // El recorte, el volumen y los fades del clip (formatVersion 3) los
 // describe ManifestClipFields, en projectMixdown.ts — el MISMO tipo que
@@ -95,6 +96,8 @@ interface ManifestTrack {
   clips: ManifestClip[];
   // Efectos por pista (formatVersion 2). Ausente en respaldos viejos.
   fx?: unknown;
+  // Automatización (app +70): JSON de trackAutomation.ts.
+  automation?: unknown;
 }
 
 interface Manifest {
@@ -121,6 +124,7 @@ interface RuntimeTrack {
   isMuted: boolean;
   isSolo: boolean;
   fx: TrackFx;
+  automation: TrackAutomation | null;
   clips: DecodedClip[];
   color: string;
 }
@@ -452,6 +456,7 @@ export function ProjectViewer({
             isMuted: track.isMuted,
             isSolo: track.isSolo,
             fx: parseTrackFx(track.fx),
+            automation: parseTrackAutomation(track.automation),
             clips: decodedClips,
             color: TRACK_COLORS[runtimeTracks.length % TRACK_COLORS.length],
           });
@@ -477,6 +482,7 @@ export function ProjectViewer({
           isMuted: t.isMuted,
           isSolo: t.isSolo,
           fx: t.fx,
+          automation: t.automation,
           // Sin `.map()`: un DecodedClip YA es un MixdownClip, y
           // reconstruirlo campo por campo es cómo se perdían el
           // recorte, el volumen y los fades.
@@ -595,6 +601,8 @@ export function ProjectViewer({
           isMuted: false,
           isSolo: false,
           fx: NO_TRACK_FX,
+          // La automatización ya viene horneada en cada pista del paquete.
+          automation: null,
           // El paquete liviano ya trae cada pista renderizada entera
           // desde 0: no hay recorte ni fades que aplicar acá.
           clips: [{ startSeconds: 0, buffer, peaks: null }],
@@ -737,6 +745,7 @@ export function ProjectViewer({
         isMuted: !audibleWith(i),
         isSolo: false,
         fx: t.fx,
+        automation: t.automation,
         clips: t.clips, // ver la nota de arriba: no reconstruir el clip
       }));
       const rendered = renderProjectMix(

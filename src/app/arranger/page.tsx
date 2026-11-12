@@ -359,6 +359,7 @@ interface ImportManifestTrack {
   takes?: Record<string, unknown>[];
   beatSequence?: unknown;
   midiPart?: unknown;
+  automation?: unknown;
 }
 
 interface ImportManifest {
@@ -3063,6 +3064,7 @@ export default function ArrangerPage() {
           fx: track.fx,
           ...(track.beatSequence ? { beatSequence: track.beatSequence } : {}),
           ...(track.midiPart ? { midiPart: track.midiPart } : {}),
+          ...(track.automation ? { automation: track.automation } : {}),
           // Tomas de la app, devueltas con sus archivos.
           ...(() => {
             const takes = (track.importedTakes ?? []).flatMap((t) => {
@@ -3559,6 +3561,7 @@ export default function ArrangerPage() {
         importedTakes: takesByTrack[ti],
         ...(typeof track.beatSequence === "string" ? { beatSequence: track.beatSequence } : {}),
         ...(typeof track.midiPart === "string" ? { midiPart: track.midiPart } : {}),
+        ...(typeof track.automation === "string" ? { automation: track.automation } : {}),
       };
       // SILENT: las pistas se revelan de a una para que se vean
       // aparecer, pero eso es UNA importación, no N acciones del
