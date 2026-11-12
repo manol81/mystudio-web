@@ -58,6 +58,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
       "Cada pista tiene volumen, paneo, **M** (silenciar) y **S** (solo).",
       "**FX** en cada pista: un **preset** para empezar (Voz, Guitarra, Bajo… y con carácter: Doble voz, Voz con eco, Voz de estadio, Voz distorsionada, Radio vieja, Megáfono, Guitarra crunch…), corte de graves, ecualizador de graves/medios/agudos con la frecuencia de los medios movible, compresor, **puerta de ruido**, **saturación**, **eco** al tempo del proyecto, **doble / chorus** y cuánto manda a la reverb. El botón se pone violeta cuando hay algo activo. Si la pista tiene audio, al final están las **voces extra**: **Armonía** (una pista nueva con la toma a otra altura: siguiendo la escala del tema, como un coro de verdad, o a distancia fija, por ejemplo una quinta arriba) y **Coro** (dos o cuatro copias a los costados, como varias personas cantando lo mismo).",
       "**Máster** (ícono de ecualizador arriba): un ecualizador para toda la mezcla con sus presets (Cálido, Brillante, Parlantes chicos…), el tamaño de la reverb y el limitador, que evita que la mezcla distorsione. Dejalo prendido.",
+      "**Automatización** (tocá el nombre de una pista): una curva que cambia el **volumen**, el **paneo** o la **reverb** de la pista a lo largo del tema. En **Puntos** tocás para poner uno, lo arrastrás o lo mantenés apretado para borrarlo; en **Tramo** marcás una parte y le ponés un valor. Se escucha mientras se edita. El volumen se suma al fader; el paneo y la reverb, mientras tengan curva, reemplazan a los de la pista. En la cabecera aparece una rayita naranja cuando la pista tiene curvas.",
     ],
   },
   {
@@ -71,6 +72,7 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
       "**Deshacer** está arriba, por si algo salió mal.",
       "**Importar audio**: sumá un MP3 o WAV de tu teléfono como pista nueva. También podés compartir un audio desde WhatsApp o el mail directo a MY STUDIO.",
       "**Afinar** (en la barra del clip seleccionado): la app encuentra las notas de una voz o de un instrumento de una nota a la vez y las lleva a la escala que elijas (o que detecta). **Natural** corrige cada nota entera y respeta el vibrato; **Robot** es el efecto de autotune. Cada nota se puede arrastrar a otra. El original no se toca: **Quitar afinación** vuelve a como lo grabaste.",
+      "**Limpiar** (en la barra del clip seleccionado): la app escucha la toma y encuentra el **ruido de fondo**, el **zumbido** de la electricidad, las **eses** fuertes y los **golpes de aire**, con lo que conviene ya prendido. Escuchá los primeros segundos **Original** y **Limpio**, y tocá **Limpiar**. El original queda guardado: **Deshacer**, o **Volver a la toma original** en la misma hoja.",
     ],
   },
   {
