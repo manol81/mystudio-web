@@ -31,6 +31,12 @@ import { scheduleGainEnvelope, type FadeShape } from "./clipEnvelope";
 
 const TARGET_SAMPLE_RATE = 44100;
 
+/// La tasa a la que SALEN las muestras de renderClipSamples, sea cual sea
+/// la del navegador. Quien las mezcle muestra a muestra tiene que
+/// declararlas a esta tasa (ver arrangerFxPreview.ts: declararlas a la del
+/// AudioContext, 48 kHz, las hacia sonar 9 % mas rapido y mas agudas).
+export const CLIP_RENDER_SAMPLE_RATE = TARGET_SAMPLE_RATE;
+
 export interface RenderedClipAudio {
   bytes: Uint8Array;
   durationSamples: number;

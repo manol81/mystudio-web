@@ -62,6 +62,7 @@ import { arrangerOpened, projectSaved } from "@/lib/analytics";
 import { STEMS_MANIFEST, type StemsManifest } from "@/lib/stemsExport";
 import {
   mixSignature,
+  PREVIEW_SAMPLE_RATE,
   renderArrangementWithFx,
   type PreviewTrack,
 } from "@/lib/arrangerFxPreview";
@@ -1672,13 +1673,17 @@ export default function ArrangerPage() {
       const signature = mixSignature(previewTracks, importedMasterFx, projectTempoBpm);
       let rendered = fxPreviewRef.current;
       if (!rendered || rendered.signature !== signature) {
+        // A PREVIEW_SAMPLE_RATE y NO a ctx.sampleRate: los clips salen
+        // del render a 44,1 kHz, y declararlos a la tasa del contexto
+        // (48 kHz) hacía sonar todo más rápido y más agudo. El buffer se
+        // crea a esa misma tasa y el navegador lo remuestrea al tocar.
         const mix = await renderArrangementWithFx(
           previewTracks,
           importedMasterFx,
-          ctx.sampleRate,
+          PREVIEW_SAMPLE_RATE,
           projectTempoBpm,
         );
-        const buffer = ctx.createBuffer(2, Math.max(1, mix.left.length), ctx.sampleRate);
+        const buffer = ctx.createBuffer(2, Math.max(1, mix.left.length), PREVIEW_SAMPLE_RATE);
         buffer.copyToChannel(mix.left, 0);
         buffer.copyToChannel(mix.right, 1);
         rendered = { signature, buffer };

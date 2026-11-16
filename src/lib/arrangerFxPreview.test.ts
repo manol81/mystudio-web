@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mixSignature, type PreviewTrack } from "./arrangerFxPreview";
+import {
+  mixSignature,
+  PREVIEW_SAMPLE_RATE,
+  renderArrangementWithFx,
+  type PreviewTrack,
+} from "./arrangerFxPreview";
 import { DEFAULT_MASTER_FX, NO_TRACK_FX } from "./trackEffects";
 
 function track(over: Partial<PreviewTrack> = {}): PreviewTrack {
@@ -68,5 +73,38 @@ describe("mixSignature", () => {
     expect(mixSignature([track(), track()], DEFAULT_MASTER_FX)).not.toBe(
       mixSignature([track()], DEFAULT_MASTER_FX),
     );
+  });
+});
+
+describe("renderArrangementWithFx: la tasa de los clips", () => {
+  // Bug del 2026-11-16 ("Escuchar con efectos suena chillón"): los clips
+  // salen de su render SIEMPRE a 44,1 kHz, y la página pedía la mezcla a
+  // la tasa del AudioContext (48 kHz). Declarados a 48, sonaban 9 % más
+  // rápido y un tono y medio más agudos.
+  const tone = (hz: number, seconds: number, rate: number) => {
+    const out = new Float32Array(Math.round(seconds * rate));
+    for (let i = 0; i < out.length; i++) out[i] = 0.5 * Math.sin((2 * Math.PI * hz * i) / rate);
+    return out;
+  };
+  /// La frecuencia de un tono puro, por cruces por cero hacia arriba.
+  const frequencyOf = (x: Float32Array, rate: number) => {
+    let crossings = 0;
+    for (let i = 1; i < x.length; i++) if (x[i - 1] < 0 && x[i] >= 0) crossings++;
+    return crossings / (x.length / rate);
+  };
+  const renderClip = async () => tone(440, 2, 44100);
+
+  it("a 44,1 kHz la mezcla dura lo que el clip y conserva su nota", async () => {
+    const mix = await renderArrangementWithFx([track()], DEFAULT_MASTER_FX, undefined, 120, renderClip);
+    expect(PREVIEW_SAMPLE_RATE).toBe(44100);
+    expect(mix.durationSeconds).toBeCloseTo(2, 3);
+    expect(Math.abs(frequencyOf(mix.left, 44100) - 440)).toBeLessThan(2);
+  });
+
+  it("pedida a otra tasa se remuestrea: ni más rápida ni más aguda", async () => {
+    const mix = await renderArrangementWithFx([track()], DEFAULT_MASTER_FX, 48000, 120, renderClip);
+    expect(mix.durationSeconds).toBeCloseTo(2, 3);
+    expect(mix.left.length).toBe(96000);
+    expect(Math.abs(frequencyOf(mix.left, 48000) - 440)).toBeLessThan(2); // con el bug: 479
   });
 });

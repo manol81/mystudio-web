@@ -20,14 +20,40 @@
 // exportación: volumen, fades, recorte y repeticiones salen de ahí y no
 // de una copia parecida.
 
-import { renderClipSamples } from "@/lib/wavExport";
+import { CLIP_RENDER_SAMPLE_RATE, renderClipSamples } from "@/lib/wavExport";
 import type { FadeShape } from "@/lib/clipEnvelope";
 import { renderProjectMix, type MixdownTrack } from "@/lib/projectMixdown";
 import type { MasterFx, TrackFx } from "@/lib/trackEffects";
 
-/// 44,1 kHz — la misma tasa a la que rinde el exportador, así que los
-/// buffers que salen de renderClipSamples ya vienen así.
-export const PREVIEW_SAMPLE_RATE = 44100;
+/// 44,1 kHz — la misma tasa a la que rinde el exportador (y a la que
+/// trabaja el motor de la app, así los coeficientes del DSP son los
+/// mismos números). La mezcla se arma a ESTA tasa y el reproductor la
+/// declara así al crear su AudioBuffer: el navegador la lleva a la tasa
+/// del dispositivo con su remuestreador.
+///
+/// ⚠️ NO pasar acá `ctx.sampleRate` (bug del 2026-11-16, reportado como
+/// "suena chillón"): los clips salen de renderClipSamples SIEMPRE a
+/// 44,1 kHz; mezclados como si fueran de 48 kHz, todo sonaba 9 % más
+/// rápido y un tono y medio más agudo. Ver resample.ts: es el mismo
+/// error que el paquete de pistas lento, al revés.
+export const PREVIEW_SAMPLE_RATE = CLIP_RENDER_SAMPLE_RATE;
+
+/// El render de un clip (inyectable en las pruebas: el de verdad
+/// necesita un OfflineAudioContext, que en Node no existe).
+export type ClipRenderer = (clip: PreviewClip) => Promise<Float32Array>;
+
+const renderClipForPreview: ClipRenderer = (clip) =>
+  renderClipSamples(
+    clip.buffer,
+    clip.sourceOffsetSeconds,
+    clip.sourceDurationSeconds,
+    clip.gain,
+    clip.fadeInSeconds,
+    clip.fadeOutSeconds,
+    clip.fadeInShape,
+    clip.fadeOutShape,
+    clip.repeats,
+  );
 
 /** Un clip del arreglo, con todo lo que hace falta para renderizarlo. */
 export interface PreviewClip {
@@ -84,9 +110,14 @@ function asBuffer(samples: Float32Array, sampleRate: number): AudioBuffer {
 export async function renderArrangementWithFx(
   tracks: PreviewTrack[],
   master: MasterFx,
+  /// Tasa de la MEZCLA que se devuelve. Los clips se declaran siempre a
+  /// la tasa a la que salen de su render; si esta es otra, se remuestrean
+  /// (writeClipInto), nunca se copian muestra a muestra.
   sampleRate = PREVIEW_SAMPLE_RATE,
   /// Tempo del proyecto, para el eco a tempo.
   tempoBpm = 120,
+  renderClip: ClipRenderer = renderClipForPreview,
+  clipSampleRate = CLIP_RENDER_SAMPLE_RATE,
 ): Promise<{
   // <ArrayBuffer> explícito: es lo que exige AudioBuffer.copyToChannel,
   // así la mezcla llega hasta el reproductor sin una copia intermedia
@@ -100,18 +131,8 @@ export async function renderArrangementWithFx(
   for (const track of tracks) {
     const clips = [];
     for (const clip of track.clips) {
-      const samples = await renderClipSamples(
-        clip.buffer,
-        clip.sourceOffsetSeconds,
-        clip.sourceDurationSeconds,
-        clip.gain,
-        clip.fadeInSeconds,
-        clip.fadeOutSeconds,
-        clip.fadeInShape,
-        clip.fadeOutShape,
-        clip.repeats,
-      );
-      clips.push({ startSeconds: clip.startSeconds, buffer: asBuffer(samples, sampleRate) });
+      const samples = await renderClip(clip);
+      clips.push({ startSeconds: clip.startSeconds, buffer: asBuffer(samples, clipSampleRate) });
     }
     mixdownTracks.push({
       volume: track.volume,
