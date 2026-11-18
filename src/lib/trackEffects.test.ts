@@ -321,6 +321,7 @@ describe("parseo de parámetros", () => {
       delayMix: 0.25,
       chorusDepth: 0.7,
       chorusMix: 0.5,
+      rig: null,
     });
     // Un respaldo anterior al paquete 1 abre con todo apagado.
     const old = parseTrackFx({ eqLowDb: 3 });

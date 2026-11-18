@@ -43,6 +43,32 @@ import {
   sliderToMidHz,
   sliderToSatTone,
 } from "@/lib/fxPresets";
+import { GUITAR_RIG_PRESETS, guitarRigFromPreset, rigOn } from "@/lib/guitarRig";
+
+/// Mismos nombres que la app (rigPresetName en guitar_rig_page.dart).
+const RIG_PRESET_NAMES: Record<string, string> = {
+  clean_bright: "Limpio brillante",
+  clean_chorus: "Limpio con chorus",
+  funk_wah: "Funk con wah",
+  blues: "Blues",
+  crunch: "Crunch clásico",
+  rock: "Rock",
+  lead_delay: "Solo con eco",
+  metal: "Metal",
+  fuzz: "Fuzz vintage",
+  phaser70: "Phaser de los 70",
+  surf_tremolo: "Surf con trémolo",
+  ambient: "Ambiente",
+};
+
+function matchingRigPresetId(fx: TrackFx): string | null {
+  if (!rigOn(fx.rig)) return null;
+  const cur = JSON.stringify({ ...fx.rig, on: true });
+  for (const p of GUITAR_RIG_PRESETS) {
+    if (JSON.stringify(guitarRigFromPreset(p.id)) === cur) return p.id;
+  }
+  return null;
+}
 
 function Slider({
   label,
@@ -218,6 +244,33 @@ export function TrackFxPanel({
           Un preset es un punto de partida: después ajustá lo que quieras.
         </p>
       </div>
+      <Section title="Amplificador y pedales">
+        {/* Pedalera de guitarra (app +75). Acá se elige el sonido; cada
+            perilla se ajusta en la app. */}
+        <select
+          className="w-full rounded-md border border-white/10 bg-[#1a1a1a] px-2 py-1.5 text-sm text-white"
+          value={rigOn(fx.rig) ? (matchingRigPresetId(fx) ?? "custom") : "off"}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === "off") set({ rig: fx.rig ? { ...fx.rig, on: false } : null });
+            else if (v !== "custom") {
+              const p = GUITAR_RIG_PRESETS.find((x) => x.id === v);
+              set({ rig: guitarRigFromPreset(v), ...(p?.reverbSend !== undefined ? { reverbSend: p.reverbSend } : {}) });
+            }
+          }}
+        >
+          <option value="off">Apagada</option>
+          {rigOn(fx.rig) && matchingRigPresetId(fx) === null && <option value="custom">Personalizada (desde la app)</option>}
+          {GUITAR_RIG_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {RIG_PRESET_NAMES[p.id] ?? p.id}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-[11px] leading-relaxed text-white/35">
+          Para una guitarra eléctrica grabada directo: amplificador, bafle y pedales. Cada perilla se ajusta en la app.
+        </p>
+      </Section>
       <Section title="Ecualizador">
         <Slider
           label="Corte graves"

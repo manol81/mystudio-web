@@ -23,6 +23,7 @@
 // Si se toca el DSP del motor, hay que tocar esto en el mismo commit.
 
 import { hasAutomation, laneValueAt, volumeGainAt, type TrackAutomation } from "./trackAutomation";
+import { applyGuitarRigInPlace, parseGuitarRig, rigHasTail, rigOn, type GuitarRig } from "./guitarRig";
 
 // ─── Parámetros (mismas claves que TrackFxSettings/MasterFxSettings) ────
 
@@ -53,6 +54,9 @@ export interface TrackFx {
   delayMix?: number;
   chorusDepth?: number;
   chorusMix?: number;
+  /// Pedalera de guitarra (app +75, ver guitarRig.ts). null/ausente = sin
+  /// pedalera.
+  rig?: GuitarRig | null;
 }
 
 export const GATE_OFF_DB = -80;
@@ -133,6 +137,7 @@ export function parseTrackFx(json: unknown): TrackFx {
     delayMix: num("delayMix", 0.3),
     chorusDepth: num("chorusDepth", 0.3),
     chorusMix: num("chorusMix", 0),
+    rig: parseGuitarRig(o.rig),
   };
 }
 
@@ -141,7 +146,7 @@ export const saturationOn = (fx: TrackFx) => (fx.satDrive ?? 0) > 0;
 export const delayOn = (fx: TrackFx) => (fx.delayDiv ?? 0) > 0 && (fx.delayMix ?? 0.3) > 0;
 export const chorusOn = (fx: TrackFx) => (fx.chorusMix ?? 0) > 0;
 /// Eco o chorus siguen sonando después del último audio de la pista.
-export const hasFxTail = (fx: TrackFx) => (fx.delayDiv ?? 0) > 0 || chorusOn(fx);
+export const hasFxTail = (fx: TrackFx) => (fx.delayDiv ?? 0) > 0 || chorusOn(fx) || rigHasTail(fx.rig);
 
 export function parseMasterFx(json: unknown): MasterFx {
   if (!json || typeof json !== "object") return DEFAULT_MASTER_FX;
@@ -178,7 +183,8 @@ export function isTrackFxActive(fx: TrackFx): boolean {
     gateOn(fx) ||
     saturationOn(fx) ||
     delayOn(fx) ||
-    chorusOn(fx)
+    chorusOn(fx) ||
+    rigOn(fx.rig)
   );
 }
 
@@ -637,6 +643,8 @@ export function applyTrackFxInPlace(
   if (gateOn(fx)) {
     gateInPlace(samples, Math.max(-80, Math.min(-20, fx.gateThresholdDb ?? GATE_OFF_DB)), sampleRate);
   }
+  // Pedalera de guitarra: después de la puerta y antes del EQ, como el motor.
+  if (rigOn(fx.rig)) applyGuitarRigInPlace(samples, fx.rig, sampleRate, bpm);
   if (fx.eqLowDb !== 0) {
     new Biquad("lowShelf", 100, fx.eqLowDb, sampleRate).processInPlace(samples);
   }
