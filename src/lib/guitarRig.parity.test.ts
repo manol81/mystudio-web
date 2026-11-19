@@ -2,7 +2,7 @@ import { it } from "vitest";
 // Exporta la entrada, los parámetros y lo que da la web, para comparar con el
 // motor nativo (tools/guitar_rig/ en la app). Solo corre con PARITY_DIR.
 import { writeFileSync } from "node:fs";
-import { DEFAULT_GUITAR_RIG, GUITAR_RIG_PRESETS, GuitarRigDsp, rigParams, type GuitarRig } from "./guitarRig";
+import { DEFAULT_GUITAR_RIG, GUITAR_RIG_PRESETS, GuitarRigDsp, RIG_PARAM_COUNT, rigParams, type GuitarRig } from "./guitarRig";
 
 const SR = 44100;
 it.skipIf(!process.env.PARITY_DIR)("parity export (tools/guitar_rig/run_parity.sh)", () => {
@@ -28,11 +28,13 @@ it.skipIf(!process.env.PARITY_DIR)("parity export (tools/guitar_rig/run_parity.s
     { modOn: true, modType: 1, modRate: 0.5, modDepth: 0.8, modMix: 0.7 },
     { dlyOn: true, dlySync: 5, dlyFeedback: 0.6, dlyMix: 0.5, dlyTone: 0.9 },
     { ampOn: false, driveOn: true, driveType: 2, gateDb: -50 },
+    { ampModel: 4, ampGain: 1, cab: 4, ampDiBlend: 0.8, octOn: true, octDry: 0.2 },
+    { ampModel: 3, ampMidHz: 2500, ampMid: 1, wahOn: true, wahAuto: false, wahAmount: 0.3, driveOn: true, driveType: 0, driveBlend: 0.9 },
   ];
-  const params = new Float32Array(configs.length * 36);
+  const params = new Float32Array(configs.length * RIG_PARAM_COUNT);
   configs.forEach((c, k) => {
     const rig = { ...DEFAULT_GUITAR_RIG, ...c };
-    params.set(rigParams(rig), k * 36);
+    params.set(rigParams(rig), k * RIG_PARAM_COUNT);
     const y = Float32Array.from(x);
     const dsp = new GuitarRigDsp(SR);
     // en bloques de 192 como el motor

@@ -44,14 +44,14 @@ export interface GuitarRig {
   driveTone: number; // 0..1
   driveLevelDb: number; // -12..12
   ampOn: boolean;
-  ampModel: number; // 0 limpio (Fender), 1 crunch (Marshall), 2 lead (alta ganancia)
+  ampModel: number; // 0 limpio (Fender), 1 crunch (Marshall), 2 lead (alta ganancia), 3 bajo limpio, 4 bajo saturado
   ampGain: number; // 0..1
   ampBass: number; // 0..1
   ampMid: number; // 0..1
   ampTreble: number; // 0..1
   ampPresence: number; // 0..1
   ampMaster: number; // 0..1 (cuánto empuja la etapa de potencia)
-  cab: number; // 0 sin bafle, 1 1x12 abierto, 2 2x12, 3 4x12 cerrado
+  cab: number; // 0 sin bafle, 1 1x12 abierto, 2 2x12, 3 4x12 cerrado, 4 1x15, 5 4x10, 6 8x10 (bajo)
   cabBright: number; // 0..1 (0,5 = neutro): micrófono más al centro o al borde
   modOn: boolean;
   modType: number; // 0 chorus, 1 flanger, 2 phaser, 3 trémolo
@@ -65,6 +65,13 @@ export interface GuitarRig {
   dlyMix: number; // 0..1
   dlyTone: number; // 0 oscuro (cinta) .. 1 brillante (digital)
   outDb: number; // -24..12
+  // Bajo (app +76): agregados AL FINAL, no cambian el orden de los 36 de antes.
+  driveBlend: number; // 0..1: cuánto de la señal limpia se suma al pedal (el bajo no pierde graves)
+  ampDiBlend: number; // 0..1: mezcla del amplificador con la línea directa (DI), como se graba un bajo
+  octOn: boolean; // octavador: una octava abajo
+  octLevel: number; // 0..1
+  octDry: number; // 0..1
+  ampMidHz: number; // 200..3000: frecuencia de los medios de los amplificadores de bajo
 }
 
 export const RIG_GATE_OFF_DB = -80;
@@ -106,6 +113,12 @@ export const DEFAULT_GUITAR_RIG: GuitarRig = {
   dlyMix: 0.25,
   dlyTone: 0.4,
   outDb: 0,
+  driveBlend: 0,
+  ampDiBlend: 0,
+  octOn: false,
+  octLevel: 0.6,
+  octDry: 0.8,
+  ampMidHz: 500,
 };
 
 /// Tolerante igual que GuitarRig.fromJson en Dart: lo que falte toma el
@@ -153,6 +166,12 @@ export function parseGuitarRig(json: unknown): GuitarRig | null {
     dlyMix: num("dlyMix"),
     dlyTone: num("dlyTone"),
     outDb: num("outDb"),
+    driveBlend: num("driveBlend"),
+    ampDiBlend: num("ampDiBlend"),
+    octOn: bool("octOn"),
+    octLevel: num("octLevel"),
+    octDry: num("octDry"),
+    ampMidHz: num("ampMidHz"),
   };
 }
 
@@ -161,7 +180,7 @@ export const rigOn = (rig: GuitarRig | null | undefined): rig is GuitarRig => !!
 export const rigHasTail = (rig: GuitarRig | null | undefined) =>
   rigOn(rig) && (rig.dlyOn || rig.modOn);
 
-/// El orden de los 36 valores que recibe el motor (mystudio_set_track_rig).
+/// El orden de los 42 valores que recibe el motor (mystudio_set_track_rig).
 /// NO reordenar: es el mismo en guitar_rig.h y en guitar_rig.dart.
 export function rigParams(rig: GuitarRig): Float32Array {
   const b = (v: boolean) => (v ? 1 : 0);
@@ -175,10 +194,11 @@ export function rigParams(rig: GuitarRig): Float32Array {
     b(rig.modOn), rig.modType, rig.modRate, rig.modDepth, rig.modMix,
     b(rig.dlyOn), rig.dlyTimeMs, rig.dlySync, rig.dlyFeedback, rig.dlyMix, rig.dlyTone,
     rig.outDb,
+    rig.driveBlend, rig.ampDiBlend, b(rig.octOn), rig.octLevel, rig.octDry, rig.ampMidHz,
   ]);
 }
 
-export const RIG_PARAM_COUNT = 36;
+export const RIG_PARAM_COUNT = 42;
 const P = {
   on: 0, gateDb: 1,
   compOn: 2, compSustain: 3, compLevelDb: 4,
@@ -189,6 +209,7 @@ const P = {
   modOn: 24, modType: 25, modRate: 26, modDepth: 27, modMix: 28,
   dlyOn: 29, dlyTimeMs: 30, dlySync: 31, dlyFeedback: 32, dlyMix: 33, dlyTone: 34,
   outDb: 35,
+  driveBlend: 36, ampDiBlend: 37, octOn: 38, octLevel: 39, octDry: 40, ampMidHz: 41,
 } as const;
 
 // ─── Piezas ─────────────────────────────────────────────────────────────
@@ -470,6 +491,27 @@ export class GuitarRigDsp {
   private drvGain = 1;
   private drvLevel = 1;
   private drvComp = 1;
+  private drvBlend = 0;
+  // Bajo
+  private bassEq = false;
+  private bassSplit = false;
+  private eqLow = new Bq();
+  private eqMid = new Bq();
+  private eqHigh = new Bq();
+  private split = new Bq();
+  private diBlend = 0;
+  private diBuf = new Float64Array(16);
+  private diPos = 0;
+  private wahLo = 450;
+  private wahRatio = 2200 / 450;
+  // Octavador
+  private octLp1 = new Bq();
+  private octLp2 = new Bq();
+  private octOut1 = new Bq();
+  private octOut2 = new Bq();
+  private octEnv = 0;
+  private octUp = false;
+  private octFlip = 1;
   private fuzz1 = new TubeStage();
   // Amplificador
   private ampInHp = new OnePole();
@@ -528,6 +570,8 @@ export class GuitarRigDsp {
     this.cabBright.reset();
     this.modBuf.fill(0); this.modPos = 0; this.modPhase = 0; this.modFb = 0; this.apState.fill(0);
     this.dlyBuf?.fill(0); this.dlyPos = 0; this.dlyCur = 0; this.dlyLp.reset(); this.dlyHp.reset(); this.dlyWow = 0;
+    for (const f of [this.eqLow, this.eqMid, this.eqHigh, this.split, this.octLp1, this.octLp2, this.octOut1, this.octOut2]) f.reset();
+    this.diBuf.fill(0); this.diPos = 0; this.octEnv = 0; this.octUp = false; this.octFlip = 1;
   }
 
   /// Recalcula los coeficientes si cambió algo (perillas, tempo).
@@ -573,9 +617,10 @@ export class GuitarRigDsp {
     // Con poca ganancia el pedal deja pasar la señal casi entera; con mucha,
     // recorta. La compensación deja el nivel parejo en todo el recorrido.
     this.drvComp = dType === 0 ? clamp(30 / this.drvGain, 1, 5.7) : dType === 1 ? clamp(400 / this.drvGain, 1, 18) : clamp(12 / this.drvGain, 1, 4);
+    this.drvBlend = clamp(p[P.driveBlend], 0, 1);
 
     // Amplificador
-    const model = clamp(Math.round(p[P.ampModel]), 0, 2);
+    const model = clamp(Math.round(p[P.ampModel]), 0, 4);
     const g = clamp(p[P.ampGain], 0, 1);
     const g2 = g * g;
     if (model === 0) {
@@ -599,7 +644,7 @@ export class GuitarRigDsp {
       this.stages[2].set(1.6, 9000, 30, hi);
       this.tone.set(p[P.ampBass], p[P.ampMid], p[P.ampTreble], MARSHALL, hi);
       this.toneMakeup = dbToLin(8.5);
-    } else {
+    } else if (model === 2) {
       // Lead (alta ganancia): la entrada "ajustada" (corta graves antes de
       // distorsionar, si no se embarra), cuatro etapas.
       this.ampInHp.set(160, hi);
@@ -612,18 +657,51 @@ export class GuitarRigDsp {
       this.stages[3].set(1.2, 7500, 40, hi);
       this.tone.set(p[P.ampBass], p[P.ampMid], p[P.ampTreble], MARSHALL, hi);
       this.toneMakeup = dbToLin(8.5);
+    } else if (model === 3) {
+      // Bajo limpio (tipo SVT): poca ganancia, EQ activo con los medios
+      // en la frecuencia que se elija.
+      this.ampInHp.set(25, hi);
+      this.ampBright.set(HSH, 2500, 0.7, 0, hi);
+      this.ampMidBoost.set(PEAK, 800, 0.7, 0, hi);
+      this.nStages = 2;
+      this.stages[0].set(1.2 + 8 * g2, 14000, 10, hi);
+      this.stages[1].set(1.2 + 3 * g, 10000, 10, hi);
+    } else {
+      // Bajo saturado: los graves (abajo de 150 Hz) pasan limpios y solo se
+      // distorsiona lo de arriba; si no, el bajo pierde el piso.
+      this.ampInHp.set(30, hi);
+      this.ampBright.set(HSH, 2000, 0.7, 2, hi);
+      this.ampMidBoost.set(PEAK, 900, 0.8, 3, hi);
+      this.nStages = 3;
+      this.stages[0].set(1 + 25 * g2, 9000, 60, hi);
+      this.stages[1].set(1.5 + 6 * g, 7000, 80, hi);
+      this.stages[2].set(1.4, 6000, 60, hi);
+      this.split.set(LP, 150, 0.7071, 0, hi);
     }
+    this.bassEq = model >= 3;
+    this.bassSplit = model === 4;
+    if (this.bassEq) {
+      const midHz = clamp(p[P.ampMidHz], 200, 3000);
+      this.eqLow.set(LSH, 70, 0.7, (clamp(p[P.ampBass], 0, 1) - 0.5) * 24, hi);
+      this.eqMid.set(PEAK, midHz, 0.9, (clamp(p[P.ampMid], 0, 1) - 0.5) * 24, hi);
+      this.eqHigh.set(HSH, 2500, 0.7, (clamp(p[P.ampTreble], 0, 1) - 0.5) * 24, hi);
+      this.toneMakeup = 1;
+    }
+    // El wah se corre a la zona del bajo con un amplificador de bajo.
+    this.wahLo = this.bassEq ? 220 : 450;
+    this.wahRatio = this.bassEq ? 1400 / 220 : 2200 / 450;
+    this.diBlend = clamp(p[P.ampDiBlend], 0, 1);
     const pres = clamp(p[P.ampPresence], 0, 1);
-    this.presence.set(HSH, 3200, 0.7, -4 + 12 * pres, hi);
-    this.resonance.set(LSH, 100, 0.7, model === 0 ? 0 : 3, hi);
-    this.ampTrim = model === 0 ? 0.22 : 0.14;
+    this.presence.set(HSH, this.bassEq ? 5000 : 3200, 0.7, -4 + 12 * pres, hi);
+    this.resonance.set(LSH, this.bassEq ? 60 : 100, 0.7, model === 0 ? 0 : this.bassEq ? 2 : 3, hi);
+    this.ampTrim = model === 0 ? 0.22 : model === 3 ? 0.3 : model === 4 ? 0.2 : 0.14;
     const master = clamp(p[P.ampMaster], 0, 1);
     this.powerDrive = 0.6 + 5 * master * master;
     this.powerOut = 1 / ftanh(this.powerDrive * 0.9);
     this.sagA = 1 - Math.exp(-1 / (0.04 * hi));
 
     // Bafle
-    const cab = clamp(Math.round(p[P.cab]), 0, 3);
+    const cab = clamp(Math.round(p[P.cab]), 0, 6);
     const c = this.cab;
     if (cab === 1) {
       c[0].set(HP, 90, 0.7, 0, r); c[1].set(PEAK, 150, 1, 2, r); c[2].set(PEAK, 600, 0.9, -2, r);
@@ -640,9 +718,32 @@ export class GuitarRigDsp {
       c[3].set(PEAK, 2500, 1.5, 5, r); c[4].set(PEAK, 4200, 3, -4, r); c[5].set(LP, 4800, 0.8, 0, r);
       c[6].set(LP, 6000, 0.6, 0, r);
       this.cabN = 7;
+    } else if (cab === 4) {
+      // 1x15 de bajo: mucho grave, poco agudo.
+      c[0].set(HP, 40, 1.0, 0, r); c[1].set(PEAK, 80, 1.1, 3, r); c[2].set(PEAK, 600, 0.9, -3, r);
+      c[3].set(PEAK, 2000, 1.5, -2, r); c[4].set(PEAK, 1200, 1.2, 1, r); c[5].set(LP, 3000, 0.8, 0, r);
+      c[6].set(LP, 4000, 0.6, 0, r);
+      this.cabN = 7;
+    } else if (cab === 5) {
+      // 4x10 de bajo: más definido, con brillo.
+      c[0].set(HP, 50, 0.9, 0, r); c[1].set(PEAK, 100, 1.1, 2, r); c[2].set(PEAK, 400, 0.9, -2, r);
+      c[3].set(PEAK, 2500, 1.4, 3, r); c[4].set(PEAK, 4000, 2, -2, r); c[5].set(LP, 5000, 0.8, 0, r);
+      c[6].set(LP, 7000, 0.6, 0, r);
+      this.cabN = 7;
+    } else if (cab === 6) {
+      // 8x10 de bajo: el muro de rock.
+      c[0].set(HP, 45, 1.1, 0, r); c[1].set(PEAK, 90, 1.2, 4, r); c[2].set(PEAK, 500, 0.8, -3, r);
+      c[3].set(PEAK, 1800, 1.3, 2, r); c[4].set(PEAK, 3200, 2, -2, r); c[5].set(LP, 4200, 0.8, 0, r);
+      c[6].set(LP, 5500, 0.6, 0, r);
+      this.cabN = 7;
     } else {
       this.cabN = 0;
     }
+    // Octavador: detecta la nota en los graves y la divide por dos.
+    this.octLp1.set(LP, 300, 0.7071, 0, r);
+    this.octLp2.set(LP, 300, 0.7071, 0, r);
+    this.octOut1.set(LP, 220, 0.7071, 0, r);
+    this.octOut2.set(LP, 220, 0.7071, 0, r);
     this.cabBright.set(HSH, 2500, 0.7, (clamp(p[P.cabBright], 0, 1) - 0.5) * 8, r);
 
     // Eco
@@ -688,6 +789,11 @@ export class GuitarRigDsp {
     const dlyFb = clamp(params[P.dlyFeedback], 0, 0.9);
     const dlyMix = clamp(params[P.dlyMix], 0, 1);
     const dlyTape = clamp(params[P.dlyTone], 0, 1) < 0.5;
+    const octOn = params[P.octOn] >= 0.5;
+    const octLevel = clamp(params[P.octLevel], 0, 1);
+    const octDry = clamp(params[P.octDry], 0, 1);
+    const octAtt = 1 - Math.exp(-1 / (0.002 * r));
+    const octRel = 1 - Math.exp(-1 / (0.05 * r));
 
     const gateAtt = 1 - Math.exp(-1 / (0.0005 * r));
     const gateRel = 1 - Math.exp(-1 / (0.06 * r));
@@ -726,15 +832,34 @@ export class GuitarRigDsp {
         x *= this.compGain * compMakeup;
       }
 
+      // Octavador (tipo OC-2): la nota de los graves se divide por dos con
+      // un flip-flop que cambia en cada cruce por cero (con histéresis), y
+      // se suaviza para que suene redonda.
+      if (octOn) {
+        const s = this.octLp2.run(this.octLp1.run(x));
+        const a = Math.abs(s);
+        this.octEnv += (a > this.octEnv ? octAtt : octRel) * (a - this.octEnv);
+        const thr = 0.1 * this.octEnv;
+        if (!this.octUp && s > thr) {
+          this.octUp = true;
+          this.octFlip = -this.octFlip;
+        } else if (this.octUp && s < -thr) {
+          this.octUp = false;
+        }
+        const sub = this.octOut2.run(this.octOut1.run(this.octFlip * this.octEnv * 2));
+        x = x * octDry + sub * octLevel * 1.5;
+      }
+
       // Wah: filtro de estado variable con la frecuencia entre 450 Hz y
-      // 2,2 kHz; en automático la mueve la fuerza del toque.
+      // 2,2 kHz (220 Hz y 1,4 kHz con un amplificador de bajo); en
+      // automático la mueve la fuerza del toque.
       if (wahOn) {
         const a = Math.abs(x);
         this.wahEnv += (a > this.wahEnv ? wahEnvA : wahEnvR) * (a - this.wahEnv);
         const target = wahAuto ? clamp(this.wahEnv * (4 + 36 * wahAmount), 0, 1) : wahAmount;
         this.wahPos += wahSmooth * (target - this.wahPos);
         if ((this.wahCount++ & 7) === 0) {
-          const f = 450 * Math.pow(2200 / 450, this.wahPos);
+          const f = this.wahLo * Math.pow(this.wahRatio, this.wahPos);
           this.wahG = Math.tan((Math.PI * f) / r);
           this.wahK = 1 / wahQ;
         }
@@ -747,12 +872,19 @@ export class GuitarRigDsp {
         x = 0.25 * lp + 2.2 * k * bp * Math.sqrt(wahQ);
       }
 
+      // La línea directa (DI) para mezclar con el amplificador, demorada lo
+      // mismo que el sobremuestreo (95 muestras a 8× = 11,875 a 1×) para que
+      // no se cancelen.
+      this.diBuf[this.diPos] = x;
       // Drive y amplificador, a 8× la tasa.
       if (anyHi) {
         this.os.upsample(x, hiBuf);
         for (let k = 0; k < OS; k++) {
           let v = hiBuf[k];
-          if (driveOn) v = this.drive(v, dType, dTone);
+          if (driveOn) {
+            const d = this.drive(v, dType, dTone);
+            v = this.drvBlend > 0 ? (1 - this.drvBlend) * d + this.drvBlend * v : d;
+          }
           if (ampOn) v = this.amp(v);
           hiBuf[k] = v;
         }
@@ -764,6 +896,13 @@ export class GuitarRigDsp {
         for (let k = 0; k < this.cabN; k++) x = this.cab[k].run(x);
         x = this.cabBright.run(x);
       }
+      if (ampOn && this.diBlend > 0) {
+        const d11 = this.diBuf[(this.diPos + 16 - 11) & 15];
+        const d12 = this.diBuf[(this.diPos + 16 - 12) & 15];
+        const di = d11 * 0.125 + d12 * 0.875;
+        x = (1 - this.diBlend) * x + this.diBlend * di * 2;
+      }
+      this.diPos = (this.diPos + 1) & 15;
 
       // Modulación.
       if (modOn) x = this.modulate(x, modType, modRate, modDepth, modMix);
@@ -809,8 +948,19 @@ export class GuitarRigDsp {
     let x = this.ampInHp.hp(v);
     x = this.ampBright.run(x);
     x = this.ampMidBoost.run(x);
-    for (let s = 0; s < this.nStages; s++) x = this.stages[s].run(x);
-    x = this.tone.run(x) * this.toneMakeup;
+    if (this.bassSplit) {
+      const low = this.split.run(x);
+      let h = x - low;
+      for (let s = 0; s < this.nStages; s++) h = this.stages[s].run(h);
+      x = low * 1.5 + h;
+    } else {
+      for (let s = 0; s < this.nStages; s++) x = this.stages[s].run(x);
+    }
+    if (this.bassEq) {
+      x = this.eqHigh.run(this.eqMid.run(this.eqLow.run(x)));
+    } else {
+      x = this.tone.run(x) * this.toneMakeup;
+    }
     // Etapa de potencia: presencia y resonancia (la realimentación del
     // amplificador), y un push-pull simétrico que se "hunde" un poco con la
     // fuerza (sag).
@@ -941,7 +1091,18 @@ export const GUITAR_RIG_PRESETS: GuitarRigPreset[] = [
   { id: "phaser70", rig: { ampModel: 1, ampGain: 0.4, cab: 3, modOn: true, modType: 2, modRate: 0.25, modDepth: 0.6, modMix: 0.7 } },
   { id: "surf_tremolo", reverbSend: 0.4, rig: { ampModel: 0, ampGain: 0.35, ampTreble: 0.65, cab: 1, modOn: true, modType: 3, modRate: 0.45, modDepth: 0.7, modMix: 1 } },
   { id: "ambient", reverbSend: 0.45, rig: { ampModel: 0, ampGain: 0.3, cab: 2, modOn: true, modType: 0, modRate: 0.2, modDepth: 0.6, modMix: 0.4, dlyOn: true, dlySync: 4, dlyFeedback: 0.5, dlyMix: 0.35, dlyTone: 0.3 } },
+  // Bajo (app +76): los ids empiezan con "bass_" (así la app sabe en qué
+  // lista mostrarlos).
+  { id: "bass_clean", reverbSend: 0, rig: { ampModel: 3, ampGain: 0.3, ampBass: 0.55, ampMid: 0.5, ampMidHz: 500, ampTreble: 0.5, cab: 5, compOn: true, compSustain: 0.45, ampDiBlend: 0.3 } },
+  { id: "bass_pick", reverbSend: 0, rig: { ampModel: 3, ampGain: 0.35, ampMid: 0.55, ampMidHz: 800, ampTreble: 0.65, ampPresence: 0.6, cab: 5, compOn: true, compSustain: 0.6 } },
+  { id: "bass_motown", reverbSend: 0, rig: { ampModel: 3, ampGain: 0.25, ampBass: 0.6, ampMid: 0.55, ampMidHz: 400, ampTreble: 0.3, ampPresence: 0.3, cab: 4, ampDiBlend: 0.2 } },
+  { id: "bass_rock", reverbSend: 0, rig: { ampModel: 4, ampGain: 0.55, ampBass: 0.55, ampMid: 0.6, ampMidHz: 800, ampTreble: 0.55, cab: 6, ampDiBlend: 0.3 } },
+  { id: "bass_octave", reverbSend: 0, rig: { ampModel: 3, ampGain: 0.3, cab: 5, octOn: true, octLevel: 0.7, octDry: 0.7 } },
+  { id: "bass_funk", reverbSend: 0, rig: { ampModel: 3, ampGain: 0.3, ampTreble: 0.6, cab: 5, compOn: true, compSustain: 0.6, wahOn: true, wahAuto: true, wahAmount: 0.6, wahQ: 0.55 } },
+  { id: "bass_metal", reverbSend: 0, rig: { ampModel: 3, ampGain: 0.4, ampMid: 0.4, cab: 6, driveOn: true, driveType: 1, driveGain: 0.6, driveTone: 0.55, driveBlend: 0.5 } },
 ];
+
+export const isBassPresetId = (id: string) => id.startsWith("bass_");
 
 export function guitarRigFromPreset(id: string): GuitarRig | null {
   const p = GUITAR_RIG_PRESETS.find((x) => x.id === id);

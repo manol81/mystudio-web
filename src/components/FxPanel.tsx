@@ -43,7 +43,7 @@ import {
   sliderToMidHz,
   sliderToSatTone,
 } from "@/lib/fxPresets";
-import { GUITAR_RIG_PRESETS, guitarRigFromPreset, rigOn } from "@/lib/guitarRig";
+import { GUITAR_RIG_PRESETS, guitarRigFromPreset, isBassPresetId, rigOn } from "@/lib/guitarRig";
 
 /// Mismos nombres que la app (rigPresetName en guitar_rig_page.dart).
 const RIG_PRESET_NAMES: Record<string, string> = {
@@ -59,6 +59,13 @@ const RIG_PRESET_NAMES: Record<string, string> = {
   phaser70: "Phaser de los 70",
   surf_tremolo: "Surf con trémolo",
   ambient: "Ambiente",
+  bass_clean: "Bajo limpio",
+  bass_pick: "Bajo con púa",
+  bass_motown: "Motown",
+  bass_rock: "Rock saturado",
+  bass_octave: "Sub octava",
+  bass_funk: "Funk con filtro",
+  bass_metal: "Metal (bajo)",
 };
 
 function matchingRigPresetId(fx: TrackFx): string | null {
@@ -261,14 +268,21 @@ export function TrackFxPanel({
         >
           <option value="off">Apagada</option>
           {rigOn(fx.rig) && matchingRigPresetId(fx) === null && <option value="custom">Personalizada (desde la app)</option>}
-          {GUITAR_RIG_PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {RIG_PRESET_NAMES[p.id] ?? p.id}
-            </option>
+          {[
+            ["Guitarra", GUITAR_RIG_PRESETS.filter((p) => !isBassPresetId(p.id))],
+            ["Bajo", GUITAR_RIG_PRESETS.filter((p) => isBassPresetId(p.id))],
+          ].map(([label, list]) => (
+            <optgroup key={label as string} label={label as string}>
+              {(list as typeof GUITAR_RIG_PRESETS).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {RIG_PRESET_NAMES[p.id] ?? p.id}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
         <p className="mt-1 text-[11px] leading-relaxed text-white/35">
-          Para una guitarra eléctrica grabada directo: amplificador, bafle y pedales. Cada perilla se ajusta en la app.
+          Para una guitarra eléctrica o un bajo grabados directo: amplificador, bafle y pedales. Cada perilla se ajusta en la app.
         </p>
       </Section>
       <Section title="Ecualizador">

@@ -73,16 +73,20 @@ describe("pedalera de guitarra", () => {
     expect(r.cab).toBe(DEFAULT_GUITAR_RIG.cab);
   });
 
-  it("los 36 valores van en el orden del motor", () => {
-    const p = rigParams({ ...DEFAULT_GUITAR_RIG, ampModel: 2, outDb: -3, dlyTone: 0.7 });
+  it("los 42 valores van en el orden del motor", () => {
+    const p = rigParams({ ...DEFAULT_GUITAR_RIG, ampModel: 2, outDb: -3, dlyTone: 0.7, ampMidHz: 800 });
     expect(p.length).toBe(RIG_PARAM_COUNT);
-    expect(p[0]).toBe(1);
-    expect(p[15]).toBe(2); // ampModel
-    expect(p[34]).toBeCloseTo(0.7); // dlyTone
-    expect(p[35]).toBe(-3); // outDb
-    // El mismo orden que guitar_rig.h (lo dice su enum).
+    // El enum RigParam de guitar_rig.h, nombre por nombre, es el orden de
+    // las claves (kAmpModel → ampModel).
     const h = readFileSync("../android/app/src/main/cpp/guitar_rig.h", "utf8");
-    expect(h).toContain("kOutDb,\n    kParamCount  // 36");
+    const start = h.indexOf("enum RigParam");
+    const body = h.slice(h.indexOf("{", start) + 1, h.indexOf("kParamCount", start)).replace(/\/\/.*$/gm, "");
+    const names = [...body.matchAll(/k(\w+)/g)].map((m) => m[1][0].toLowerCase() + m[1].slice(1));
+    const keys = Object.keys(DEFAULT_GUITAR_RIG);
+    expect(names).toEqual(keys);
+    expect(p[keys.indexOf("ampModel")]).toBe(2);
+    expect(p[keys.indexOf("outDb")]).toBe(-3);
+    expect(p[keys.indexOf("ampMidHz")]).toBe(800);
   });
 
   it("los sonidos son los mismos que en la app", () => {
@@ -189,5 +193,52 @@ describe("pedalera de guitarra", () => {
     for (let i = 0; i < g.length; i++) diff = Math.max(diff, Math.abs(y[i] - g[i]));
     expect(diff).toBeGreaterThan(0.01);
     expect(parseTrackFx(NO_TRACK_FX).rig).toBeNull();
+  });
+
+  describe("bajo (app +76)", () => {
+    const sine = (f: number, a: number, seconds = 1) => {
+      const x = new Float32Array(Math.round(SR * seconds));
+      for (let i = 0; i < x.length; i++) x[i] = a * Math.sin((2 * Math.PI * f * i) / SR);
+      return x;
+    };
+    const energyAt = (x: Float32Array, f: number) => {
+      const tail = x.slice(x.length - 16384);
+      for (let i = 0; i < tail.length; i++) tail[i] *= 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / tail.length);
+      return bandEnergy(tail, f, f);
+    };
+
+    it("el octavador agrega la octava de abajo", () => {
+      const dry = sine(110, 0.3);
+      const oct = Float32Array.from(dry);
+      applyGuitarRigInPlace(oct, { ...DEFAULT_GUITAR_RIG, ampOn: false, octOn: true, octLevel: 1, octDry: 0 }, SR);
+      expect(10 * Math.log10(energyAt(oct, 55) / energyAt(oct, 110))).toBeGreaterThan(10);
+    });
+
+    it("el bajo saturado no pierde los graves (el lead de guitarra sí)", () => {
+      const run = (rig: Partial<GuitarRig>) => {
+        const x = sine(41.2, 0.3, 1.5);
+        applyGuitarRigInPlace(x, { ...DEFAULT_GUITAR_RIG, cab: 0, ...rig }, SR);
+        return energyAt(x, 41.2) / energyAt(x, 41.2 * 5);
+      };
+      expect(run({ ampModel: 4, ampGain: 1 })).toBeGreaterThan(run({ ampModel: 2, ampGain: 1 }) * 30);
+    });
+
+    it("la mezcla con la DI queda en fase con el amplificador", () => {
+      // Con la línea directa demorada lo mismo que el amplificador, sumar
+      // las dos no hace un peine: a 2 kHz la mezcla no cae.
+      const x = sine(2000, 0.05, 0.5);
+      const rig: GuitarRig = { ...DEFAULT_GUITAR_RIG, ampModel: 3, ampGain: 0, cab: 0, ampMid: 0.5, ampBass: 0.5, ampTreble: 0.5, ampPresence: 1 / 3 };
+      const amp = Float32Array.from(x);
+      applyGuitarRigInPlace(amp, rig, SR);
+      const mixed = Float32Array.from(x);
+      applyGuitarRigInPlace(mixed, { ...rig, ampDiBlend: 0.5 }, SR);
+      expect(rmsDb(mixed.slice(SR * 0.2))).toBeGreaterThan(rmsDb(amp.slice(SR * 0.2)) - 3);
+    });
+
+    it("los sonidos de bajo están en la lista y son de bajo", () => {
+      const bass = GUITAR_RIG_PRESETS.filter((p) => p.id.startsWith("bass_"));
+      expect(bass.length).toBe(7);
+      for (const p of bass) expect([3, 4].includes(guitarRigFromPreset(p.id)!.ampModel), p.id).toBe(true);
+    });
   });
 });
