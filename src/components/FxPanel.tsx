@@ -70,7 +70,11 @@ const RIG_PRESET_NAMES: Record<string, string> = {
 
 function matchingRigPresetId(fx: TrackFx): string | null {
   if (!rigOn(fx.rig)) return null;
-  const cur = JSON.stringify({ ...fx.rig, on: true });
+  // El IR cargado no es parte del sonido de fábrica: se compara sin él.
+  const { irFile: _f, irName: _n, ...rest } = fx.rig;
+  void _f;
+  void _n;
+  const cur = JSON.stringify({ ...rest, on: true });
   for (const p of GUITAR_RIG_PRESETS) {
     if (JSON.stringify(guitarRigFromPreset(p.id)) === cur) return p.id;
   }

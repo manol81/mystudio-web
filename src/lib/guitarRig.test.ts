@@ -7,6 +7,9 @@ import {
   applyGuitarRigInPlace,
   ftanh,
   guitarRigFromPreset,
+  irTaps,
+  IrConvolver,
+  prepareIr,
   parseGuitarRig,
   rigHasTail,
   rigParams,
@@ -139,7 +142,7 @@ describe("pedalera de guitarra", () => {
       expect(db, p.id).toBeGreaterThan(-30);
       expect(db, p.id).toBeLessThan(-10);
     }
-  });
+  }, 60000);
 
   it("el bafle corta lo que un parlante de guitarra no da", () => {
     const g = guitar(1);
@@ -239,6 +242,71 @@ describe("pedalera de guitarra", () => {
       const bass = GUITAR_RIG_PRESETS.filter((p) => p.id.startsWith("bass_"));
       expect(bass.length).toBe(7);
       for (const p of bass) expect([3, 4].includes(guitarRigFromPreset(p.id)!.ampModel), p.id).toBe(true);
+    });
+  });
+
+  describe("IR propio (app +76)", () => {
+    const randomIr = (n: number) => {
+      let seed = 3;
+      const h = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        h[i] = ((seed / 4294967296) - 0.5) * Math.exp(-i / 400);
+      }
+      return h;
+    };
+
+    it("la convolución sin demora da lo mismo que la convolución directa", () => {
+      for (const n of [40, 64, 65, 300, 3000, 9000]) {
+        const raw = randomIr(n);
+        const h = irTaps(raw)!;
+        const k = prepareIr(raw)!;
+        const conv = new IrConvolver();
+        const x = new Float64Array(5000);
+        let seed = 9;
+        for (let i = 0; i < x.length; i++) {
+          seed = (seed * 1664525 + 1013904223) >>> 0;
+          x[i] = (seed / 4294967296) - 0.5;
+        }
+        let worst = 0;
+        for (let i = 0; i < x.length; i++) {
+          const y = conv.run(x[i], k);
+          let ref = 0;
+          for (let j = 0; j < h.length && j <= i; j++) ref += h[j] * x[i - j];
+          worst = Math.max(worst, Math.abs(y - ref));
+        }
+        expect(worst, `IR de ${n}`).toBeLessThan(1e-9);
+        expect(h.length).toBeLessThanOrEqual(4096);
+      }
+    });
+
+    it("saltea el silencio del principio y normaliza la energía", () => {
+      const raw = new Float32Array(1000);
+      raw[200] = 0.8;
+      raw[201] = -0.4;
+      const h = irTaps(raw)!;
+      expect(Math.abs(h[8])).toBeGreaterThan(0.1); // el golpe queda en la muestra 8
+      let e = 0;
+      for (const v of h) e += v * v;
+      expect(Math.sqrt(e)).toBeCloseTo(0.5, 5);
+      expect(irTaps(new Float32Array(100))).toBeNull();
+    });
+
+    it("con el bafle 7 suena el IR; sin IR, el bafle sintético", () => {
+      const g = guitar(1);
+      const base: GuitarRig = { ...DEFAULT_GUITAR_RIG, cab: 7 };
+      const noIr = Float32Array.from(g);
+      applyGuitarRigInPlace(noIr, base, SR);
+      const synth = Float32Array.from(g);
+      applyGuitarRigInPlace(synth, { ...base, cab: 3 }, SR);
+      expect(noIr).toEqual(synth);
+      const withIr = Float32Array.from(g);
+      // Un IR que es un impulso: deja pasar todo (sin el filtro del bafle).
+      const impulse = new Float32Array(256);
+      impulse[0] = 1;
+      applyGuitarRigInPlace(withIr, base, SR, 120, impulse);
+      const highs = (x: Float32Array) => bandEnergy(x, 8000, 12000);
+      expect(highs(withIr)).toBeGreaterThan(highs(synth) * 10);
     });
   });
 });

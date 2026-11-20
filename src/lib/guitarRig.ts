@@ -51,7 +51,7 @@ export interface GuitarRig {
   ampTreble: number; // 0..1
   ampPresence: number; // 0..1
   ampMaster: number; // 0..1 (cuánto empuja la etapa de potencia)
-  cab: number; // 0 sin bafle, 1 1x12 abierto, 2 2x12, 3 4x12 cerrado, 4 1x15, 5 4x10, 6 8x10 (bajo)
+  cab: number; // 0 sin bafle, 1 1x12 abierto, 2 2x12, 3 4x12 cerrado, 4 1x15, 5 4x10, 6 8x10 (bajo), 7 IR propio
   cabBright: number; // 0..1 (0,5 = neutro): micrófono más al centro o al borde
   modOn: boolean;
   modType: number; // 0 chorus, 1 flanger, 2 phaser, 3 trémolo
@@ -72,6 +72,10 @@ export interface GuitarRig {
   octLevel: number; // 0..1
   octDry: number; // 0..1
   ampMidHz: number; // 200..3000: frecuencia de los medios de los amplificadores de bajo
+  /// IR propio del bafle (app +76, con cab = 7): el nombre de su entrada en
+  /// el .mystudio y el nombre que ve la persona. No van al motor.
+  irFile?: string | null;
+  irName?: string | null;
 }
 
 export const RIG_GATE_OFF_DB = -80;
@@ -172,6 +176,8 @@ export function parseGuitarRig(json: unknown): GuitarRig | null {
     octLevel: num("octLevel"),
     octDry: num("octDry"),
     ampMidHz: num("ampMidHz"),
+    ...(typeof o.irFile === "string" ? { irFile: o.irFile } : {}),
+    ...(typeof o.irName === "string" ? { irName: o.irName } : {}),
   };
 }
 
@@ -422,6 +428,178 @@ class ToneStack {
   }
 }
 
+// ─── IR propio del bafle (app +76) ──────────────────────────────────────
+//
+// Convolución "sin demora", igual que IrConvolver en guitar_rig.h: los
+// primeros 64 coeficientes directo y el resto en bloques de 64 con FFT
+// (overlap-save particionado); un bloque está listo justo cuando empieza su
+// parte del IR. Hasta 4096 muestras.
+export const IR_BLOCK = 64;
+const IR_FFT = 2 * IR_BLOCK;
+const IR_BINS = IR_BLOCK + 1;
+export const IR_MAX_LEN = 4096;
+const IR_MAX_PARTS = Math.floor((IR_MAX_LEN - IR_BLOCK + IR_BLOCK - 1) / IR_BLOCK);
+const IR_GAIN = 0.5;
+const FFT_COS = Float64Array.from({ length: IR_FFT / 2 }, (_, i) => Math.cos((2 * Math.PI * i) / IR_FFT));
+const FFT_SIN = Float64Array.from({ length: IR_FFT / 2 }, (_, i) => Math.sin((2 * Math.PI * i) / IR_FFT));
+
+function fft128(re: Float64Array, im: Float64Array, inverse: boolean) {
+  for (let i = 1, j = 0; i < IR_FFT; i++) {
+    let bit = IR_FFT >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      let t = re[i]; re[i] = re[j]; re[j] = t;
+      t = im[i]; im[i] = im[j]; im[j] = t;
+    }
+  }
+  for (let len = 2; len <= IR_FFT; len <<= 1) {
+    const step = IR_FFT / len;
+    for (let i = 0; i < IR_FFT; i += len) {
+      for (let k = 0; k < len / 2; k++) {
+        const wr = FFT_COS[k * step];
+        const wi = inverse ? FFT_SIN[k * step] : -FFT_SIN[k * step];
+        const a = i + k, b = i + k + len / 2;
+        const vr = re[b] * wr - im[b] * wi;
+        const vi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - vr;
+        im[b] = im[a] - vi;
+        re[a] += vr;
+        im[a] += vi;
+      }
+    }
+  }
+}
+
+export interface IrKernel {
+  headLen: number;
+  head: Float64Array;
+  parts: number;
+  re: Float64Array;
+  im: Float64Array;
+}
+
+/// Mismo tratamiento que prepareIr del motor: sin el silencio del
+/// principio, cortado en 4096 con caída suave, energía 1 × IR_GAIN.
+export function prepareIr(s: Float32Array | null | undefined): IrKernel | null {
+  const h = irTaps(s);
+  return h ? kernelFromTaps(h) : null;
+}
+
+/// Los coeficientes que se van a aplicar (exportado para las pruebas).
+export function irTaps(s: Float32Array | null | undefined): Float64Array | null {
+  if (!s || s.length === 0) return null;
+  const n = s.length;
+  let peak = 0;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(s[i]));
+  if (peak <= 0) return null;
+  let first = 0;
+  while (first < n && Math.abs(s[first]) < 0.01 * peak) first++;
+  const start = first > 8 ? first - 8 : 0;
+  const len = Math.min(IR_MAX_LEN, n - start);
+  if (len <= 0) return null;
+  const h = new Float64Array(len);
+  for (let i = 0; i < len; i++) h[i] = s[start + i];
+  const fade = Math.min(256, Math.floor(len / 4));
+  for (let i = len - fade; i < len; i++) h[i] *= 0.5 + 0.5 * Math.cos((Math.PI * (i - (len - fade))) / fade);
+  let energy = 0;
+  for (const v of h) energy += v * v;
+  if (energy <= 0) return null;
+  const g = IR_GAIN / Math.sqrt(energy);
+  for (let i = 0; i < len; i++) h[i] *= g;
+  return h;
+}
+
+function kernelFromTaps(h: Float64Array): IrKernel {
+  const len = h.length;
+  const headLen = Math.min(IR_BLOCK, len);
+  const head = new Float64Array(IR_BLOCK);
+  for (let i = 0; i < headLen; i++) head[i] = h[i];
+  const parts = len > IR_BLOCK ? Math.floor((len - IR_BLOCK + IR_BLOCK - 1) / IR_BLOCK) : 0;
+  const kre = new Float64Array(parts * IR_BINS);
+  const kim = new Float64Array(parts * IR_BINS);
+  const re = new Float64Array(IR_FFT), im = new Float64Array(IR_FFT);
+  for (let p = 0; p < parts; p++) {
+    for (let i = 0; i < IR_FFT; i++) {
+      const src = IR_BLOCK + p * IR_BLOCK + i;
+      re[i] = i < IR_BLOCK && src < len ? h[src] : 0;
+      im[i] = 0;
+    }
+    fft128(re, im, false);
+    for (let b = 0; b < IR_BINS; b++) {
+      kre[p * IR_BINS + b] = re[b];
+      kim[p * IR_BINS + b] = im[b];
+    }
+  }
+  return { headLen, head, parts, re: kre, im: kim };
+}
+
+export class IrConvolver {
+  private hist = new Float64Array(2 * IR_BLOCK);
+  private histPos = 0;
+  private prev = new Float64Array(IR_BLOCK);
+  private cur = new Float64Array(IR_BLOCK);
+  private tailOut = new Float64Array(IR_BLOCK);
+  private blockPos = 0;
+  private fdlRe = new Float64Array(IR_MAX_PARTS * IR_BINS);
+  private fdlIm = new Float64Array(IR_MAX_PARTS * IR_BINS);
+  private fdlPos = 0;
+  private re = new Float64Array(IR_FFT);
+  private im = new Float64Array(IR_FFT);
+  private ar = new Float64Array(IR_FFT);
+  private ai = new Float64Array(IR_FFT);
+  reset() {
+    this.hist.fill(0); this.prev.fill(0); this.cur.fill(0); this.tailOut.fill(0);
+    this.fdlRe.fill(0); this.fdlIm.fill(0);
+    this.histPos = 0; this.blockPos = 0; this.fdlPos = 0;
+  }
+  run(x: number, k: IrKernel): number {
+    this.histPos = (this.histPos + IR_BLOCK - 1) % IR_BLOCK;
+    this.hist[this.histPos] = x;
+    this.hist[this.histPos + IR_BLOCK] = x;
+    let y = 0;
+    for (let j = 0; j < k.headLen; j++) y += k.head[j] * this.hist[this.histPos + j];
+    y += this.tailOut[this.blockPos];
+    this.cur[this.blockPos] = x;
+    if (++this.blockPos === IR_BLOCK) {
+      this.blockPos = 0;
+      const { re, im, ar, ai } = this;
+      for (let i = 0; i < IR_BLOCK; i++) {
+        re[i] = this.prev[i];
+        re[i + IR_BLOCK] = this.cur[i];
+        im[i] = 0;
+        im[i + IR_BLOCK] = 0;
+      }
+      fft128(re, im, false);
+      const slot = this.fdlPos;
+      for (let b = 0; b < IR_BINS; b++) {
+        this.fdlRe[slot * IR_BINS + b] = re[b];
+        this.fdlIm[slot * IR_BINS + b] = im[b];
+      }
+      for (let b = 0; b < IR_BINS; b++) { ar[b] = 0; ai[b] = 0; }
+      for (let p = 0; p < k.parts; p++) {
+        const s = (slot - p + IR_MAX_PARTS) % IR_MAX_PARTS;
+        const xo = s * IR_BINS, ho = p * IR_BINS;
+        for (let b = 0; b < IR_BINS; b++) {
+          const xr = this.fdlRe[xo + b], xi = this.fdlIm[xo + b];
+          const hr = k.re[ho + b], hi = k.im[ho + b];
+          ar[b] += xr * hr - xi * hi;
+          ai[b] += xr * hi + xi * hr;
+        }
+      }
+      for (let b = IR_BINS; b < IR_FFT; b++) {
+        ar[b] = ar[IR_FFT - b];
+        ai[b] = -ai[IR_FFT - b];
+      }
+      fft128(ar, ai, true);
+      for (let i = 0; i < IR_BLOCK; i++) this.tailOut[i] = ar[i + IR_BLOCK] / IR_FFT;
+      for (let i = 0; i < IR_BLOCK; i++) this.prev[i] = this.cur[i];
+      this.fdlPos = (this.fdlPos + 1) % IR_MAX_PARTS;
+    }
+    return y;
+  }
+}
+
 // ─── Una etapa de válvula ───────────────────────────────────────────────
 //
 // Curva asimétrica (la del triodo: recorta más duro de un lado que del
@@ -533,6 +711,8 @@ export class GuitarRigDsp {
   // Bafle
   private cab: Bq[] = Array.from({ length: 8 }, () => new Bq());
   private cabN = 0;
+  private cabIr = false;
+  private irConv = new IrConvolver();
   private cabBright = new Bq();
   // Modulación
   private modBuf: Float32Array;
@@ -568,6 +748,7 @@ export class GuitarRigDsp {
     this.os.reset();
     for (const c of this.cab) c.reset();
     this.cabBright.reset();
+    this.irConv.reset();
     this.modBuf.fill(0); this.modPos = 0; this.modPhase = 0; this.modFb = 0; this.apState.fill(0);
     this.dlyBuf?.fill(0); this.dlyPos = 0; this.dlyCur = 0; this.dlyLp.reset(); this.dlyHp.reset(); this.dlyWow = 0;
     for (const f of [this.eqLow, this.eqMid, this.eqHigh, this.split, this.octLp1, this.octLp2, this.octOut1, this.octOut2]) f.reset();
@@ -701,7 +882,10 @@ export class GuitarRigDsp {
     this.sagA = 1 - Math.exp(-1 / (0.04 * hi));
 
     // Bafle
-    const cab = clamp(Math.round(p[P.cab]), 0, 6);
+    let cab = clamp(Math.round(p[P.cab]), 0, 7);
+    // 7 = IR propio; sin IR suena el bafle sintético del instrumento.
+    this.cabIr = cab === 7;
+    if (this.cabIr) cab = model >= 3 ? 6 : 3;
     const c = this.cab;
     if (cab === 1) {
       c[0].set(HP, 90, 0.7, 0, r); c[1].set(PEAK, 150, 1, 2, r); c[2].set(PEAK, 600, 0.9, -2, r);
@@ -758,7 +942,7 @@ export class GuitarRigDsp {
 
   /// Procesa `n` muestras de `buf` en el lugar. `params`: los 36 valores de
   /// rigParams. `bpm`: el tempo, para el eco a tempo.
-  process(buf: Float32Array, n: number, params: Float32Array, bpm: number, offset = 0) {
+  process(buf: Float32Array, n: number, params: Float32Array, bpm: number, offset = 0, ir: IrKernel | null = null) {
     if (params[P.on] < 0.5) return;
     this.configure(params, bpm);
     const r = this.rate;
@@ -893,7 +1077,11 @@ export class GuitarRigDsp {
 
       // Bafle.
       if (this.cabN > 0 && ampOn) {
-        for (let k = 0; k < this.cabN; k++) x = this.cab[k].run(x);
+        if (this.cabIr && ir) {
+          x = this.irConv.run(x, ir);
+        } else {
+          for (let k = 0; k < this.cabN; k++) x = this.cab[k].run(x);
+        }
         x = this.cabBright.run(x);
       }
       if (ampOn && this.diBlend > 0) {
@@ -1059,10 +1247,17 @@ function delayDivisionSecondsRig(div: number, bpm: number): number {
 }
 
 /// Toda la pista de una pasada (lo que usa la mezcla de la web).
-export function applyGuitarRigInPlace(samples: Float32Array, rig: GuitarRig, sampleRate: number, bpm = 120) {
+export function applyGuitarRigInPlace(
+  samples: Float32Array,
+  rig: GuitarRig,
+  sampleRate: number,
+  bpm = 120,
+  /// Las muestras del IR propio (a esta misma tasa), si el bafle es 7.
+  irSamples: Float32Array | null = null,
+) {
   if (!rigOn(rig)) return samples;
   const dsp = new GuitarRigDsp(sampleRate);
-  dsp.process(samples, samples.length, rigParams(rig), bpm);
+  dsp.process(samples, samples.length, rigParams(rig), bpm, 0, prepareIr(irSamples));
   return samples;
 }
 

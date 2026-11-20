@@ -57,6 +57,9 @@ export interface TrackFx {
   /// Pedalera de guitarra (app +75, ver guitarRig.ts). null/ausente = sin
   /// pedalera.
   rig?: GuitarRig | null;
+  /// Las muestras del IR propio de la pedalera (rig.cab = 7), a la tasa de la
+  /// mezcla. No es un parámetro guardado: lo carga rigIrLoader.ts del ZIP.
+  rigIr?: Float32Array | null;
 }
 
 export const GATE_OFF_DB = -80;
@@ -644,7 +647,7 @@ export function applyTrackFxInPlace(
     gateInPlace(samples, Math.max(-80, Math.min(-20, fx.gateThresholdDb ?? GATE_OFF_DB)), sampleRate);
   }
   // Pedalera de guitarra: después de la puerta y antes del EQ, como el motor.
-  if (rigOn(fx.rig)) applyGuitarRigInPlace(samples, fx.rig, sampleRate, bpm);
+  if (rigOn(fx.rig)) applyGuitarRigInPlace(samples, fx.rig, sampleRate, bpm, fx.rigIr ?? null);
   if (fx.eqLowDb !== 0) {
     new Biquad("lowShelf", 100, fx.eqLowDb, sampleRate).processInPlace(samples);
   }

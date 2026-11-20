@@ -74,6 +74,7 @@ import {
   type MasterFx,
   type TrackFx,
 } from "@/lib/trackEffects";
+import { withRigIr } from "@/lib/rigIrLoader";
 import { parseTrackAutomation, type TrackAutomation } from "@/lib/trackAutomation";
 
 // El recorte, el volumen y los fades del clip (formatVersion 3) los
@@ -455,7 +456,7 @@ export function ProjectViewer({
             pan: track.pan,
             isMuted: track.isMuted,
             isSolo: track.isSolo,
-            fx: parseTrackFx(track.fx),
+            fx: await withRigIr(parseTrackFx(track.fx), zip, ctx),
             automation: parseTrackAutomation(track.automation),
             clips: decodedClips,
             color: TRACK_COLORS[runtimeTracks.length % TRACK_COLORS.length],

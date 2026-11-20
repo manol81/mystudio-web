@@ -2,7 +2,7 @@ import { it } from "vitest";
 // Exporta la entrada, los parámetros y lo que da la web, para comparar con el
 // motor nativo (tools/guitar_rig/ en la app). Solo corre con PARITY_DIR.
 import { writeFileSync } from "node:fs";
-import { DEFAULT_GUITAR_RIG, GUITAR_RIG_PRESETS, GuitarRigDsp, RIG_PARAM_COUNT, rigParams, type GuitarRig } from "./guitarRig";
+import { DEFAULT_GUITAR_RIG, GUITAR_RIG_PRESETS, GuitarRigDsp, RIG_PARAM_COUNT, prepareIr, rigParams, type GuitarRig } from "./guitarRig";
 
 const SR = 44100;
 it.skipIf(!process.env.PARITY_DIR)("parity export (tools/guitar_rig/run_parity.sh)", () => {
@@ -21,6 +21,15 @@ it.skipIf(!process.env.PARITY_DIR)("parity export (tools/guitar_rig/run_parity.s
     }
   }
   writeFileSync(`${dir}/input.f32`, Buffer.from(x.buffer));
+  // Un IR sintético (ruido que cae, 3000 muestras) para los bafles 7.
+  const irRaw = new Float32Array(3000);
+  let t = 77;
+  for (let i = 0; i < irRaw.length; i++) {
+    t = (t * 1664525 + 1013904223) >>> 0;
+    irRaw[i] = ((t / 4294967296) - 0.5) * Math.exp(-i / 500) * (i < 20 ? 0 : 1);
+  }
+  writeFileSync(`${dir}/ir.f32`, Buffer.from(irRaw.buffer));
+  const ir = prepareIr(irRaw);
   const configs: Partial<GuitarRig>[] = [
     ...GUITAR_RIG_PRESETS.map((p) => p.rig),
     { wahOn: true, wahAuto: false, wahAmount: 0.7, ampModel: 1 },
@@ -30,6 +39,8 @@ it.skipIf(!process.env.PARITY_DIR)("parity export (tools/guitar_rig/run_parity.s
     { ampOn: false, driveOn: true, driveType: 2, gateDb: -50 },
     { ampModel: 4, ampGain: 1, cab: 4, ampDiBlend: 0.8, octOn: true, octDry: 0.2 },
     { ampModel: 3, ampMidHz: 2500, ampMid: 1, wahOn: true, wahAuto: false, wahAmount: 0.3, driveOn: true, driveType: 0, driveBlend: 0.9 },
+    { ampModel: 1, ampGain: 0.7, cab: 7 },
+    { ampModel: 4, ampGain: 0.5, cab: 7, cabBright: 0.8, dlyOn: true },
   ];
   const params = new Float32Array(configs.length * RIG_PARAM_COUNT);
   configs.forEach((c, k) => {
@@ -38,7 +49,7 @@ it.skipIf(!process.env.PARITY_DIR)("parity export (tools/guitar_rig/run_parity.s
     const y = Float32Array.from(x);
     const dsp = new GuitarRigDsp(SR);
     // en bloques de 192 como el motor
-    for (let i = 0; i < n; i += 192) dsp.process(y, Math.min(192, n - i), rigParams(rig), 100, i);
+    for (let i = 0; i < n; i += 192) dsp.process(y, Math.min(192, n - i), rigParams(rig), 100, i, rig.cab === 7 ? ir : null);
     writeFileSync(`${dir}/ts_${k}.f32`, Buffer.from(y.buffer));
   });
   writeFileSync(`${dir}/params.f32`, Buffer.from(params.buffer));

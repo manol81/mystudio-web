@@ -37,6 +37,7 @@ import {
   type MixdownTrack,
 } from "@/lib/projectMixdown";
 import { DEFAULT_MASTER_FX, parseMasterFx, parseTrackFx, type MasterFx } from "@/lib/trackEffects";
+import { withRigIr } from "@/lib/rigIrLoader";
 import { parseTrackAutomation } from "@/lib/trackAutomation";
 
 // El recorte, el volumen y los fades del clip (formatVersion 3) los
@@ -162,7 +163,7 @@ export async function loadDecodedTracks(
       isMuted: track.isMuted,
       isSolo: track.isSolo,
       // Ausente en respaldos anteriores a los efectos → todo neutro.
-      fx: parseTrackFx(track.fx),
+      fx: await withRigIr(parseTrackFx(track.fx), zip, ctx),
       automation: parseTrackAutomation(track.automation),
       clips,
     });
