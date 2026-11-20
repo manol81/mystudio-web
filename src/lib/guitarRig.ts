@@ -445,16 +445,20 @@ class Oversampler {
   private upPos = 0;
   private down = new Float64Array(OS_TAPS);
   private downPos = 0;
+  private acc = new Float64Array(OS);
   /// Un cuadro a la tasa baja → OS cuadros a la tasa alta (en `out`).
   upsample(x: number, out: Float64Array) {
     const m = OS_TAPS / OS;
     this.upPos = (this.upPos + m - 1) % m;
     this.up[this.upPos] = x;
-    for (let p = 0; p < OS; p++) {
-      let acc = 0;
-      for (let j = 0; j < m; j++) acc += OS_FIR[j * OS + p] * this.up[(this.upPos + j) % m];
-      out[p] = acc * OS;
+    // Las 8 fases a la vez, cada una sumando en el mismo orden (igual que el motor).
+    const acc = this.acc;
+    acc.fill(0);
+    for (let j = 0; j < m; j++) {
+      const wj = this.up[(this.upPos + j) % m];
+      for (let p = 0; p < OS; p++) acc[p] += OS_FIR[j * OS + p] * wj;
     }
+    for (let p = 0; p < OS; p++) out[p] = acc[p] * OS;
   }
   /// OS cuadros a la tasa alta → uno a la tasa baja.
   downsample(inp: Float64Array): number {
@@ -462,9 +466,16 @@ class Oversampler {
       this.downPos = (this.downPos + OS_TAPS - 1) % OS_TAPS;
       this.down[this.downPos] = inp[p];
     }
-    let acc = 0;
-    for (let i = 0; i < OS_TAPS; i++) acc += OS_FIR[i] * this.down[(this.downPos + i) % OS_TAPS];
-    return acc;
+    // Ocho sumas parciales y después juntas, en el mismo orden que el motor.
+    const acc = this.acc;
+    acc.fill(0);
+    for (let j = 0; j < OS_TAPS / OS; j++) {
+      for (let p = 0; p < OS; p++) {
+        const i = j * OS + p;
+        acc[p] += OS_FIR[i] * this.down[(this.downPos + i) % OS_TAPS];
+      }
+    }
+    return acc[0] + acc[1] + (acc[2] + acc[3]) + (acc[4] + acc[5] + (acc[6] + acc[7]));
   }
   reset() {
     this.up.fill(0); this.down.fill(0); this.upPos = 0; this.downPos = 0;
@@ -749,6 +760,7 @@ class TubeStage {
 // ─── El equipo entero ───────────────────────────────────────────────────
 
 const MAX_STAGES = 5;
+const IDLE_FRAMES = 8192;
 // Nivel de los amplificadores nuevos (+77), medido como el resto (ver el test
 // "nivel parejo").
 const CHIME_TRIM = 0.2;
@@ -1007,6 +1019,7 @@ export class GuitarRigDsp {
   private outGain = 1;
   // Potencia asimétrica (clase A) y EQ activo (+77)
   private powerAsym = 0;
+  private hiIdle = 0;
   private powerAsymT = 0;
   private activeEq = false;
   // Boost y ecualizador (+77)
@@ -1140,6 +1153,7 @@ export class GuitarRigDsp {
     this.dlyBuf?.fill(0); this.dlyPos = 0; this.dlyCur = 0; this.dlyLp.reset(); this.dlyHp.reset(); this.dlyWow = 0;
     for (const f of [this.eqLow, this.eqMid, this.eqHigh, this.split, this.octLp1, this.octLp2, this.octOut1, this.octOut2]) f.reset();
     this.diBuf.fill(0); this.diPos = 0; this.octEnv = 0; this.octUp = false; this.octFlip = 1;
+    this.hiIdle = 0;
     this.boostTreb.reset(); this.boostMid.reset();
     for (const f of [this.peqLc, this.peqLs, this.peqPk, this.peqHs, this.peqHc]) f.reset();
     this.rev.clear();
@@ -1546,8 +1560,15 @@ export class GuitarRigDsp {
       // mismo que el sobremuestreo (95 muestras a 8× = 11,875 a 1×) para que
       // no se cancelen.
       this.diBuf[this.diPos] = x;
+      // Silencio de verdad durante más de 186 ms: el amplificador ya se
+      // apagó y no hace falta calcularlo (igual que el motor).
+      if (Math.abs(x) > 1e-6) this.hiIdle = 0;
+      else if (this.hiIdle <= IDLE_FRAMES) this.hiIdle++;
+      const hiSkip = this.hiIdle > IDLE_FRAMES;
       // Drive y amplificador, a 8× la tasa.
-      if (anyHi) {
+      if (hiSkip) {
+        x = 0;
+      } else if (anyHi) {
         this.os.upsample(x, hiBuf);
         for (let k = 0; k < OS; k++) {
           let v = hiBuf[k];
@@ -1562,7 +1583,7 @@ export class GuitarRigDsp {
       }
 
       // Bafle.
-      if (this.cabN > 0 && ampOn) {
+      if (this.cabN > 0 && ampOn && !hiSkip) {
         if (this.cabIr && ir) {
           x = this.irConv.run(x, ir);
         } else {
