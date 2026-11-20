@@ -6,8 +6,16 @@
 //
 // Cadena, en este orden (como en una pedalera real):
 //
-//   puerta → compresor → wah → [×8: drive → amplificador] → bafle →
-//   modulación → eco → nivel
+//   puerta → compresor → octavador → wah → boost → [×8: drive →
+//   amplificador] → bafle → DI → ecualizador → modulación → eco → reverb →
+//   nivel
+//
+// Desde la app +77 (2026-11-20) hay ESCENAS y curvas (RigProgram y RigPlayer,
+// al final): hasta 8 pedaleras enteras que cambian en el lugar de la canción
+// que se eligió, y controles que se mueven solos. Sin clics: los controles se
+// suavizan (15 ms), los pedales que se prenden o cambian de tipo se cruzan
+// entre dos copias del equipo (23 ms), y el eco y la reverb dejan sonar su
+// cola cuando se apagan.
 //
 // · El drive y el amplificador (lo que distorsiona) corren a 8 veces la
 //   tasa de muestreo (sobremuestreo con un FIR de fase lineal): sin eso, los
@@ -72,10 +80,32 @@ export interface GuitarRig {
   octLevel: number; // 0..1
   octDry: number; // 0..1
   ampMidHz: number; // 200..3000: frecuencia de los medios de los amplificadores de bajo
+  // En vivo (app +77): boost, ecualizador y reverb, también AL FINAL.
+  boostOn: boolean;
+  boostType: number; // 0 limpio, 1 de agudos, 2 de medios
+  boostDb: number; // 0..24
+  eqOn: boolean;
+  eqLowCutHz: number; // 20 (apagado)..500
+  eqLowDb: number; // -15..15 (120 Hz)
+  eqMidHz: number; // 150..6000
+  eqMidDb: number; // -15..15
+  eqMidQ: number; // 0,3..5
+  eqHighDb: number; // -15..15 (4 kHz)
+  eqHighCutHz: number; // 1000..20000 (apagado)
+  revOn: boolean;
+  revType: number; // 0 resorte, 1 sala, 2 hall
+  revDecay: number; // 0..1
+  revTone: number; // 0..1
+  revMix: number; // 0..1
   /// IR propio del bafle (app +76, con cab = 7): el nombre de su entrada en
   /// el .mystudio y el nombre que ve la persona. No van al motor.
   irFile?: string | null;
   irName?: string | null;
+  /// Escenas (app +77): el nombre de esta (la primera) y las demás, cada una
+  /// una pedalera entera (sin escenas adentro). El IR es de la pista: el de
+  /// la primera vale para todas.
+  sceneName?: string | null;
+  scenes?: GuitarRig[];
 }
 
 export const RIG_GATE_OFF_DB = -80;
@@ -123,11 +153,27 @@ export const DEFAULT_GUITAR_RIG: GuitarRig = {
   octLevel: 0.6,
   octDry: 0.8,
   ampMidHz: 500,
+  boostOn: false,
+  boostType: 0,
+  boostDb: 6,
+  eqOn: false,
+  eqLowCutHz: 20,
+  eqLowDb: 0,
+  eqMidHz: 800,
+  eqMidDb: 0,
+  eqMidQ: 1,
+  eqHighDb: 0,
+  eqHighCutHz: 20000,
+  revOn: false,
+  revType: 0,
+  revDecay: 0.5,
+  revTone: 0.5,
+  revMix: 0.25,
 };
 
 /// Tolerante igual que GuitarRig.fromJson en Dart: lo que falte toma el
 /// default; null (o algo que no es un objeto) = sin pedalera.
-export function parseGuitarRig(json: unknown): GuitarRig | null {
+export function parseGuitarRig(json: unknown, nested = false): GuitarRig | null {
   if (!json || typeof json !== "object") return null;
   const o = json as Record<string, unknown>;
   const d = DEFAULT_GUITAR_RIG;
@@ -176,15 +222,46 @@ export function parseGuitarRig(json: unknown): GuitarRig | null {
     octLevel: num("octLevel"),
     octDry: num("octDry"),
     ampMidHz: num("ampMidHz"),
-    ...(typeof o.irFile === "string" ? { irFile: o.irFile } : {}),
-    ...(typeof o.irName === "string" ? { irName: o.irName } : {}),
+    boostOn: bool("boostOn"),
+    boostType: Math.round(num("boostType")),
+    boostDb: num("boostDb"),
+    eqOn: bool("eqOn"),
+    eqLowCutHz: num("eqLowCutHz"),
+    eqLowDb: num("eqLowDb"),
+    eqMidHz: num("eqMidHz"),
+    eqMidDb: num("eqMidDb"),
+    eqMidQ: num("eqMidQ"),
+    eqHighDb: num("eqHighDb"),
+    eqHighCutHz: num("eqHighCutHz"),
+    revOn: bool("revOn"),
+    revType: Math.round(num("revType")),
+    revDecay: num("revDecay"),
+    revTone: num("revTone"),
+    revMix: num("revMix"),
+    ...(!nested && typeof o.irFile === "string" ? { irFile: o.irFile } : {}),
+    ...(!nested && typeof o.irName === "string" ? { irName: o.irName } : {}),
+    ...(typeof o.sceneName === "string" ? { sceneName: o.sceneName } : {}),
+    ...(!nested && Array.isArray(o.scenes)
+      ? {
+          scenes: (o.scenes as unknown[])
+            .slice(0, MAX_SCENES - 1)
+            .map((x) => parseGuitarRig(x, true))
+            .filter((x): x is GuitarRig => x !== null),
+        }
+      : {}),
   };
+}
+
+/// Las escenas de la pedalera, la primera incluida (sin las de adentro).
+export function rigScenes(rig: GuitarRig): GuitarRig[] {
+  const first: GuitarRig = { ...rig, scenes: undefined };
+  return [first, ...(rig.scenes ?? [])];
 }
 
 export const rigOn = (rig: GuitarRig | null | undefined): rig is GuitarRig => !!rig && rig.on;
 /// El eco y la modulación siguen sonando después del último audio.
 export const rigHasTail = (rig: GuitarRig | null | undefined) =>
-  rigOn(rig) && (rig.dlyOn || rig.modOn);
+  rigOn(rig) && rigScenes(rig).some((s) => s.dlyOn || s.modOn || s.revOn);
 
 /// El orden de los 42 valores que recibe el motor (mystudio_set_track_rig).
 /// NO reordenar: es el mismo en guitar_rig.h y en guitar_rig.dart.
@@ -201,10 +278,31 @@ export function rigParams(rig: GuitarRig): Float32Array {
     b(rig.dlyOn), rig.dlyTimeMs, rig.dlySync, rig.dlyFeedback, rig.dlyMix, rig.dlyTone,
     rig.outDb,
     rig.driveBlend, rig.ampDiBlend, b(rig.octOn), rig.octLevel, rig.octDry, rig.ampMidHz,
+    b(rig.boostOn), rig.boostType, rig.boostDb,
+    b(rig.eqOn), rig.eqLowCutHz, rig.eqLowDb, rig.eqMidHz, rig.eqMidDb, rig.eqMidQ, rig.eqHighDb, rig.eqHighCutHz,
+    b(rig.revOn), rig.revType, rig.revDecay, rig.revTone, rig.revMix,
   ]);
 }
 
-export const RIG_PARAM_COUNT = 42;
+export const RIG_PARAM_COUNT = 58;
+export const MAX_SCENES = 8;
+/// Las claves en el orden del motor: con esto una curva ("rig.driveGain")
+/// sabe a qué valor va.
+export const RIG_PARAM_KEYS = [
+  "on", "gateDb",
+  "compOn", "compSustain", "compLevelDb",
+  "wahOn", "wahAuto", "wahAmount", "wahQ",
+  "driveOn", "driveType", "driveGain", "driveTone", "driveLevelDb",
+  "ampOn", "ampModel", "ampGain", "ampBass", "ampMid", "ampTreble", "ampPresence", "ampMaster",
+  "cab", "cabBright",
+  "modOn", "modType", "modRate", "modDepth", "modMix",
+  "dlyOn", "dlyTimeMs", "dlySync", "dlyFeedback", "dlyMix", "dlyTone",
+  "outDb",
+  "driveBlend", "ampDiBlend", "octOn", "octLevel", "octDry", "ampMidHz",
+  "boostOn", "boostType", "boostDb",
+  "eqOn", "eqLowCutHz", "eqLowDb", "eqMidHz", "eqMidDb", "eqMidQ", "eqHighDb", "eqHighCutHz",
+  "revOn", "revType", "revDecay", "revTone", "revMix",
+] as const;
 const P = {
   on: 0, gateDb: 1,
   compOn: 2, compSustain: 3, compLevelDb: 4,
@@ -216,7 +314,23 @@ const P = {
   dlyOn: 29, dlyTimeMs: 30, dlySync: 31, dlyFeedback: 32, dlyMix: 33, dlyTone: 34,
   outDb: 35,
   driveBlend: 36, ampDiBlend: 37, octOn: 38, octLevel: 39, octDry: 40, ampMidHz: 41,
+  boostOn: 42, boostType: 43, boostDb: 44,
+  eqOn: 45, eqLowCutHz: 46, eqLowDb: 47, eqMidHz: 48, eqMidDb: 49, eqMidQ: 50, eqHighDb: 51, eqHighCutHz: 52,
+  revOn: 53, revType: 54, revDecay: 55, revTone: 56, revMix: 57,
 } as const;
+
+/// Lo que no se puede mover de a poco: un cambio cruza dos copias del equipo.
+export function isSwitchParam(i: number): boolean {
+  return (
+    i === P.compOn || i === P.wahOn || i === P.driveOn || i === P.driveType || i === P.ampOn || i === P.ampModel ||
+    i === P.cab || i === P.modOn || i === P.modType || i === P.octOn || i === P.boostOn || i === P.boostType ||
+    i === P.eqOn || i === P.revType
+  );
+}
+/// Lo que salta sin suavizar (el equipo lo resuelve solo).
+export function isJumpParam(i: number): boolean {
+  return i === P.on || i === P.dlyOn || i === P.revOn || i === P.wahAuto || i === P.dlySync;
+}
 
 // ─── Piezas ─────────────────────────────────────────────────────────────
 
@@ -634,9 +748,171 @@ class TubeStage {
 
 // ─── El equipo entero ───────────────────────────────────────────────────
 
-const MAX_STAGES = 4;
+const MAX_STAGES = 5;
+// Nivel de los amplificadores nuevos (+77), medido como el resto (ver el test
+// "nivel parejo").
+const CHIME_TRIM = 0.2;
+const MODERN_TRIM = 0.12;
 const DELAY_MAX_SECONDS = 2;
 const MOD_MAX_SECONDS = 0.03;
+
+// ─── Reverb de la pedalera (app +77) ─────────────────────────────────────
+// Igual que RigReverb en guitar_rig.h: cuatro pasa-todo + una red de 8
+// líneas realimentadas (Householder) con su pasa-bajos cada una; el resorte
+// suma 12 pasa-todo de primer orden (el rebote metálico) y suena solo entre
+// 250 Hz y 5 kHz.
+const REV_LINES = 8;
+const REV_MAX_LINE = 3600;
+const REV_MAX_PRE = 1000;
+const REV_APS = 4;
+const REV_MAX_AP = 700;
+const REV_DISP = 12;
+const REV_WET_GAIN = 0.5;
+const REV_VOICING: { lines: number[]; pre: number; aps: number[] }[] = [
+  { lines: [1259, 1361, 1453, 1549, 1637, 1733, 1831, 1933], pre: 0, aps: [113, 79, 53, 37] },
+  { lines: [601, 683, 757, 829, 911, 997, 1069, 1153], pre: 220, aps: [347, 251, 173, 113] },
+  { lines: [2029, 2251, 2399, 2621, 2801, 3011, 3209, 3407], pre: 662, aps: [556, 441, 341, 225] },
+];
+const jsRound = (v: number) => Math.floor(v + 0.5);
+
+class RigReverb {
+  line: Float32Array[] = [];
+  len = new Int32Array(REV_LINES);
+  pos = new Int32Array(REV_LINES);
+  damp = new Float64Array(REV_LINES);
+  g = new Float64Array(REV_LINES);
+  pre = new Float32Array(0);
+  preLen = 0;
+  prePos = 0;
+  ap: Float32Array[] = [];
+  apLen = new Int32Array(REV_APS);
+  apPos = new Int32Array(REV_APS);
+  disp = new Float64Array(REV_DISP);
+  spring = false;
+  dampA = 0.5;
+  inHp = new OnePole();
+  inLp = new OnePole();
+  tailFrames = 0;
+  private y = new Float64Array(REV_LINES);
+
+  get ready() {
+    return this.line.length > 0;
+  }
+  /// Las líneas se reservan recién cuando la reverb se usa (como en el motor).
+  init(rate: number) {
+    const s = rate / 44100;
+    this.line = Array.from({ length: REV_LINES }, () => new Float32Array(Math.ceil(REV_MAX_LINE * s) + 2));
+    this.pre = new Float32Array(Math.ceil(REV_MAX_PRE * s) + 2);
+    this.ap = Array.from({ length: REV_APS }, () => new Float32Array(Math.ceil(REV_MAX_AP * s) + 2));
+  }
+  configure(type: number, decay: number, tone: number, rate: number) {
+    const v = REV_VOICING[type < 0 ? 0 : type > 2 ? 2 : type];
+    const s = rate / 44100;
+    const d = clamp(decay, 0, 1);
+    const rt = type === 0 ? 0.8 * Math.pow(5, d) : type === 1 ? 0.3 * Math.pow(20 / 3, d) : 1.2 * Math.pow(20 / 3, d);
+    for (let i = 0; i < REV_LINES; i++) {
+      this.len[i] = Math.max(1, jsRound(v.lines[i] * s));
+      if (this.pos[i] >= this.len[i]) this.pos[i] = 0;
+      this.g[i] = Math.pow(10, (-3 * this.len[i]) / (rt * rate));
+    }
+    this.preLen = jsRound(v.pre * s);
+    if (this.prePos >= this.preLen) this.prePos = 0;
+    for (let k = 0; k < REV_APS; k++) {
+      this.apLen[k] = Math.max(1, jsRound(v.aps[k] * s));
+      if (this.apPos[k] >= this.apLen[k]) this.apPos[k] = 0;
+    }
+    this.spring = type === 0;
+    const t = clamp(tone, 0, 1);
+    const fc = this.spring ? 900 * Math.pow(5, t) : 1500 * Math.pow(8, t);
+    this.dampA = 1 - Math.exp((-2 * Math.PI * fc) / rate);
+    this.inHp.set(250, rate);
+    this.inLp.set(5000, rate);
+    this.tailFrames = rt * rate + this.preLen + 2048;
+  }
+  run(x: number): number {
+    let inp = x;
+    if (this.spring) {
+      inp = this.inLp.lp(this.inHp.hp(inp));
+      for (let k = 0; k < REV_DISP; k++) {
+        const y = 0.62 * inp + this.disp[k];
+        this.disp[k] = inp - 0.62 * y;
+        inp = y;
+      }
+    }
+    if (this.preLen > 0) {
+      const d = this.pre[this.prePos];
+      this.pre[this.prePos] = inp;
+      this.prePos = (this.prePos + 1) % this.preLen;
+      inp = d;
+    }
+    for (let k = 0; k < REV_APS; k++) {
+      const a = this.ap[k];
+      const d = a[this.apPos[k]];
+      const t = inp - 0.6 * d;
+      a[this.apPos[k]] = t;
+      this.apPos[k] = (this.apPos[k] + 1) % this.apLen[k];
+      inp = d + 0.6 * t;
+    }
+    const y = this.y;
+    let sum = 0;
+    for (let i = 0; i < REV_LINES; i++) {
+      this.damp[i] += this.dampA * (this.line[i][this.pos[i]] - this.damp[i]);
+      y[i] = this.damp[i] * this.g[i];
+      sum += y[i];
+    }
+    const f = sum * 0.25;
+    let out = 0;
+    for (let i = 0; i < REV_LINES; i++) {
+      const inj = i & 1 ? -inp : inp;
+      this.line[i][this.pos[i]] = y[i] - f + 0.35 * inj;
+      this.pos[i] = (this.pos[i] + 1) % this.len[i];
+      out += i & 1 ? -y[i] : y[i];
+    }
+    return out * REV_WET_GAIN;
+  }
+  clear() {
+    for (const l of this.line) l.fill(0);
+    this.pre.fill(0);
+    for (const a of this.ap) a.fill(0);
+    this.damp.fill(0);
+    this.disp.fill(0);
+    this.pos.fill(0);
+    this.apPos.fill(0);
+    this.prePos = 0;
+    this.inHp.reset();
+    this.inLp.reset();
+  }
+}
+
+/// Copia el estado de un objeto del DSP en otro igual (lo que en el motor es
+/// `to = from`): números, arreglos tipados y objetos adentro.
+function copyState(dst: Record<string, unknown>, src: Record<string, unknown>) {
+  for (const k of Object.keys(src)) {
+    const v = src[k];
+    if (v instanceof Float32Array || v instanceof Float64Array || v instanceof Int32Array) {
+      const d = dst[k] as Float32Array | Float64Array | Int32Array | null;
+      if (d && d.length === v.length) d.set(v as never);
+      else dst[k] = v.slice();
+    } else if (Array.isArray(v)) {
+      const d = dst[k] as unknown[];
+      if (d.length > v.length) d.length = v.length;
+      for (let i = 0; i < v.length; i++) {
+        const e = v[i];
+        if (e instanceof Float32Array || e instanceof Float64Array) {
+          const de = d[i] as Float32Array | Float64Array | undefined;
+          if (de && de.length === e.length) de.set(e as never);
+          else d[i] = e.slice();
+        } else if (e !== null && typeof e === "object") {
+          copyState(d[i] as Record<string, unknown>, e as Record<string, unknown>);
+        } else d[i] = e;
+      }
+    } else if (v !== null && typeof v === "object") {
+      copyState(dst[k] as Record<string, unknown>, v as Record<string, unknown>);
+    } else {
+      dst[k] = v;
+    }
+  }
+}
 
 export class GuitarRigDsp {
   private readonly rate: number;
@@ -729,11 +1005,122 @@ export class GuitarRigDsp {
   private dlyHp = new OnePole();
   private dlyWow = 0;
   private outGain = 1;
+  // Potencia asimétrica (clase A) y EQ activo (+77)
+  private powerAsym = 0;
+  private powerAsymT = 0;
+  private activeEq = false;
+  // Boost y ecualizador (+77)
+  private boostTreb = new OnePole();
+  private boostMid = new Bq();
+  private boostGain = 1;
+  private boostMidGain = 1;
+  private peqLc = new Bq();
+  private peqLs = new Bq();
+  private peqPk = new Bq();
+  private peqHs = new Bq();
+  private peqHc = new Bq();
+  private peqLcOn = false;
+  private peqHcOn = false;
+  // Reverb y fundidos (+77)
+  private rev: RigReverb;
+  private rampStep: number;
+  private primed = false;
+  private onG = 0;
+  private dlySendG = 0;
+  private revSendG = 0;
+  private dlyRunning = false;
+  private revRunning = false;
+  private dlyTail = 0;
+  private revTail = 0;
+  private dlyMixHeld = 0;
+  private dlyFbHeld = 0;
+  private revMixHeld = 0;
 
   constructor(sampleRate: number) {
     this.rate = sampleRate;
     this.hi = sampleRate * OS;
     this.modBuf = new Float32Array(Math.ceil(sampleRate * MOD_MAX_SECONDS) + 4);
+    this.rev = new RigReverb();
+    this.rampStep = 1 / (0.01 * sampleRate);
+  }
+
+  /// `this = other` del motor (antes de un cruce entre escenas).
+  copyFrom(other: GuitarRigDsp) {
+    copyState(this as unknown as Record<string, unknown>, other as unknown as Record<string, unknown>);
+  }
+
+  /// Igual que prepareSwitch del motor: limpia lo de los pedales que recién
+  /// se prenden o cambian de tipo.
+  prepareSwitch(from: Float32Array, to: Float32Array) {
+    const turnedOn = (k: number) => from[k] < 0.5 && to[k] >= 0.5;
+    const changed = (k: number) => jsRound(from[k]) !== jsRound(to[k]);
+    if (turnedOn(P.compOn)) { this.compEnv = 0; this.compGain = 1; }
+    if (turnedOn(P.wahOn)) { this.wahEnv = 0; this.wahPos = 0; this.wahS1 = 0; this.wahS2 = 0; }
+    if (turnedOn(P.octOn)) {
+      for (const f of [this.octLp1, this.octLp2, this.octOut1, this.octOut2]) f.reset();
+      this.octEnv = 0; this.octUp = false; this.octFlip = 1;
+    }
+    if (turnedOn(P.boostOn) || changed(P.boostType)) { this.boostTreb.reset(); this.boostMid.reset(); }
+    if (turnedOn(P.driveOn) || changed(P.driveType)) {
+      for (const f of [this.drvPre, this.drvPre2, this.drvGbw, this.drvTone, this.drvTone2, this.drvMid, this.drvFizz]) f.reset();
+      this.fuzz1.reset();
+    }
+    if (turnedOn(P.ampOn)) {
+      this.ampInHp.reset(); this.ampBright.reset(); this.ampMidBoost.reset();
+      for (const st of this.stages) st.reset();
+      this.tone.reset(); this.presence.reset(); this.resonance.reset(); this.sag = 0;
+      for (const c of this.cab) c.reset();
+      this.cabBright.reset(); this.irConv.reset();
+    }
+    if (changed(P.ampModel)) {
+      this.tone.reset();
+      for (const f of [this.eqLow, this.eqMid, this.eqHigh, this.split]) f.reset();
+    }
+    if (changed(P.cab)) {
+      for (const c of this.cab) c.reset();
+      this.irConv.reset();
+    }
+    if (turnedOn(P.modOn) || changed(P.modType)) {
+      this.modBuf.fill(0);
+      this.modFb = 0;
+      this.apState.fill(0);
+    }
+    if (turnedOn(P.eqOn)) {
+      for (const f of [this.peqLc, this.peqLs, this.peqPk, this.peqHs, this.peqHc]) f.reset();
+    }
+    if (changed(P.revType)) {
+      this.rev.clear();
+      this.revRunning = false;
+      this.revTail = 0;
+    }
+  }
+
+  /// Segundos que el eco o la reverb siguen sonando después del último audio.
+  static tailSeconds(p: Float32Array): number {
+    if (p[P.on] < 0.5) return 0;
+    let t = 0;
+    if (p[P.modOn] >= 0.5 && p[P.modMix] > 0) t = 0.1;
+    if (p[P.dlyOn] >= 0.5 && p[P.dlyMix] > 0) {
+      const sync = jsRound(p[P.dlySync]);
+      const sec = sync > 0 ? delayDivisionSecondsRig(sync, 60) : clamp(p[P.dlyTimeMs], 40, 1500) / 1000;
+      t = Math.max(t, (GuitarRigDsp.repeatsFor(clamp(p[P.dlyFeedback], 0, 0.9)) + 1) * sec);
+    }
+    if (p[P.revOn] >= 0.5 && p[P.revMix] > 0) {
+      const d = clamp(p[P.revDecay], 0, 1);
+      const type = jsRound(p[P.revType]);
+      t = Math.max(t, type === 0 ? 0.8 * Math.pow(5, d) : type === 1 ? 0.3 * Math.pow(20 / 3, d) : 1.2 * Math.pow(20 / 3, d) + 0.02);
+    }
+    return Math.min(t, 10);
+  }
+
+  static repeatsFor(fb: number): number {
+    let g = 1;
+    let k = 0;
+    while (g > 1e-4 && k < 400) {
+      g *= fb;
+      k++;
+    }
+    return k;
   }
 
   reset() {
@@ -753,6 +1140,13 @@ export class GuitarRigDsp {
     this.dlyBuf?.fill(0); this.dlyPos = 0; this.dlyCur = 0; this.dlyLp.reset(); this.dlyHp.reset(); this.dlyWow = 0;
     for (const f of [this.eqLow, this.eqMid, this.eqHigh, this.split, this.octLp1, this.octLp2, this.octOut1, this.octOut2]) f.reset();
     this.diBuf.fill(0); this.diPos = 0; this.octEnv = 0; this.octUp = false; this.octFlip = 1;
+    this.boostTreb.reset(); this.boostMid.reset();
+    for (const f of [this.peqLc, this.peqLs, this.peqPk, this.peqHs, this.peqHc]) f.reset();
+    this.rev.clear();
+    this.primed = false;
+    this.onG = 0; this.dlySendG = 0; this.revSendG = 0;
+    this.dlyRunning = false; this.revRunning = false; this.dlyTail = 0; this.revTail = 0;
+    this.dlyMixHeld = 0; this.dlyFbHeld = 0; this.revMixHeld = 0;
   }
 
   /// Recalcula los coeficientes si cambió algo (perillas, tempo).
@@ -801,9 +1195,10 @@ export class GuitarRigDsp {
     this.drvBlend = clamp(p[P.driveBlend], 0, 1);
 
     // Amplificador
-    const model = clamp(Math.round(p[P.ampModel]), 0, 4);
+    const model = clamp(Math.round(p[P.ampModel]), 0, 6);
     const g = clamp(p[P.ampGain], 0, 1);
     const g2 = g * g;
+    this.powerAsym = 0;
     if (model === 0) {
       // Limpio (Fender): dos etapas; rompe recién arriba de la mitad.
       this.ampInHp.set(20, hi);
@@ -847,7 +1242,7 @@ export class GuitarRigDsp {
       this.nStages = 2;
       this.stages[0].set(1.2 + 8 * g2, 14000, 10, hi);
       this.stages[1].set(1.2 + 3 * g, 10000, 10, hi);
-    } else {
+    } else if (model === 4) {
       // Bajo saturado: los graves (abajo de 150 Hz) pasan limpios y solo se
       // distorsiona lo de arriba; si no, el bajo pierde el piso.
       this.ampInHp.set(30, hi);
@@ -858,14 +1253,44 @@ export class GuitarRigDsp {
       this.stages[1].set(1.5 + 6 * g, 7000, 80, hi);
       this.stages[2].set(1.4, 6000, 60, hi);
       this.split.set(LP, 150, 0.7071, 0, hi);
+    } else if (model === 5) {
+      // Clase A ("chime"): dos etapas que rompen temprano, tono "top boost"
+      // y potencia asimétrica (los armónicos pares).
+      this.ampInHp.set(25, hi);
+      this.ampBright.set(HSH, 3000, 0.7, 6 * (1 - 0.5 * g), hi);
+      this.ampMidBoost.set(PEAK, 2600, 0.8, 3, hi);
+      this.nStages = 2;
+      this.stages[0].set(2 + 30 * g2, 18000, 12, hi);
+      this.stages[1].set(1.5 + 8 * g, 14000, 20, hi);
+      this.powerAsym = 0.2;
+    } else {
+      // Moderno de alta ganancia: entrada muy ajustada, empuje de medios
+      // adelante, cinco etapas y los medios hundidos en la red de tonos.
+      this.ampInHp.set(200, hi);
+      this.ampBright.set(HSH, 1500, 0.7, 3, hi);
+      this.ampMidBoost.set(PEAK, 700, 0.7, 5, hi);
+      this.nStages = 5;
+      this.stages[0].set(1 + 80 * g2 * g, 12000, 70, hi);
+      this.stages[1].set(1.3 + 18 * g2, 9000, 140, hi);
+      this.stages[2].set(1.6 + 6 * g, 8000, 90, hi);
+      this.stages[3].set(1.5, 7500, 60, hi);
+      this.stages[4].set(1.2, 7000, 45, hi);
+      this.tone.set(p[P.ampBass], p[P.ampMid], p[P.ampTreble], FENDER, hi);
+      this.toneMakeup = dbToLin(10);
     }
-    this.bassEq = model >= 3;
+    this.bassEq = model === 3 || model === 4;
     this.bassSplit = model === 4;
+    this.activeEq = this.bassEq || model === 5;
     if (this.bassEq) {
       const midHz = clamp(p[P.ampMidHz], 200, 3000);
       this.eqLow.set(LSH, 70, 0.7, (clamp(p[P.ampBass], 0, 1) - 0.5) * 24, hi);
       this.eqMid.set(PEAK, midHz, 0.9, (clamp(p[P.ampMid], 0, 1) - 0.5) * 24, hi);
       this.eqHigh.set(HSH, 2500, 0.7, (clamp(p[P.ampTreble], 0, 1) - 0.5) * 24, hi);
+      this.toneMakeup = 1;
+    } else if (model === 5) {
+      this.eqLow.set(LSH, 110, 0.7, (clamp(p[P.ampBass], 0, 1) - 0.5) * 20, hi);
+      this.eqMid.set(PEAK, 1000, 0.7, (clamp(p[P.ampMid], 0, 1) - 0.5) * 16, hi);
+      this.eqHigh.set(HSH, 2800, 0.7, (clamp(p[P.ampTreble], 0, 1) - 0.5) * 20, hi);
       this.toneMakeup = 1;
     }
     // El wah se corre a la zona del bajo con un amplificador de bajo.
@@ -873,19 +1298,26 @@ export class GuitarRigDsp {
     this.wahRatio = this.bassEq ? 1400 / 220 : 2200 / 450;
     this.diBlend = clamp(p[P.ampDiBlend], 0, 1);
     const pres = clamp(p[P.ampPresence], 0, 1);
-    this.presence.set(HSH, this.bassEq ? 5000 : 3200, 0.7, -4 + 12 * pres, hi);
-    this.resonance.set(LSH, this.bassEq ? 60 : 100, 0.7, model === 0 ? 0 : this.bassEq ? 2 : 3, hi);
-    this.ampTrim = model === 0 ? 0.22 : model === 3 ? 0.3 : model === 4 ? 0.2 : 0.14;
+    this.presence.set(HSH, this.bassEq ? 5000 : model === 5 ? 4000 : model === 6 ? 3500 : 3200, 0.7, -4 + 12 * pres, hi);
+    this.resonance.set(
+      LSH,
+      this.bassEq ? 60 : model === 6 ? 90 : 100,
+      0.7,
+      model === 0 ? 0 : this.bassEq ? 2 : model === 5 ? 1.5 : model === 6 ? 4 : 3,
+      hi,
+    );
+    this.ampTrim = model === 0 ? 0.22 : model === 3 ? 0.3 : model === 4 ? 0.2 : model === 5 ? CHIME_TRIM : model === 6 ? MODERN_TRIM : 0.14;
     const master = clamp(p[P.ampMaster], 0, 1);
     this.powerDrive = 0.6 + 5 * master * master;
     this.powerOut = 1 / ftanh(this.powerDrive * 0.9);
+    this.powerAsymT = ftanh(this.powerAsym);
     this.sagA = 1 - Math.exp(-1 / (0.04 * hi));
 
     // Bafle
     let cab = clamp(Math.round(p[P.cab]), 0, 7);
     // 7 = IR propio; sin IR suena el bafle sintético del instrumento.
     this.cabIr = cab === 7;
-    if (this.cabIr) cab = model >= 3 ? 6 : 3;
+    if (this.cabIr) cab = this.bassEq ? 6 : 3;
     const c = this.cab;
     if (cab === 1) {
       c[0].set(HP, 90, 0.7, 0, r); c[1].set(PEAK, 150, 1, 2, r); c[2].set(PEAK, 600, 0.9, -2, r);
@@ -938,12 +1370,40 @@ export class GuitarRigDsp {
     this.dlyLp.set(1500 * Math.pow(8, tone), r);
     this.dlyHp.set(120, r);
     this.outGain = dbToLin(clamp(p[P.outDb], -24, 12));
+
+    // Boost (+77): 0..24 dB.
+    const bdb = clamp(p[P.boostDb], 0, 24);
+    this.boostGain = dbToLin(bdb);
+    this.boostTreb.set(1200, r);
+    this.boostMid.set(PEAK, 900, 0.9, bdb, r);
+    this.boostMidGain = dbToLin(bdb * 0.2);
+
+    // Ecualizador (+77).
+    const lc = clamp(p[P.eqLowCutHz], 20, 500);
+    this.peqLcOn = lc > 20.5;
+    this.peqLc.set(HP, lc, 0.7071, 0, r);
+    this.peqLs.set(LSH, 120, 0.7, clamp(p[P.eqLowDb], -15, 15), r);
+    this.peqPk.set(PEAK, clamp(p[P.eqMidHz], 150, 6000), clamp(p[P.eqMidQ], 0.3, 5), clamp(p[P.eqMidDb], -15, 15), r);
+    this.peqHs.set(HSH, 4000, 0.7, clamp(p[P.eqHighDb], -15, 15), r);
+    const hc = clamp(p[P.eqHighCutHz], 1000, 20000);
+    this.peqHcOn = hc < 19500;
+    this.peqHc.set(LP, hc, 0.7071, 0, r);
+
+    // Reverb (+77).
+    this.rev.configure(clamp(Math.round(p[P.revType]), 0, 2), p[P.revDecay], p[P.revTone], r);
   }
 
-  /// Procesa `n` muestras de `buf` en el lugar. `params`: los 36 valores de
-  /// rigParams. `bpm`: el tempo, para el eco a tempo.
+  /// Procesa `n` muestras de `buf` (desde `offset`) en el lugar. `params`:
+  /// los 58 valores de rigParams. `bpm`: el tempo, para el eco a tempo.
   process(buf: Float32Array, n: number, params: Float32Array, bpm: number, offset = 0, ir: IrKernel | null = null) {
-    if (params[P.on] < 0.5) return;
+    const onWant = params[P.on] >= 0.5;
+    if (!this.primed) {
+      this.onG = onWant ? 1 : 0;
+      this.dlySendG = params[P.dlyOn] >= 0.5 && params[P.dlyMix] > 0 ? 1 : 0;
+      this.revSendG = params[P.revOn] >= 0.5 && params[P.revMix] > 0 ? 1 : 0;
+      this.primed = true;
+    }
+    if (!onWant && this.onG <= 0) return;
     this.configure(params, bpm);
     const r = this.rate;
     const gateDb = params[P.gateDb];
@@ -968,16 +1428,33 @@ export class GuitarRigDsp {
     const modRate = clamp(params[P.modRate], 0, 1);
     const modDepth = clamp(params[P.modDepth], 0, 1);
     const modMix = clamp(params[P.modMix], 0, 1);
-    const dlyOn = params[P.dlyOn] >= 0.5 && params[P.dlyMix] > 0;
-    if (dlyOn && !this.dlyBuf) this.dlyBuf = new Float32Array(DELAY_MAX_SECONDS * r);
-    const dlyFb = clamp(params[P.dlyFeedback], 0, 0.9);
-    const dlyMix = clamp(params[P.dlyMix], 0, 1);
+    // Eco y reverb con "spillover": apagados dejan de recibir señal y su
+    // cola sigue sonando hasta apagarse sola.
+    if (params[P.dlyOn] >= 0.5 && params[P.dlyMix] > 0 && !this.dlyBuf) this.dlyBuf = new Float32Array(DELAY_MAX_SECONDS * r);
+    const dlyReady = this.dlyBuf !== null;
+    const dlyWant = params[P.dlyOn] >= 0.5 && params[P.dlyMix] > 0 && dlyReady;
+    if (dlyWant) {
+      this.dlyFbHeld = clamp(params[P.dlyFeedback], 0, 0.9);
+      this.dlyMixHeld = clamp(params[P.dlyMix], 0, 1);
+      this.dlyTail = 0;
+    }
+    const dlyActive = dlyReady && (dlyWant || this.dlyRunning);
     const dlyTape = clamp(params[P.dlyTone], 0, 1) < 0.5;
+    if (params[P.revOn] >= 0.5 && params[P.revMix] > 0 && !this.rev.ready) this.rev.init(r);
+    const revWant = params[P.revOn] >= 0.5 && params[P.revMix] > 0 && this.rev.ready;
+    if (revWant) {
+      this.revMixHeld = clamp(params[P.revMix], 0, 1);
+      this.revTail = 0;
+    }
+    const revActive = revWant || this.revRunning;
     const octOn = params[P.octOn] >= 0.5;
     const octLevel = clamp(params[P.octLevel], 0, 1);
     const octDry = clamp(params[P.octDry], 0, 1);
     const octAtt = 1 - Math.exp(-1 / (0.002 * r));
     const octRel = 1 - Math.exp(-1 / (0.05 * r));
+    const boostOn = params[P.boostOn] >= 0.5;
+    const boostType = Math.round(params[P.boostType]);
+    const eqOn = params[P.eqOn] >= 0.5;
 
     const gateAtt = 1 - Math.exp(-1 / (0.0005 * r));
     const gateRel = 1 - Math.exp(-1 / (0.06 * r));
@@ -991,7 +1468,8 @@ export class GuitarRigDsp {
     const hiBuf = this.hiBuf;
 
     for (let i = offset; i < offset + n; i++) {
-      let x = buf[i];
+      const dry = buf[i];
+      let x = dry;
 
       // Puerta: sigue el pico; abre al pasar el umbral y cierra 4 dB abajo
       // después de 50 ms.
@@ -1056,6 +1534,14 @@ export class GuitarRigDsp {
         x = 0.25 * lp + 2.2 * k * bp * Math.sqrt(wahQ);
       }
 
+      // Boost: limpio, de agudos (los graves quedan, los agudos suben) o de
+      // medios.
+      if (boostOn) {
+        if (boostType === 0) x *= this.boostGain;
+        else if (boostType === 1) x = x + (this.boostGain - 1) * this.boostTreb.hp(x);
+        else x = this.boostMid.run(x) * this.boostMidGain;
+      }
+
       // La línea directa (DI) para mezclar con el amplificador, demorada lo
       // mismo que el sobremuestreo (95 muestras a 8× = 11,875 a 1×) para que
       // no se cancelen.
@@ -1092,13 +1578,55 @@ export class GuitarRigDsp {
       }
       this.diPos = (this.diPos + 1) & 15;
 
+      // Ecualizador (después del bafle, como uno de rack).
+      if (eqOn) {
+        if (this.peqLcOn) x = this.peqLc.run(x);
+        x = this.peqHs.run(this.peqPk.run(this.peqLs.run(x)));
+        if (this.peqHcOn) x = this.peqHc.run(x);
+      }
+
       // Modulación.
       if (modOn) x = this.modulate(x, modType, modRate, modDepth, modMix);
 
       // Eco.
-      if (dlyOn && this.dlyBuf) x = this.echo(x, dlyFb, dlyMix, dlyTape);
+      if (dlyActive) {
+        x = this.echo(x, this.dlyFbHeld, this.dlyMixHeld, dlyTape, this.dlySendG);
+        this.dlyRunning = true;
+        if (dlyWant) {
+          if (this.dlySendG < 1) this.dlySendG = Math.min(1, this.dlySendG + this.rampStep);
+        } else if (this.dlySendG > 0) {
+          this.dlySendG = Math.max(0, this.dlySendG - this.rampStep);
+          if (this.dlySendG <= 0) this.dlyTail = (GuitarRigDsp.repeatsFor(this.dlyFbHeld) + 1) * this.dlyCur + 1024;
+        } else if (--this.dlyTail <= 0) {
+          this.dlyBuf!.fill(0);
+          this.dlyRunning = false;
+          this.dlyTail = 0;
+        }
+      }
 
-      buf[i] = x * this.outGain;
+      // Reverb.
+      if (revActive) {
+        x += this.revMixHeld * this.rev.run(x * this.revSendG);
+        this.revRunning = true;
+        if (revWant) {
+          if (this.revSendG < 1) this.revSendG = Math.min(1, this.revSendG + this.rampStep);
+        } else if (this.revSendG > 0) {
+          this.revSendG = Math.max(0, this.revSendG - this.rampStep);
+          if (this.revSendG <= 0) this.revTail = this.rev.tailFrames;
+        } else if (--this.revTail <= 0) {
+          this.rev.clear();
+          this.revRunning = false;
+          this.revTail = 0;
+        }
+      }
+
+      let y = x * this.outGain;
+      // Prender o apagar la pedalera entera: un fundido de 10 ms.
+      if (!onWant || this.onG < 1) {
+        y = dry + this.onG * (y - dry);
+        this.onG = onWant ? Math.min(1, this.onG + this.rampStep) : Math.max(0, this.onG - this.rampStep);
+      }
+      buf[i] = y;
     }
   }
 
@@ -1144,7 +1672,7 @@ export class GuitarRigDsp {
     } else {
       for (let s = 0; s < this.nStages; s++) x = this.stages[s].run(x);
     }
-    if (this.bassEq) {
+    if (this.activeEq) {
       x = this.eqHigh.run(this.eqMid.run(this.eqLow.run(x)));
     } else {
       x = this.tone.run(x) * this.toneMakeup;
@@ -1155,7 +1683,7 @@ export class GuitarRigDsp {
     x = this.presence.run(x);
     x = this.resonance.run(x);
     const drive = this.powerDrive / (1 + 0.5 * this.sag);
-    const y = ftanh(drive * x) * this.powerOut;
+    const y = (this.powerAsym !== 0 ? ftanh(drive * x + this.powerAsym) - this.powerAsymT : ftanh(drive * x)) * this.powerOut;
     this.sag += this.sagA * (Math.abs(y) - this.sag);
     return y * this.ampTrim;
   }
@@ -1205,7 +1733,7 @@ export class GuitarRigDsp {
     return type === 0 ? (x + mix * d) / (1 + 0.5 * mix) : (x + mix * d) / (1 + 0.6 * mix);
   }
 
-  private echo(x: number, fb: number, mix: number, tape: boolean) {
+  private echo(x: number, fb: number, mix: number, tape: boolean, send: number) {
     const buf = this.dlyBuf!;
     const len = buf.length;
     const r = this.rate;
@@ -1226,7 +1754,7 @@ export class GuitarRigDsp {
     const wet = buf[i0 % len] * (1 - frac) + buf[(i0 + 1) % len] * frac;
     let w = this.dlyHp.hp(this.dlyLp.lp(wet));
     if (tape) w = Math.tanh(w * 1.2) / 1.2;
-    buf[this.dlyPos] = x + fb * w;
+    buf[this.dlyPos] = x * send + fb * w;
     this.dlyPos = (this.dlyPos + 1) % len;
     return x + mix * wet;
   }
@@ -1246,6 +1774,226 @@ function delayDivisionSecondsRig(div: number, bpm: number): number {
   }
 }
 
+// ─── Escenas y automatización (app +77) ──────────────────────────────────
+// Igual que RigProgram y RigPlayer en guitar_rig.h.
+
+export class RigLane {
+  constructor(
+    public param: number,
+    public frames: number[],
+    public values: Float32Array,
+  ) {}
+  at(f: number): number {
+    const n = this.frames.length;
+    if (n === 0) return 0;
+    if (f <= this.frames[0]) return this.values[0];
+    if (f >= this.frames[n - 1]) return this.values[n - 1];
+    let lo = 0;
+    let hi = n - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (this.frames[mid] <= f) lo = mid;
+      else hi = mid;
+    }
+    const t = (f - this.frames[lo]) / (this.frames[hi] - this.frames[lo]);
+    const a = this.values[lo];
+    const b = this.values[hi];
+    return Math.fround(a + (b - a) * t);
+  }
+}
+
+export class RigProgram {
+  sceneCount = 0;
+  scenes = new Float32Array(0);
+  changeFrames: number[] = [];
+  changeScenes: number[] = [];
+  lanes: RigLane[] = [];
+  tailSeconds = 0;
+
+  on() {
+    return this.sceneCount > 0 && this.scenes[P.on] >= 0.5;
+  }
+  sceneAt(f: number): number {
+    let lo = 0;
+    let hi = this.changeFrames.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.changeFrames[mid] <= f) lo = mid + 1;
+      else hi = mid;
+    }
+    const s = lo > 0 ? this.changeScenes[lo - 1] : 0;
+    return s >= 0 && s < this.sceneCount ? s : 0;
+  }
+  paramsAt(f: number, scene: number, out: Float32Array) {
+    out.set(this.scenes.subarray(scene * RIG_PARAM_COUNT, (scene + 1) * RIG_PARAM_COUNT));
+    out[P.on] = this.scenes[P.on];
+    for (const l of this.lanes) {
+      if (l.param <= P.on || l.param >= RIG_PARAM_COUNT || isSwitchParam(l.param) || isJumpParam(l.param)) continue;
+      if (l.frames.length > 0) out[l.param] = l.at(f);
+    }
+  }
+  finish() {
+    this.tailSeconds = 0;
+    for (let s = 0; s < this.sceneCount; s++) {
+      const p = this.scenes.slice(s * RIG_PARAM_COUNT, (s + 1) * RIG_PARAM_COUNT);
+      p[P.on] = this.scenes[P.on];
+      this.tailSeconds = Math.max(this.tailSeconds, GuitarRigDsp.tailSeconds(p));
+    }
+  }
+}
+
+/// Una curva o un cambio de escena, en segundos (como en trackAutomation.ts).
+export interface RigAutomation {
+  scenes?: { seconds: number; scene: number }[];
+  rig?: Record<string, { seconds: number; value: number }[]>;
+}
+
+/// Arma el programa de una pista: sus escenas, dónde cambia de una a otra y
+/// los controles con curva. null = sin pedalera.
+export function buildRigProgram(rig: GuitarRig | null | undefined, automation: RigAutomation | null | undefined, sampleRate: number): RigProgram | null {
+  if (!rig) return null;
+  const list = rigScenes(rig).slice(0, MAX_SCENES);
+  const prog = new RigProgram();
+  prog.sceneCount = list.length;
+  prog.scenes = new Float32Array(list.length * RIG_PARAM_COUNT);
+  list.forEach((s, k) => prog.scenes.set(rigParams(s), k * RIG_PARAM_COUNT));
+  prog.scenes[P.on] = rig.on ? 1 : 0;
+  for (const c of [...(automation?.scenes ?? [])].sort((a, b) => a.seconds - b.seconds)) {
+    const f = Math.round(Math.max(0, c.seconds) * sampleRate);
+    if (prog.changeFrames.length && f <= prog.changeFrames[prog.changeFrames.length - 1]) continue;
+    prog.changeFrames.push(f);
+    prog.changeScenes.push(Math.max(0, Math.round(c.scene)));
+  }
+  for (const [key, pts] of Object.entries(automation?.rig ?? {})) {
+    const param = (RIG_PARAM_KEYS as readonly string[]).indexOf(key);
+    if (param <= 0 || !pts.length || isSwitchParam(param) || isJumpParam(param)) continue;
+    const frames: number[] = [];
+    const values: number[] = [];
+    for (const p of [...pts].sort((a, b) => a.seconds - b.seconds)) {
+      const f = Math.round(Math.max(0, p.seconds) * sampleRate);
+      if (frames.length && f <= frames[frames.length - 1]) continue;
+      frames.push(f);
+      values.push(p.value);
+    }
+    prog.lanes.push(new RigLane(param, frames, Float32Array.from(values)));
+  }
+  prog.finish();
+  return prog;
+}
+
+export const RIG_CHUNK = 32;
+const RIG_XFADE = 1024;
+
+export class RigPlayer {
+  private rigs: [GuitarRigDsp, GuitarRigDsp];
+  private cur = new Float32Array(RIG_PARAM_COUNT);
+  private old = new Float32Array(RIG_PARAM_COUNT);
+  private target = new Float32Array(RIG_PARAM_COUNT);
+  private prev = new Float32Array(RIG_CHUNK);
+  private primed = false;
+  private xfade = false;
+  private xfPos = 0;
+  private active = 0;
+  private aChunk: number;
+  scene = 0;
+
+  constructor(private readonly rate: number) {
+    this.rigs = [new GuitarRigDsp(rate), new GuitarRigDsp(rate)];
+    this.aChunk = 1 - Math.exp(-RIG_CHUNK / (0.015 * rate));
+  }
+
+  /// Igual que RigPlayer::process: [frame] es dónde cae `buf[offset]` en la
+  /// canción.
+  process(
+    buf: Float32Array,
+    n: number,
+    frame: number,
+    advancing: boolean,
+    prog: RigProgram | null,
+    forcedScene: number,
+    bpm: number,
+    ir: IrKernel | null,
+    offset = 0,
+  ) {
+    const progOn = prog !== null && prog.sceneCount > 0;
+    if (!this.primed && !(progOn && prog!.on())) return;
+    const target = this.target;
+    let i = 0;
+    while (i < n) {
+      const pos = frame + (advancing ? i : 0);
+      let len = RIG_CHUNK;
+      if (advancing) len = RIG_CHUNK - (((pos % RIG_CHUNK) + RIG_CHUNK) % RIG_CHUNK);
+      if (len > n - i) len = n - i;
+      if (progOn) {
+        const sc = forcedScene >= 0 && forcedScene < prog!.sceneCount ? forcedScene : prog!.sceneAt(pos);
+        this.scene = sc;
+        prog!.paramsAt(pos, sc, target);
+      } else {
+        target.set(this.cur);
+        target[P.on] = 0;
+      }
+      if (!this.primed) {
+        this.cur.set(target);
+        this.primed = true;
+      } else if (!this.xfade && this.switchDiffers(target)) {
+        const from = this.rigs[this.active];
+        const to = this.rigs[1 - this.active];
+        to.copyFrom(from);
+        to.prepareSwitch(this.cur, target);
+        this.old.set(this.cur);
+        this.cur.set(target);
+        this.xfade = true;
+        this.xfPos = 0;
+        this.active = 1 - this.active;
+      } else {
+        this.smooth(target, len);
+      }
+      const act = this.rigs[this.active];
+      const at = offset + i;
+      if (this.xfade) {
+        const prev = this.prev;
+        for (let j = 0; j < len; j++) prev[j] = buf[at + j];
+        this.rigs[1 - this.active].process(prev, len, this.old, bpm, 0, ir);
+        act.process(buf, len, this.cur, bpm, at, ir);
+        for (let j = 0; j < len; j++) {
+          const t = Math.min(1, (this.xfPos + j + 0.5) / RIG_XFADE);
+          const g = 0.5 - 0.5 * Math.cos(Math.PI * t);
+          const a = prev[j];
+          const b = buf[at + j];
+          buf[at + j] = a + g * (b - a);
+        }
+        this.xfPos += len;
+        if (this.xfPos >= RIG_XFADE) this.xfade = false;
+      } else {
+        act.process(buf, len, this.cur, bpm, at, ir);
+      }
+      i += len;
+    }
+  }
+
+  private switchDiffers(t: Float32Array) {
+    for (let k = 0; k < RIG_PARAM_COUNT; k++) {
+      if (isSwitchParam(k) && jsRound(this.cur[k]) !== jsRound(t[k])) return true;
+    }
+    return false;
+  }
+
+  private smooth(t: Float32Array, len: number) {
+    const a = len === RIG_CHUNK ? this.aChunk : 1 - Math.exp(-len / (0.015 * this.rate));
+    for (let k = 0; k < RIG_PARAM_COUNT; k++) {
+      if (isSwitchParam(k)) continue;
+      if (isJumpParam(k)) {
+        this.cur[k] = t[k];
+        continue;
+      }
+      const c = this.cur[k];
+      const v = t[k];
+      const d = v - c;
+      this.cur[k] = Math.abs(d) <= 1e-4 * (1 + Math.abs(v)) ? v : c + a * d;
+    }
+  }
+}
+
 /// Toda la pista de una pasada (lo que usa la mezcla de la web).
 export function applyGuitarRigInPlace(
   samples: Float32Array,
@@ -1254,10 +2002,14 @@ export function applyGuitarRigInPlace(
   bpm = 120,
   /// Las muestras del IR propio (a esta misma tasa), si el bafle es 7.
   irSamples: Float32Array | null = null,
+  /// Los cambios de escena y las curvas de la pista (app +77). `samples[0]`
+  /// es el principio de la canción.
+  automation: RigAutomation | null = null,
 ) {
   if (!rigOn(rig)) return samples;
-  const dsp = new GuitarRigDsp(sampleRate);
-  dsp.process(samples, samples.length, rigParams(rig), bpm, 0, prepareIr(irSamples));
+  const prog = buildRigProgram(rig, automation, sampleRate);
+  const player = new RigPlayer(sampleRate);
+  player.process(samples, samples.length, 0, true, prog, -1, bpm, prepareIr(irSamples));
   return samples;
 }
 
