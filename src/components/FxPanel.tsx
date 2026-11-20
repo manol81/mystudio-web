@@ -71,9 +71,12 @@ const RIG_PRESET_NAMES: Record<string, string> = {
 function matchingRigPresetId(fx: TrackFx): string | null {
   if (!rigOn(fx.rig)) return null;
   // El IR cargado no es parte del sonido de fábrica: se compara sin él.
-  const { irFile: _f, irName: _n, ...rest } = fx.rig;
+  // Tampoco las escenas (app +77): se compara la primera.
+  const { irFile: _f, irName: _n, scenes: _s, sceneName: _sn, ...rest } = fx.rig;
   void _f;
   void _n;
+  void _s;
+  void _sn;
   const cur = JSON.stringify({ ...rest, on: true });
   for (const p of GUITAR_RIG_PRESETS) {
     if (JSON.stringify(guitarRigFromPreset(p.id)) === cur) return p.id;
@@ -266,7 +269,13 @@ export function TrackFxPanel({
             if (v === "off") set({ rig: fx.rig ? { ...fx.rig, on: false } : null });
             else if (v !== "custom") {
               const p = GUITAR_RIG_PRESETS.find((x) => x.id === v);
-              set({ rig: guitarRigFromPreset(v), ...(p?.reverbSend !== undefined ? { reverbSend: p.reverbSend } : {}) });
+              // Un sonido de fábrica cambia la primera escena: las demás, el IR
+              // y el nombre quedan (los usa la app en vivo).
+              const base = guitarRigFromPreset(v);
+              set({
+                rig: base && fx.rig ? { ...base, irFile: fx.rig.irFile, irName: fx.rig.irName, sceneName: fx.rig.sceneName, scenes: fx.rig.scenes } : base,
+                ...(p?.reverbSend !== undefined ? { reverbSend: p.reverbSend } : {}),
+              });
             }
           }}
         >

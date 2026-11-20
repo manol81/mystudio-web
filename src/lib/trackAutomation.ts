@@ -20,6 +20,10 @@ export interface TrackAutomation {
   volume: AutomationPoint[];
   pan: AutomationPoint[];
   send: AutomationPoint[];
+  /// Pedalera (app +77): dónde cambia de escena, y las curvas de sus
+  /// perillas por clave (RIG_PARAM_KEYS). Las aplica guitarRig.ts.
+  scenes?: { seconds: number; scene: number }[];
+  rig?: Record<string, AutomationPoint[]>;
 }
 
 export const AUTOMATION_MIN_DB = -60;
@@ -45,7 +49,7 @@ export function parseTrackAutomation(json: unknown): TrackAutomation | null {
   }
   if (!data || typeof data !== "object") return null;
   const map = data as Record<string, unknown>;
-  const read = (lane: keyof TrackAutomation): AutomationPoint[] => {
+  const read = (lane: "volume" | "pan" | "send"): AutomationPoint[] => {
     const raw = map[lane];
     if (!Array.isArray(raw)) return [];
     const pts: AutomationPoint[] = [];
@@ -57,8 +61,29 @@ export function parseTrackAutomation(json: unknown): TrackAutomation | null {
     pts.sort((a, b) => a.seconds - b.seconds);
     return pts;
   };
-  const a = { volume: read("volume"), pan: read("pan"), send: read("send") };
-  return a.volume.length || a.pan.length || a.send.length ? a : null;
+  const scenes: { seconds: number; scene: number }[] = [];
+  if (Array.isArray(map.scenes)) {
+    for (const e of map.scenes) {
+      if (Array.isArray(e) && typeof e[0] === "number" && typeof e[1] === "number") {
+        scenes.push({ seconds: Math.max(0, e[0]), scene: Math.max(0, Math.round(e[1])) });
+      }
+    }
+    scenes.sort((x, y) => x.seconds - y.seconds);
+  }
+  const rig: Record<string, AutomationPoint[]> = {};
+  if (map.rig && typeof map.rig === "object") {
+    for (const [k, raw] of Object.entries(map.rig as Record<string, unknown>)) {
+      if (!Array.isArray(raw)) continue;
+      const pts: AutomationPoint[] = [];
+      for (const e of raw) {
+        if (Array.isArray(e) && typeof e[0] === "number" && typeof e[1] === "number") pts.push({ seconds: Math.max(0, e[0]), value: e[1] });
+      }
+      pts.sort((x, y) => x.seconds - y.seconds);
+      if (pts.length) rig[k] = pts;
+    }
+  }
+  const a: TrackAutomation = { volume: read("volume"), pan: read("pan"), send: read("send"), scenes, rig };
+  return a.volume.length || a.pan.length || a.send.length || scenes.length || Object.keys(rig).length ? a : null;
 }
 
 export function laneValueAt(points: AutomationPoint[], seconds: number): number | null {

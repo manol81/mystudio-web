@@ -2059,6 +2059,11 @@ export const GUITAR_RIG_PRESETS: GuitarRigPreset[] = [
   { id: "phaser70", rig: { ampModel: 1, ampGain: 0.4, cab: 3, modOn: true, modType: 2, modRate: 0.25, modDepth: 0.6, modMix: 0.7 } },
   { id: "surf_tremolo", reverbSend: 0.4, rig: { ampModel: 0, ampGain: 0.35, ampTreble: 0.65, cab: 1, modOn: true, modType: 3, modRate: 0.45, modDepth: 0.7, modMix: 1 } },
   { id: "ambient", reverbSend: 0.45, rig: { ampModel: 0, ampGain: 0.3, cab: 2, modOn: true, modType: 0, modRate: 0.2, modDepth: 0.6, modMix: 0.4, dlyOn: true, dlySync: 4, dlyFeedback: 0.5, dlyMix: 0.35, dlyTone: 0.3 } },
+  // En vivo (app +77): los amplificadores, el boost, el ecualizador y la reverb nuevos.
+  { id: "chime_60s", rig: { ampModel: 5, ampGain: 0.55, ampBass: 0.4, ampTreble: 0.65, cab: 2, revOn: true, revType: 0, revMix: 0.3 } },
+  { id: "modern_metal", rig: { ampModel: 6, ampGain: 0.75, ampBass: 0.6, ampMid: 0.4, ampTreble: 0.6, cab: 3, gateDb: -55, boostOn: true, boostType: 0, boostDb: 6, eqOn: true, eqLowCutHz: 80, eqHighCutHz: 9000 } },
+  { id: "spring_surf", rig: { ampModel: 0, ampGain: 0.35, ampTreble: 0.7, cab: 1, revOn: true, revType: 0, revDecay: 0.7, revMix: 0.5 } },
+  { id: "hall_lead", rig: { ampModel: 2, ampGain: 0.55, cab: 3, dlyOn: true, dlySync: 3, dlyFeedback: 0.3, dlyMix: 0.2, revOn: true, revType: 2, revDecay: 0.6, revMix: 0.3 } },
   // Bajo (app +76): los ids empiezan con "bass_" (así la app sabe en qué
   // lista mostrarlos).
   { id: "bass_clean", reverbSend: 0, rig: { ampModel: 3, ampGain: 0.3, ampBass: 0.55, ampMid: 0.5, ampMidHz: 500, ampTreble: 0.5, cab: 5, compOn: true, compSustain: 0.45, ampDiBlend: 0.3 } },

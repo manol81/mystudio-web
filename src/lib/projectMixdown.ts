@@ -329,7 +329,7 @@ export function renderProjectMix(
     const samples = new Float32Array(contentFrames);
     for (const clip of track.clips) writeClipInto(samples, clip, sampleRate);
 
-    applyTrackFxInPlace(samples, track.fx, sampleRate, bpm);
+    applyTrackFxInPlace(samples, track.fx, sampleRate, bpm, track.automation ?? null);
     mixTracksInput.push({
       samples,
       volume: track.volume,

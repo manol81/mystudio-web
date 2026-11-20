@@ -310,3 +310,91 @@ describe("pedalera de guitarra", () => {
     });
   });
 });
+
+describe("pedalera en vivo (app +77)", () => {
+  const sine = (seconds: number, f = 196, amp = 0.15) => {
+    const x = new Float32Array(Math.round(SR * seconds));
+    for (let i = 0; i < x.length; i++) x[i] = amp * Math.sin((2 * Math.PI * f * i) / SR);
+    return x;
+  };
+  const maxStep = (x: Float32Array, a: number, b: number) => {
+    let m = 0;
+    for (let i = Math.max(1, a); i < Math.min(x.length, b); i++) m = Math.max(m, Math.abs(x[i] - x[i - 1]));
+    return m;
+  };
+  const rmsRange = (x: Float32Array, a: number, b: number) => rmsDb(x.subarray(Math.round(a * SR), Math.round(b * SR)));
+
+  it("las escenas viajan y se leen; los 58 valores incluyen boost, ecualizador y reverb", () => {
+    const rig = parseGuitarRig({ ampModel: 1, sceneName: "Estrofa", scenes: [{ ampModel: 2, sceneName: "Solo", scenes: [{}] }] })!;
+    expect(rig.sceneName).toBe("Estrofa");
+    expect(rig.scenes!.length).toBe(1);
+    expect(rig.scenes![0].ampModel).toBe(2);
+    expect(rig.scenes![0].scenes).toBeUndefined();
+    expect(rigParams(rig).length).toBe(58);
+    expect(rigHasTail({ ...DEFAULT_GUITAR_RIG, scenes: [{ ...DEFAULT_GUITAR_RIG, revOn: true }] })).toBe(true);
+  });
+
+  it("cambia de escena donde dice la canción, sin clic", () => {
+    const clean = { ...DEFAULT_GUITAR_RIG, ampModel: 0, ampGain: 0.2 };
+    const rig: GuitarRig = { ...clean, scenes: [{ ...clean, driveOn: true, driveType: 1, driveGain: 0.8 }] };
+    const y = sine(2);
+    applyGuitarRigInPlace(y, rig, SR, 120, null, { scenes: [{ seconds: 1, scene: 1 }] });
+    expect(y.every(Number.isFinite)).toBe(true);
+    // Después del cambio suena la distorsión (mucho más armónico agudo).
+    const hiBefore = bandEnergy(y.subarray(Math.round(0.5 * SR)), 2000, 4000);
+    const hiAfter = bandEnergy(y.subarray(Math.round(1.5 * SR)), 2000, 4000);
+    expect(hiAfter).toBeGreaterThan(hiBefore * 10);
+    // El paso más grande alrededor del cambio no es mayor que el de la
+    // distorsión ya establecida: no hubo salto.
+    const around = maxStep(y, Math.round(0.98 * SR), Math.round(1.05 * SR));
+    const steady = maxStep(y, Math.round(1.3 * SR), Math.round(1.9 * SR));
+    expect(around).toBeLessThanOrEqual(steady * 1.2);
+  });
+
+  it("el eco apagado deja sonar su cola (spillover)", () => {
+    const withDly = { ...DEFAULT_GUITAR_RIG, ampModel: 0, dlyOn: true, dlyTimeMs: 250, dlyFeedback: 0.5, dlyMix: 0.5 };
+    const rig: GuitarRig = { ...withDly, scenes: [{ ...withDly, dlyOn: false }] };
+    const x = new Float32Array(SR * 2);
+    x.set(sine(0.1, 330, 0.3));
+    const spill = Float32Array.from(x);
+    applyGuitarRigInPlace(spill, rig, SR, 120, null, { scenes: [{ seconds: 0.15, scene: 1 }] });
+    const dry = Float32Array.from(x);
+    applyGuitarRigInPlace(dry, { ...withDly, dlyOn: false }, SR);
+    // Entre 0,5 y 0,6 s (la segunda repetición) sigue sonando el eco.
+    expect(rmsRange(spill, 0.5, 0.6)).toBeGreaterThan(rmsRange(dry, 0.5, 0.6) + 20);
+    // Y la reverb también.
+    const withRev = { ...DEFAULT_GUITAR_RIG, ampModel: 0, revOn: true, revType: 2, revDecay: 0.8, revMix: 0.6 };
+    const r2 = Float32Array.from(x);
+    applyGuitarRigInPlace(r2, { ...withRev, scenes: [{ ...withRev, revOn: false }] }, SR, 120, null, { scenes: [{ seconds: 0.15, scene: 1 }] });
+    const d2 = Float32Array.from(x);
+    applyGuitarRigInPlace(d2, { ...withRev, revOn: false }, SR);
+    expect(rmsRange(r2, 0.6, 1.0)).toBeGreaterThan(rmsRange(d2, 0.6, 1.0) + 20);
+  });
+
+  it("una curva mueve la perilla a lo largo de la canción", () => {
+    const rig = { ...DEFAULT_GUITAR_RIG, ampModel: 0, ampGain: 0.2, outDb: 0 };
+    const y = sine(2);
+    applyGuitarRigInPlace(y, rig, SR, 120, null, { rig: { outDb: [{ seconds: 0, value: 0 }, { seconds: 2, value: -20 }] } });
+    expect(rmsRange(y, 0.1, 0.3) - rmsRange(y, 1.7, 1.9)).toBeGreaterThan(12);
+    // Y viaja por la cadena de la pista.
+    const z = sine(2);
+    applyTrackFxInPlace(z, { ...NO_TRACK_FX, rig }, SR, 120, {
+      volume: [], pan: [], send: [], rig: { outDb: [{ seconds: 0, value: 0 }, { seconds: 2, value: -20 }] },
+    });
+    expect(Math.abs(rmsDb(z) - rmsDb(y))).toBeLessThan(0.01);
+  });
+
+  it("boost, ecualizador, reverb y los amplificadores nuevos: nivel parejo y sin valores raros", () => {
+    const g = guitar(2);
+    for (const extra of [
+      { ampModel: 5 }, { ampModel: 6, ampGain: 1 }, { boostOn: true, boostType: 1, boostDb: 24 },
+      { eqOn: true, eqLowCutHz: 300, eqHighCutHz: 2000, eqMidDb: 15, eqMidQ: 5 }, { revOn: true, revType: 0, revMix: 1, revDecay: 1 },
+    ] as Partial<GuitarRig>[]) {
+      const y = Float32Array.from(g);
+      applyGuitarRigInPlace(y, { ...DEFAULT_GUITAR_RIG, ...extra }, SR);
+      expect(y.every(Number.isFinite), JSON.stringify(extra)).toBe(true);
+      expect(rmsDb(y), JSON.stringify(extra)).toBeGreaterThan(-32);
+      expect(rmsDb(y), JSON.stringify(extra)).toBeLessThan(-6);
+    }
+  }, 60000);
+});

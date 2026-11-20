@@ -636,6 +636,9 @@ export function applyTrackFxInPlace(
   sampleRate: number,
   /// Tempo del proyecto (negras por minuto), para el eco.
   bpm = 120,
+  /// La automatización de la pista: los cambios de escena y las curvas de
+  /// la pedalera (app +77). `samples[0]` es el principio de la canción.
+  automation: TrackAutomation | null = null,
 ): Float32Array {
   // El corte de graves va PRIMERO, como en el motor.
   const hpf = clampHpfHz(fx.hpfHz);
@@ -647,7 +650,7 @@ export function applyTrackFxInPlace(
     gateInPlace(samples, Math.max(-80, Math.min(-20, fx.gateThresholdDb ?? GATE_OFF_DB)), sampleRate);
   }
   // Pedalera de guitarra: después de la puerta y antes del EQ, como el motor.
-  if (rigOn(fx.rig)) applyGuitarRigInPlace(samples, fx.rig, sampleRate, bpm, fx.rigIr ?? null);
+  if (rigOn(fx.rig)) applyGuitarRigInPlace(samples, fx.rig, sampleRate, bpm, fx.rigIr ?? null, automation);
   if (fx.eqLowDb !== 0) {
     new Biquad("lowShelf", 100, fx.eqLowDb, sampleRate).processInPlace(samples);
   }

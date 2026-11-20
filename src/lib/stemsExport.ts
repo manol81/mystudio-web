@@ -114,7 +114,7 @@ async function renderStems(
     // exactamente cómo el paquete de pistas se quedó sin el recorte
     // cuando la mezcla sí lo tenía.
     for (const clip of track.clips) writeClipInto(mono, clip, SAMPLE_RATE);
-    applyTrackFxInPlace(mono, track.fx, SAMPLE_RATE, project.tempoBpm);
+    applyTrackFxInPlace(mono, track.fx, SAMPLE_RATE, project.tempoBpm, track.automation ?? null);
     const chorus = chorusOn(track.fx)
       ? renderChorus(mono, track.fx.chorusDepth ?? 0.3, track.fx.chorusMix ?? 0, SAMPLE_RATE)
       : null;
